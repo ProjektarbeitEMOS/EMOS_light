@@ -1,0 +1,139 @@
+# EMOS Light — Standard-Konfiguration Neubau (KfW55)
+
+general:
+  time_step_minutes: 15
+  optimization_horizon_hours: 24
+  latitude: 49.33
+  longitude: 12.11
+  feed_in_tariff_ct_kwh: 8.2
+  max_grid_power_kw: 30.0
+
+tariff:
+  provider_markup_ct_kwh: 2.15
+  grid_fee_ct_kwh: 9.26
+  concession_fee_ct_kwh: 1.66
+  electricity_tax_ct_kwh: 2.05
+  kwkg_surcharge_ct_kwh: 0.446
+  stromnev_surcharge_ct_kwh: 1.559
+  offshore_surcharge_ct_kwh: 0.941
+  vat_pct: 19.0
+  monthly_base_fee_eur: 5.99
+  monthly_grid_fee_eur: 10.0
+
+household:
+  annual_consumption_kwh: 4500
+
+pv:
+  enabled: true
+  peak_power_kwp: 12.0
+  surfaces:
+    - name: Sued
+      kwp: 8.0
+      azimuth_deg: 180
+      tilt_deg: 30
+    - name: Ost
+      kwp: 4.0
+      azimuth_deg: 90
+      tilt_deg: 30
+
+battery:
+  enabled: true
+  capacity_kwh: 10.0
+  max_charge_power_kw: 5.0
+  max_discharge_power_kw: 5.0
+  charge_efficiency: 0.95
+  discharge_efficiency: 0.95
+  min_soc: 0.10
+  max_soc: 0.90
+  initial_soc: 0.50
+
+heat_pump:
+  enabled: true
+  max_electrical_power_kw: 5.0
+  min_electrical_power_kw: 1.0
+  cop_nominal: 4.0
+  cop_reference_temp_c: 7.0
+  min_run_time_minutes: 15
+  min_pause_time_minutes: 15
+  sg_ready: true
+  sg_ready_temp_raise_state3_c: 5.0
+  sg_ready_temp_raise_state4_c: 10.0
+
+hot_water_storage:
+  enabled: true
+  volume_liters: 300
+  min_temperature_c: 45.0
+  max_temperature_c: 60.0
+  initial_temperature_c: 55.0
+  ambient_temperature_c: 20.0
+  height_diameter_ratio: 2.5
+  insulation_thickness_m: 0.05
+  insulation_conductivity_w_m_k: 0.035
+
+fresh_water_station:
+  enabled: true
+  target_hot_water_temp_c: 50.0
+  cold_water_inlet_temp_c: 10.0
+  heat_exchanger_efficiency: 0.90
+  min_storage_temp_for_dhw_c: 55.0
+
+underfloor_heating:
+  enabled: true
+  heated_area_m2: 150.0
+  screed_thickness_m: 0.065
+  screed_density_kg_m3: 2000.0
+  screed_specific_heat_j_kg_k: 1000.0
+  floor_surface_coefficient_w_m2_k: 10.0
+  supply_temp_max_c: 35.0
+  floor_temp_min_c: 20.0
+  floor_temp_max_c: 26.0
+  initial_floor_temp_c: 22.0
+
+building:
+  enabled: true
+  heated_area_m2: 150
+  specific_heat_demand_kwh_m2a: 35
+  annual_heating_kwh: 5250
+  annual_hot_water_kwh: 2500
+  heating_limit_temp_c: 16.0
+  design_temp_c: -14.0
+  indoor_temp_c: 21.0
+  num_occupants: 4
+  night_setback_c: 0.0
+  building_type: kfw55
+
+heat_demand:
+  annual_heating_kwh: 5250
+  annual_hot_water_kwh: 2500
+
+wallboxes:
+  - name: Wallbox 1
+    enabled: true
+    max_power_kw: 11.0
+    min_power_kw: 1.4
+    phases: 3
+    ev_battery_capacity_kwh: 60.0
+    target_soc: 0.80
+    current_soc: 0.30
+    departure_hour: 7
+    arrival_hour: 18
+    charging_efficiency: 0.92
+
+electric_vehicles:
+  - name: E-Auto 1
+    enabled: true
+    vehicle_class: kompakt
+    battery_capacity_kwh: 58.0
+    current_soc: 0.30
+    target_soc: 0.80
+    min_soc: 0.10
+    max_soc: 1.0
+    arrival_hour: 17
+    departure_hour: 7
+    daily_distance_km: 40.0
+    consumption_kwh_per_100km: 16.0
+    min_range_km: 150.0
+    onboard_charger_kw: 11.0
+    v2h_capable: false
+    v2h_min_soc: 0.30
+    linked_wallbox: Wallbox 1

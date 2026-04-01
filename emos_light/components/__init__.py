@@ -1,0 +1,1 @@
+"""Komponentenmodelle fuer EMOS Light."""
