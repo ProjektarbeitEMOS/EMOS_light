@@ -72,6 +72,8 @@ class PVSystem(Component):
         longitude: float | None = None,
         ambient_temp_c: np.ndarray | None = None,
         wind_speed_m_s: np.ndarray | None = None,
+        dni_series: np.ndarray | None = None,
+        dhi_series: np.ndarray | None = None,
     ) -> np.ndarray:
         """Schaetzt die PV-Erzeugung standortbasiert.
 
@@ -87,6 +89,8 @@ class PVSystem(Component):
             longitude: Laengengrad des Standorts.
             ambient_temp_c: Umgebungstemperatur in Grad C (optional).
             wind_speed_m_s: Windgeschwindigkeit in m/s (optional).
+            dni_series: DNI aus API [W/m²] (optional, Fallback: DISC).
+            dhi_series: DHI aus API [W/m²] (optional, Fallback: DISC).
 
         Returns:
             PV-Erzeugung in kW.
@@ -94,7 +98,7 @@ class PVSystem(Component):
         if timestamps is not None and latitude is not None and longitude is not None:
             return self._estimate_location_based(
                 ghi_series, timestamps, latitude, longitude,
-                ambient_temp_c, wind_speed_m_s,
+                ambient_temp_c, wind_speed_m_s, dni_series, dhi_series,
             )
         return self._estimate_simple(ghi_series)
 
@@ -106,6 +110,8 @@ class PVSystem(Component):
         longitude: float,
         ambient_temp_c: np.ndarray | None = None,
         wind_speed_m_s: np.ndarray | None = None,
+        dni_series: np.ndarray | None = None,
+        dhi_series: np.ndarray | None = None,
     ) -> np.ndarray:
         """Standortbasierte PV-Ertragsberechnung mit Sonnenstand und POA."""
         # Zeitzonenoffset erkennen
@@ -116,11 +122,12 @@ class PVSystem(Component):
             timestamps, latitude, longitude, tz_offset
         )
 
-        # GHI -> POA-Einstrahlung (DISC-Modell braucht Tag des Jahres)
+        # GHI -> POA-Einstrahlung (Perez-Modell mit optionalen API-DNI/DHI)
         doy = timestamps[0].timetuple().tm_yday
         poa = ghi_to_poa(
             ghi_series, sun_elevation, sun_azimuth,
             self.tilt_deg, self.azimuth_deg, self.albedo, doy,
+            dni_override=dni_series, dhi_override=dhi_series,
         )
 
         # Zelltemperatur schaetzen

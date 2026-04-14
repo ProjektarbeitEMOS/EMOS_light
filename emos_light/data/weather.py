@@ -143,6 +143,8 @@ def generate_synthetic_weather(
         "timestamp": timestamps,
         "temperature_c": np.round(temperature, 1),
         "ghi_w_m2": np.round(ghi, 1),
+        "dni_w_m2": np.zeros(num_steps),
+        "dhi_w_m2": np.zeros(num_steps),
         "cloud_cover_pct": np.round(cloud_cover, 1),
         "wind_speed_m_s": np.round(wind_speed, 1),
     })

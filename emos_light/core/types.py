@@ -57,7 +57,7 @@ class OptimizationResult:
     ww_storage_energy_kwh: np.ndarray = field(default_factory=lambda: np.array([]))
     q_ww_kw: np.ndarray = field(default_factory=lambda: np.array([]))
 
-    # SG-Ready Zustand (2=Normal, 3=Empfehlung, 4=Anlaufbefehl)
+    # SG-Ready Zustand BWP v1.1 (1=Lastabwurf, 2=Normal, 3=Verstaerkt)
     sg_ready_state: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Kosten-Details

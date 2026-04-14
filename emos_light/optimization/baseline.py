@@ -31,8 +31,15 @@ def calculate_baseline_cost(inp: TimeSeriesInput, config: dict) -> float:
     hp_cfg = config.get("heat_pump", {})
     hp_enabled = hp_cfg.get("enabled", False)
     hp_max_power = hp_cfg.get("max_electrical_power_kw", 0.0)
-    hp_cop_nominal = hp_cfg.get("cop_nominal", 4.0)
-    hp_ref_temp = hp_cfg.get("cop_reference_temp_c", 7.0)
+
+    # COP-Zeitreihen vorab berechnen (Kennfeld aroTHERM plus)
+    cop_heating = None
+    cop_dhw = None
+    if hp_enabled:
+        from emos_light.components.heat_pump import HeatPump
+        hp_baseline = HeatPump("baseline_hp", hp_cfg)
+        cop_heating = hp_baseline.calculate_cop_heating(inp.outside_temp_c)
+        cop_dhw = hp_baseline.calculate_cop_dhw(inp.outside_temp_c)
 
     wallboxes_cfg = config.get("wallboxes", [])
 
@@ -44,14 +51,14 @@ def calculate_baseline_cost(inp: TimeSeriesInput, config: dict) -> float:
         load = float(inp.household_load_kw[t])
         price = float(inp.prices_ct_kwh[t])
 
-        # WP: laeuft nach Bedarf
+        # WP: laeuft nach Bedarf (COP aus Kennfeld)
         hp_el = 0.0
-        if hp_enabled:
-            heat_demand = float(inp.heating_demand_kw[t]) + float(inp.hot_water_demand_kw[t])
-            delta_t = float(inp.outside_temp_c[t]) - hp_ref_temp
-            cop = hp_cop_nominal * (1 + 0.025 * delta_t)
-            cop = max(1.5, min(6.0, cop))
-            if heat_demand > 0 and cop > 0:
+        if hp_enabled and cop_heating is not None:
+            heating_kw = float(inp.heating_demand_kw[t])
+            hw_kw = float(inp.hot_water_demand_kw[t])
+            heat_demand = heating_kw + hw_kw
+            if heat_demand > 0:
+                cop = (heating_kw * float(cop_heating[t]) + hw_kw * float(cop_dhw[t])) / heat_demand
                 hp_el = min(heat_demand / cop, hp_max_power)
 
         # Wallboxen

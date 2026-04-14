@@ -128,6 +128,14 @@ def load_input_data(
     prices = calculate_consumer_price(spot_prices, tariff)
     temp = _pad_array(weather_df["temperature_c"].values, num_steps)
     ghi = _pad_array(weather_df["ghi_w_m2"].values, num_steps)
+    dni = _pad_array(
+        weather_df["dni_w_m2"].values if "dni_w_m2" in weather_df.columns
+        else np.zeros(num_steps), num_steps
+    )
+    dhi = _pad_array(
+        weather_df["dhi_w_m2"].values if "dhi_w_m2" in weather_df.columns
+        else np.zeros(num_steps), num_steps
+    )
     wind_speed = _pad_array(
         weather_df["wind_speed_m_s"].values if "wind_speed_m_s" in weather_df.columns
         else np.zeros(num_steps), num_steps
@@ -158,12 +166,14 @@ def load_input_data(
             pv_generation += pv_surf.estimate_generation(
                 ghi, timestamps=timestamps, latitude=lat, longitude=lon,
                 ambient_temp_c=temp, wind_speed_m_s=wind_speed,
+                dni_series=dni, dhi_series=dhi,
             )
     elif pv_config.get("enabled"):
         pv_single = PVSystem("pv", pv_config)
         pv_generation = pv_single.estimate_generation(
             ghi, timestamps=timestamps, latitude=lat, longitude=lon,
             ambient_temp_c=temp, wind_speed_m_s=wind_speed,
+            dni_series=dni, dhi_series=dhi,
         )
     else:
         pv_generation = np.zeros(num_steps)
@@ -172,11 +182,14 @@ def load_input_data(
     if csv_load_profile is not None:
         hp_annual_kwh = 0.0
         if csv_includes_hp and config.get("heat_pump", {}).get("enabled"):
-            hp_cop = config["heat_pump"].get("cop_nominal", 4.0)
+            # Mittlerer COP bei 7 C Aussentemperatur, Heizkreis-VL
+            from emos_light.components.heat_pump import HeatPump
+            _hp = HeatPump("est", config["heat_pump"])
+            hp_cop_avg = float(_hp.calculate_cop_heating(np.array([7.0]))[0])
             hp_annual_kwh = (
                 config["heat_demand"].get("annual_heating_kwh", 0)
                 + config["heat_demand"].get("annual_hot_water_kwh", 0)
-            ) / hp_cop
+            ) / hp_cop_avg
 
         household_load = load_csv_profile(
             csv_data=csv_load_profile,

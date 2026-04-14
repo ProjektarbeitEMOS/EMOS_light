@@ -75,6 +75,8 @@ class ThermalStorage(Component):
         self.volume_liters = config.get("volume_liters", 500.0)
         self.min_temp_c = config.get("min_temperature_c", 30.0)
         self.max_temp_c = config.get("max_temperature_c", 65.0)
+        self.comfort_temp_c = config.get("comfort_temperature_c", 0.0)
+        self.comfort_periods = config.get("comfort_periods", [])
         self.initial_temp_c = config.get("initial_temperature_c", 45.0)
         self.ambient_temp_c = config.get("ambient_temperature_c", 20.0)
         self.legionella_temp_c = config.get("legionella_temp_c", 0.0)
@@ -213,6 +215,41 @@ class ThermalStorage(Component):
     def standby_loss_w_at_mean(self) -> float:
         """Verlustleistung bei mittlerem Fuellstand (SOC=0.5) in W."""
         return (self.fixed_loss_kw + self.relative_loss_per_h * self.capacity_kwh * 0.5) * 1000.0
+
+    def get_min_energy_schedule(self, timestamps: list) -> list[float]:
+        """Gibt zeit-abhaengige Mindestenergie zurueck.
+
+        Waehrend Komfort-Perioden gilt comfort_temperature_c,
+        ausserhalb gilt min_temperature_c.
+
+        Args:
+            timestamps: Liste von datetime-Objekten pro Zeitschritt.
+
+        Returns:
+            Liste von Mindestenergien [kWh] pro Zeitschritt.
+        """
+        min_energy = self.temp_to_energy(self.min_temp_c)
+
+        if not self.comfort_periods or self.comfort_temp_c <= self.min_temp_c:
+            return [min_energy] * len(timestamps)
+
+        comfort_energy = self.temp_to_energy(self.comfort_temp_c)
+        schedule = []
+
+        for ts in timestamps:
+            hour = ts.hour + ts.minute / 60.0 if hasattr(ts, 'hour') else 0
+            in_comfort = False
+            for period in self.comfort_periods:
+                start = period.get("start_hour", 0)
+                end = period.get("end_hour", 24)
+                if start <= end:
+                    in_comfort = in_comfort or (start <= hour < end)
+                else:
+                    # Ueber Mitternacht (z.B. 22-6)
+                    in_comfort = in_comfort or (hour >= start or hour < end)
+            schedule.append(comfort_energy if in_comfort else min_energy)
+
+        return schedule
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Energie- und Waermestrom-Variablen auf kWh-Basis.

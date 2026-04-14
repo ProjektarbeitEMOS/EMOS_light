@@ -60,21 +60,31 @@ DEFAULT_CONFIG = {
     },
     "heat_pump": {
         "enabled": True,
-        "max_electrical_power_kw": 5.0,
+        "model": "Vaillant aroTHERM plus VWL 105/8.1 A",
+        "max_electrical_power_kw": 8.0,
         "min_electrical_power_kw": 1.0,
-        "cop_nominal": 4.0,
-        "cop_reference_temp_c": 7.0,
+        "flow_temp_heating_c": 35.0,
+        "flow_temp_dhw_c": 55.0,
+        "operating_min_temp_c": -25.0,
+        "operating_max_temp_c": 43.0,
         "min_run_time_minutes": 15,
         "min_pause_time_minutes": 15,
         "sg_ready": True,
         "sg_ready_temp_raise_state3_c": 5.0,
-        "sg_ready_temp_raise_state4_c": 10.0,
+        "sg_ready_state1_power_limit_kw": 0.0,
+        "sg_ready_min_hold_minutes": 10,
+        "sg_ready_min_cooldown_minutes": 10,
     },
     "hot_water_storage": {
         "enabled": True,
         "volume_liters": 300,
-        "min_temperature_c": 45.0,
+        "min_temperature_c": 40.0,
         "max_temperature_c": 60.0,
+        "comfort_temperature_c": 55.0,
+        "comfort_periods": [
+            {"start_hour": 5, "end_hour": 9},
+            {"start_hour": 17, "end_hour": 22},
+        ],
         "initial_temperature_c": 55.0,
         "ambient_temperature_c": 20.0,
         "height_diameter_ratio": 2.5,
@@ -215,8 +225,8 @@ def validate_config(config: dict) -> dict:
 
     hp = config.get("heat_pump", {})
     if hp.get("enabled"):
-        if hp.get("cop_nominal", 0) <= 0:
-            errors.append("heat_pump.cop_nominal muss positiv sein")
+        if hp.get("max_electrical_power_kw", 0) <= 0:
+            errors.append("heat_pump.max_electrical_power_kw muss positiv sein")
 
     fws = config.get("fresh_water_station", {})
     hws = config.get("hot_water_storage", {})

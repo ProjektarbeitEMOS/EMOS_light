@@ -6,8 +6,8 @@ Einstrahlung fuer geneigte PV-Module.
 
 Algorithmen basieren auf:
 - Spencer (1971): Deklination und Zeitgleichung
-- Maxwell (1987): DISC-Modell fuer GHI -> DNI Dekomposition
-- Liu & Jordan (1963): Isotropes Transpositionsmodell
+- Maxwell (1987): DISC-Modell fuer GHI -> DNI Dekomposition (Fallback)
+- Perez (1990): Anisotropes Transpositionsmodell fuer Diffusstrahlung
 """
 
 import datetime
@@ -232,6 +232,128 @@ def _disc_decomposition(
     return dni, dhi
 
 
+# ============================================================
+# Perez (1990) — Anisotropes Transpositionsmodell
+# Koeffizienten: allsitescomposite1990 (Perez et al., 1990)
+# ============================================================
+
+_PEREZ_EPSILON_BINS = np.array([1.000, 1.065, 1.230, 1.500, 1.950, 2.800, 4.500, 6.200])
+
+# F1-Koeffizienten (Circumsolar-Helligkeit): [f11, f12, f13] pro Bin
+_PEREZ_F1 = np.array([
+    [-0.0083,  0.5877, -0.0621],   # Bin 1: ε < 1.065 (stark bewoelkt)
+    [ 0.1299,  0.6826, -0.1514],   # Bin 2
+    [ 0.3297,  0.4869, -0.2211],   # Bin 3
+    [ 0.5682,  0.1875, -0.2951],   # Bin 4
+    [ 0.8730, -0.3920, -0.3616],   # Bin 5
+    [ 1.1326, -1.2367, -0.4118],   # Bin 6
+    [ 1.0602, -1.5999, -0.3589],   # Bin 7
+    [ 0.6777, -0.3273, -0.2504],   # Bin 8: ε >= 6.200 (klar)
+])
+
+# F2-Koeffizienten (Horizont-Helligkeit): [f21, f22, f23] pro Bin
+_PEREZ_F2 = np.array([
+    [-0.0596,  0.0721, -0.0220],
+    [-0.0189,  0.0660, -0.0289],
+    [ 0.0554, -0.0640, -0.0261],
+    [ 0.1089, -0.1519, -0.0140],
+    [ 0.2256, -0.4620,  0.0012],
+    [ 0.2878, -0.8230,  0.0559],
+    [ 0.2642, -1.1272,  0.1311],
+    [ 0.1561, -1.3765,  0.2506],
+])
+
+_PEREZ_KAPPA_DEG = 5.535e-6  # Grad^-3
+
+
+def _perez_bin(epsilon: float) -> int:
+    """Bestimmt den Perez-Epsilon-Bin-Index (0-7) fuer Sky Clearness."""
+    for i in range(1, len(_PEREZ_EPSILON_BINS)):
+        if epsilon < _PEREZ_EPSILON_BINS[i]:
+            return i - 1
+    return 7
+
+
+def _perez_diffuse(
+    dhi: float,
+    dni: float,
+    cos_zenith: float,
+    zenith_rad: float,
+    cos_aoi: float,
+    tilt_rad: float,
+    am: float,
+    doy: int,
+) -> float:
+    """Perez (1990) anisotrope Diffusstrahlung auf geneigter Flaeche.
+
+    Beruecksichtigt drei Komponenten:
+      1. Isotroper Himmelshintergrund
+      2. Circumsolar-Aufhellung (um die Sonnenscheibe)
+      3. Horizont-Aufhellung
+
+    POA_diff = DHI * [(1-F1)*(1+cos(β))/2 + F1*(a/b) + F2*sin(β)]
+
+    Args:
+        dhi: Diffuse Horizontal Irradiance [W/m²].
+        dni: Direct Normal Irradiance [W/m²].
+        cos_zenith: cos(Zenitwinkel).
+        zenith_rad: Zenitwinkel [rad].
+        cos_aoi: cos(Einfallswinkel) auf Modulflaeche (>= 0).
+        tilt_rad: Modulneigung [rad].
+        am: Luftmasse (Kasten).
+        doy: Tag des Jahres.
+
+    Returns:
+        Diffuse Einstrahlung auf geneigter Flaeche [W/m²].
+    """
+    if dhi <= 0:
+        return 0.0
+
+    # Extraterrestrische Normalstrahlung (fuer Sky Brightness)
+    gamma = 2.0 * math.pi * (doy - 1) / 365.0
+    eccentricity = (
+        1.00011
+        + 0.034221 * math.cos(gamma)
+        + 0.001280 * math.sin(gamma)
+        + 0.000719 * math.cos(2 * gamma)
+        + 0.000077 * math.sin(2 * gamma)
+    )
+    i0n = _SOLAR_CONSTANT_W_M2 * eccentricity
+
+    # Sky Brightness (Δ)
+    delta = max(0.0, dhi * am / i0n)
+
+    # Sky Clearness (ε)
+    zenith_deg = math.degrees(zenith_rad)
+    kappa_term = _PEREZ_KAPPA_DEG * zenith_deg ** 3
+    epsilon = ((dhi + dni) / dhi + kappa_term) / (1.0 + kappa_term)
+
+    # Bin-Lookup und Koeffizienten
+    b_idx = _perez_bin(epsilon)
+
+    f1 = (_PEREZ_F1[b_idx, 0]
+          + _PEREZ_F1[b_idx, 1] * delta
+          + _PEREZ_F1[b_idx, 2] * zenith_rad)
+    f1 = max(f1, 0.0)  # F1 physikalisch >= 0
+
+    f2 = (_PEREZ_F2[b_idx, 0]
+          + _PEREZ_F2[b_idx, 1] * delta
+          + _PEREZ_F2[b_idx, 2] * zenith_rad)
+    # F2 darf negativ sein (physikalisch korrekt)
+
+    # a/b: Circumsolar-Geometrie
+    a = max(0.0, cos_aoi)
+    b = max(math.cos(math.radians(85.0)), cos_zenith)
+
+    # Drei Diffus-Komponenten
+    term_iso = (1.0 - f1) * (1.0 + math.cos(tilt_rad)) / 2.0
+    term_circum = f1 * (a / b)
+    term_horizon = f2 * math.sin(tilt_rad)
+
+    poa_diffuse = dhi * (term_iso + term_circum + term_horizon)
+    return max(poa_diffuse, 0.0)
+
+
 def ghi_to_poa(
     ghi: np.ndarray,
     solar_elevation_deg: np.ndarray,
@@ -240,13 +362,16 @@ def ghi_to_poa(
     panel_azimuth_deg: float,
     albedo: float = 0.2,
     doy: int = 1,
+    dni_override: np.ndarray | None = None,
+    dhi_override: np.ndarray | None = None,
 ) -> np.ndarray:
     """Konvertiert GHI zu POA (Plane-of-Array) Einstrahlung.
 
-    Verwendet das isotrope Transpositionsmodell (Liu & Jordan, 1963):
-        POA = DNI * cos(AOI) + DHI * (1+cos(tilt))/2 + GHI * albedo * (1-cos(tilt))/2
+    Verwendet das Perez (1990) anisotrope Transpositionsmodell:
+        POA = DNI * cos(AOI) + POA_diffuse_perez + GHI * albedo * (1-cos(tilt))/2
 
-    DNI und DHI werden aus GHI ueber das DISC-Modell (Maxwell 1987) geschaetzt.
+    DNI und DHI werden direkt aus API-Daten uebernommen (wenn vorhanden)
+    oder ueber das DISC-Modell (Maxwell 1987) aus GHI geschaetzt.
 
     Args:
         ghi: Global Horizontal Irradiance in W/m^2.
@@ -256,6 +381,8 @@ def ghi_to_poa(
         panel_azimuth_deg: Modulausrichtung in Grad (0=N, 90=O, 180=S, 270=W).
         albedo: Bodenreflexion (Standard 0.2).
         doy: Tag des Jahres (1-366).
+        dni_override: DNI aus API-Daten [W/m²] (optional, Fallback: DISC).
+        dhi_override: DHI aus API-Daten [W/m²] (optional, Fallback: DISC).
 
     Returns:
         POA-Einstrahlung in W/m^2.
@@ -266,8 +393,7 @@ def ghi_to_poa(
     tilt_rad = math.radians(panel_tilt_deg)
     panel_az_rad = math.radians(panel_azimuth_deg)
 
-    # Vorfaktoren fuer Diffus- und Reflexionsanteil (konstant ueber alle Zeitschritte)
-    diffuse_factor = (1.0 + math.cos(tilt_rad)) / 2.0
+    # Bodenreflexion (konstant ueber alle Zeitschritte)
     ground_factor = albedo * (1.0 - math.cos(tilt_rad)) / 2.0
 
     for i in range(n):
@@ -279,10 +405,18 @@ def ghi_to_poa(
         sun_elev_rad = math.radians(solar_elevation_deg[i])
         sun_az_rad = math.radians(solar_azimuth_deg[i])
         cos_zenith = math.sin(sun_elev_rad)  # cos(90-elev) = sin(elev)
+        zenith_rad = math.pi / 2.0 - sun_elev_rad
+        zenith_deg = math.degrees(zenith_rad)
 
-        # GHI -> DNI + DHI (DISC-Dekomposition mit Luftmasse-Korrektur)
         ghi_val = float(ghi[i])
-        dni, dhi = _disc_decomposition(ghi_val, cos_zenith, doy)
+
+        # DNI/DHI: API-Werte verwenden oder DISC-Fallback
+        if (dni_override is not None and dhi_override is not None
+                and (float(dni_override[i]) + float(dhi_override[i])) > 0):
+            dni = float(dni_override[i])
+            dhi = float(dhi_override[i])
+        else:
+            dni, dhi = _disc_decomposition(ghi_val, cos_zenith, doy)
 
         # Einfallswinkel (Angle of Incidence, AOI)
         cos_aoi = (
@@ -292,9 +426,14 @@ def ghi_to_poa(
         )
         cos_aoi = max(0.0, cos_aoi)
 
-        # Isotropes Transpositionsmodell (Liu & Jordan, 1963)
+        # Luftmasse fuer Perez-Modell
+        am = _kasten_airmass(zenith_deg)
+
+        # Perez (1990) anisotropes Transpositionsmodell
         beam = dni * cos_aoi
-        diffuse = dhi * diffuse_factor
+        diffuse = _perez_diffuse(
+            dhi, dni, cos_zenith, zenith_rad, cos_aoi, tilt_rad, am, doy,
+        )
         ground_reflected = ghi_val * ground_factor
 
         poa[i] = beam + diffuse + ground_reflected

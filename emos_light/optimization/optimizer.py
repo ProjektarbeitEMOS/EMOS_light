@@ -10,7 +10,10 @@ Entscheidungsvariablen (thermisch):
     q_ww[t]: Thermische Leistung an WW-Speicher
     floor_energy[t]: Thermische Energie im Estrich
     ww_energy[t]: Thermische Energie im WW-Speicher
-    sg_state_3[t], sg_state_4[t]: SG-Ready Zustaende
+    hp_power_floor[t]: Elektr. WP-Leistung fuer FBH (COP @ W35)
+    hp_power_ww[t]: Elektr. WP-Leistung fuer WW (COP @ W55)
+    sg_state_1[t]: SG-Ready Zustand 1 (Lastabwurf)
+    sg_state_3[t]: SG-Ready Zustand 3 (Verstaerkt)
 """
 
 import time
@@ -94,12 +97,12 @@ class EMOSLightOptimizer:
         # ============================================================
         # Waermepumpe
         # ============================================================
-        cop_values = None
+        hp_active = False
         if self.heat_pump and self.heat_pump.enabled:
             hp_vars = self.heat_pump.get_optimization_variables(num_steps, model)
             variables.update(hp_vars)
             self.heat_pump.add_constraints(model, variables, inp.step_minutes)
-            cop_values = self.heat_pump.calculate_cop(inp.outside_temp_c)
+            hp_active = True
 
         if "hp_power" not in variables:
             variables["hp_power"] = [
@@ -108,20 +111,32 @@ class EMOSLightOptimizer:
 
         # ============================================================
         # Thermisches Modell: Estrich + WW-Speicher
+        # Getrennte COP-Berechnung fuer FBH (W35) und WW (W55)
+        # basierend auf Kennfeld aroTHERM plus
         # ============================================================
         has_ufh = self.underfloor_heating and self.underfloor_heating.enabled
         has_ww = self.hot_water_storage and self.hot_water_storage.enabled
         has_fws = self.fresh_water_station and self.fresh_water_station.enabled
-        has_hp = cop_values is not None
+        has_hp = hp_active
 
-        # Ohne WP kein thermisches System
         if not has_hp:
             has_ufh = False
             has_ww = False
 
-        # WP-Waermesplit: Verteilung auf Estrich und WW-Speicher
+        # COP-Zeitreihen fuer beide thermische Pfade
+        cop_heating = None
+        cop_dhw = None
+        if has_hp:
+            cop_heating = self.heat_pump.calculate_cop_heating(inp.outside_temp_c)
+            cop_dhw = self.heat_pump.calculate_cop_dhw(inp.outside_temp_c)
+
+        # WP-Waermesplit mit getrennten COPs
         if has_hp and (has_ufh or has_ww):
-            max_thermal = self.heat_pump.max_power_kw * 6.0
+            max_cop = float(max(
+                np.max(cop_heating) if cop_heating is not None else 1,
+                np.max(cop_dhw) if cop_dhw is not None else 1,
+            ))
+            max_thermal = self.heat_pump.max_power_kw * max_cop
 
             if has_ufh:
                 ufh_vars = self.underfloor_heating.get_optimization_variables(num_steps, model)
@@ -136,23 +151,48 @@ class EMOSLightOptimizer:
                 ]
                 variables["q_ww"] = q_ww
 
-            # Waerme-Split: q_floor + q_ww == hp_power * COP
-            for t in range(num_steps):
-                thermal_output = variables["hp_power"][t] * float(cop_values[t])
+            # Beide Pfade aktiv → elektr. Leistung aufteilen
+            if has_ufh and has_ww:
+                hp_power_floor = [
+                    pulp.LpVariable(f"hp_power_floor_{t}", 0, self.heat_pump.max_power_kw)
+                    for t in range(num_steps)
+                ]
+                hp_power_ww = [
+                    pulp.LpVariable(f"hp_power_ww_{t}", 0, self.heat_pump.max_power_kw)
+                    for t in range(num_steps)
+                ]
+                variables["hp_power_floor"] = hp_power_floor
+                variables["hp_power_ww"] = hp_power_ww
 
-                if has_ufh and has_ww:
+                for t in range(num_steps):
+                    # Elektr. Leistungsaufteilung
                     model += (
-                        variables["q_floor_in"][t] + q_ww[t] == thermal_output,
-                        f"heat_split_{t}",
+                        variables["hp_power"][t] == hp_power_floor[t] + hp_power_ww[t],
+                        f"hp_power_split_{t}",
                     )
-                elif has_ufh:
+                    # Thermische Leistung je Pfad mit eigenem COP
                     model += (
-                        variables["q_floor_in"][t] == thermal_output,
+                        variables["q_floor_in"][t] == hp_power_floor[t] * float(cop_heating[t]),
                         f"heat_to_floor_{t}",
                     )
-                elif has_ww:
                     model += (
-                        q_ww[t] == thermal_output,
+                        q_ww[t] == hp_power_ww[t] * float(cop_dhw[t]),
+                        f"heat_to_ww_{t}",
+                    )
+
+            elif has_ufh:
+                for t in range(num_steps):
+                    model += (
+                        variables["q_floor_in"][t]
+                        == variables["hp_power"][t] * float(cop_heating[t]),
+                        f"heat_to_floor_{t}",
+                    )
+
+            elif has_ww:
+                for t in range(num_steps):
+                    model += (
+                        q_ww[t]
+                        == variables["hp_power"][t] * float(cop_dhw[t]),
                         f"heat_to_ww_{t}",
                     )
 
@@ -196,37 +236,29 @@ class EMOSLightOptimizer:
 
             self.hot_water_storage.add_constraints(model, variables, inp.step_minutes)
 
-            # Mindestenergie fuer Brauchwasser
-            if has_fws:
-                min_ww_energy = self.fresh_water_station.get_min_storage_energy(
-                    self.hot_water_storage
+            # Zeit-abhaengige Mindesttemperatur (Komfort-Perioden)
+            min_energy_schedule = self.hot_water_storage.get_min_energy_schedule(
+                inp.timestamps
+            )
+            for t in range(num_steps):
+                model += (
+                    variables[f"{prefix}_energy_kwh"][t] >= min_energy_schedule[t],
+                    f"ww_min_energy_schedule_{t}",
                 )
-                for t in range(num_steps):
-                    model += (
-                        variables[f"{prefix}_energy_kwh"][t] >= min_ww_energy,
-                        f"ww_min_energy_dhw_{t}",
-                    )
 
-            # SG-Ready: Dynamische WW-Speicher Obergrenze
+            # SG-Ready: Dynamische WW-Speicher Obergrenze (BWP v1.1)
             if (
                 has_hp
                 and self.heat_pump.sg_ready
                 and "sg_state_3" in variables
             ):
                 sg3 = variables["sg_state_3"]
-                sg4 = variables["sg_state_4"]
 
-                # Zusaetzliche Kapazitaet durch Temperaturerhoehung
+                # Zusaetzliche Kapazitaet durch Temperaturerhoehung in State 3
                 delta_cap_3 = (
                     self.hot_water_storage.volume_liters
                     * ThermalStorage.SPECIFIC_HEAT_WH_PER_L_K
                     * self.heat_pump.sg_temp_raise_3
-                    / 1000.0
-                )
-                delta_cap_4 = (
-                    self.hot_water_storage.volume_liters
-                    * ThermalStorage.SPECIFIC_HEAT_WH_PER_L_K
-                    * self.heat_pump.sg_temp_raise_4
                     / 1000.0
                 )
 
@@ -234,8 +266,7 @@ class EMOSLightOptimizer:
                     model += (
                         variables[f"{prefix}_energy_kwh"][t]
                         <= self.hot_water_storage.capacity_kwh
-                        + delta_cap_3 * sg3[t]
-                        + delta_cap_4 * sg4[t],
+                        + delta_cap_3 * sg3[t],
                         f"ww_sg_ready_cap_{t}",
                     )
 
@@ -406,12 +437,12 @@ class EMOSLightOptimizer:
                     [v.varValue or 0.0 for v in variables["q_ww"]]
                 )
 
-        # SG-Ready Zustand
+        # SG-Ready Zustand (BWP v1.1: 1=Lastabwurf, 2=Normal, 3=Verstaerkt)
         if has_hp and self.heat_pump.sg_ready and "sg_state_3" in variables:
+            sg1_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_1"]])
             sg3_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_3"]])
-            sg4_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_4"]])
             result.sg_ready_state = np.where(
-                sg4_vals > 0.5, 4, np.where(sg3_vals > 0.5, 3, 2)
+                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
             )
         else:
             result.sg_ready_state = np.full(num_steps, 2)

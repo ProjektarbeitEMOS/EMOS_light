@@ -62,7 +62,8 @@ if "result" not in st.session_state:
 with st.sidebar:
     st.header("Konfiguration")
 
-    config_file = st.file_uploader("YAML-Konfiguration laden", type=["yaml", "yml"])
+    # Import
+    config_file = st.file_uploader("YAML-Konfiguration importieren", type=["yaml", "yml"])
     if config_file is not None:
         try:
             user_yaml = yaml.safe_load(config_file)
@@ -76,6 +77,18 @@ with st.sidebar:
             st.success("Konfiguration geladen!")
         except Exception as e:
             st.error(f"Fehler: {e}")
+
+    # Export
+    config_yaml = yaml.dump(
+        st.session_state.config,
+        default_flow_style=False, allow_unicode=True, sort_keys=False,
+    )
+    st.download_button(
+        "Konfiguration exportieren (.yaml)",
+        data=config_yaml,
+        file_name="emos_light_config.yaml",
+        mime="application/x-yaml",
+    )
 
     config = st.session_state.config
     general = config["general"]
@@ -284,24 +297,45 @@ with tab_config:
 
     # Waermepumpe & SG-Ready
     with st.expander("Waermepumpe & SG-Ready", expanded=False):
+        st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/8.1 A')}")
         config["heat_pump"]["enabled"] = st.checkbox("WP aktiviert", value=config["heat_pump"].get("enabled", True), key="hp_en")
         if config["heat_pump"]["enabled"]:
             hp_col1, hp_col2 = st.columns(2)
             config["heat_pump"]["max_electrical_power_kw"] = hp_col1.number_input("Max. el. Leistung (kW)", 1.0, 30.0, float(config["heat_pump"]["max_electrical_power_kw"]), 0.5)
-            config["heat_pump"]["cop_nominal"] = hp_col2.number_input("COP (nominal)", 2.0, 6.0, float(config["heat_pump"]["cop_nominal"]), 0.1)
-            config["heat_pump"]["cop_reference_temp_c"] = hp_col1.number_input("COP-Referenztemp. (C)", -10.0, 20.0, float(config["heat_pump"]["cop_reference_temp_c"]), 1.0)
+            config["heat_pump"]["min_electrical_power_kw"] = hp_col2.number_input("Min. el. Leistung (kW)", 0.5, 5.0, float(config["heat_pump"].get("min_electrical_power_kw", 1.0)), 0.5)
+            hp_col3, hp_col4 = st.columns(2)
+            config["heat_pump"]["flow_temp_heating_c"] = hp_col3.number_input(
+                "VL-Temp Heizkreis (C)", 25.0, 55.0,
+                float(config["heat_pump"].get("flow_temp_heating_c", 35.0)), 1.0,
+                help="Vorlauftemperatur FBH — bestimmt COP Heizung (niedrig = besser)",
+            )
+            config["heat_pump"]["flow_temp_dhw_c"] = hp_col4.number_input(
+                "VL-Temp Warmwasser (C)", 45.0, 70.0,
+                float(config["heat_pump"].get("flow_temp_dhw_c", 55.0)), 1.0,
+                help="Vorlauftemperatur WW-Bereitung — bestimmt COP WW",
+            )
 
-            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert", value=config["heat_pump"].get("sg_ready", True), key="sg_en")
+            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key="sg_en")
             if config["heat_pump"]["sg_ready"]:
                 sg_col1, sg_col2 = st.columns(2)
-                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col1.number_input(
-                    "State 3: Temp-Erhoehung (K)", 0.0, 15.0,
+                config["heat_pump"]["sg_ready_state1_power_limit_kw"] = sg_col1.number_input(
+                    "Zustand 1 (Lastabwurf): Max. Leistung (kW)", 0.0, 10.0,
+                    float(config["heat_pump"].get("sg_ready_state1_power_limit_kw", 0.0)), 0.5,
+                    help="0 = komplette EVU-Sperre, >0 = Leistungsbegrenzung (z.B. Par14a)",
+                )
+                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col2.number_input(
+                    "Zustand 3 (Verstaerkt): Temp-Erhoehung WW (K)", 0.0, 15.0,
                     float(config["heat_pump"].get("sg_ready_temp_raise_state3_c", 5.0)), 1.0,
                 )
-                config["heat_pump"]["sg_ready_temp_raise_state4_c"] = sg_col2.number_input(
-                    "State 4: Temp-Erhoehung (K)", 0.0, 20.0,
-                    float(config["heat_pump"].get("sg_ready_temp_raise_state4_c", 10.0)), 1.0,
-                )
+                sg_col3, sg_col4 = st.columns(2)
+                config["heat_pump"]["sg_ready_min_hold_minutes"] = int(sg_col3.number_input(
+                    "Min. Haltezeit SG-Zustand (min)", 0, 60,
+                    int(config["heat_pump"].get("sg_ready_min_hold_minutes", 10)), 5,
+                ))
+                config["heat_pump"]["sg_ready_min_cooldown_minutes"] = int(sg_col4.number_input(
+                    "Min. Cooldown zw. Wechsel (min)", 0, 60,
+                    int(config["heat_pump"].get("sg_ready_min_cooldown_minutes", 10)), 5,
+                ))
 
     # WW-Speicher & Frischwasserstation
     with st.expander("WW-Speicher & Frischwasserstation", expanded=False):
@@ -319,6 +353,32 @@ with tab_config:
                 )
                 config["hot_water_storage"]["min_temperature_c"] = float(ww_temp[0])
                 config["hot_water_storage"]["max_temperature_c"] = float(ww_temp[1])
+
+                # Komforttemperatur
+                config["hot_water_storage"]["comfort_temperature_c"] = st.number_input(
+                    "Komforttemperatur (C)", float(ww_temp[0]), float(ww_temp[1]),
+                    float(config["hot_water_storage"].get("comfort_temperature_c", 55.0)), 1.0,
+                    help="Mindesttemperatur waehrend Komfort-Zeitraeumen",
+                )
+                st.caption(f"Mindesttemp.: **{ww_temp[0]} C** (immer) | Komforttemp.: **{config['hot_water_storage']['comfort_temperature_c']:.0f} C** (in Komfort-Zeitraeumen)")
+
+                # Komfort-Zeitraeume
+                st.markdown("**Komfort-Zeitraeume** (Speicher wird auf Komforttemp. gehalten)")
+                comfort_periods = config["hot_water_storage"].get("comfort_periods", [
+                    {"start_hour": 5, "end_hour": 9},
+                    {"start_hour": 17, "end_hour": 22},
+                ])
+                new_periods = []
+                for i, period in enumerate(comfort_periods):
+                    cp_col1, cp_col2, cp_col3 = st.columns([2, 2, 1])
+                    start_h = cp_col1.number_input(f"Von (Uhr)", 0, 23, int(period.get("start_hour", 6)), key=f"cp_start_{i}")
+                    end_h = cp_col2.number_input(f"Bis (Uhr)", 0, 24, int(period.get("end_hour", 22)), key=f"cp_end_{i}")
+                    remove = cp_col3.checkbox("X", key=f"cp_rm_{i}", help="Zeitraum entfernen")
+                    if not remove:
+                        new_periods.append({"start_hour": start_h, "end_hour": end_h})
+                if st.button("+ Zeitraum hinzufuegen", key="add_cp"):
+                    new_periods.append({"start_hour": 12, "end_hour": 14})
+                config["hot_water_storage"]["comfort_periods"] = new_periods
 
                 from emos_light.components.thermal_storage import ThermalStorage as _TS
                 _ww = _TS("ww_preview", config["hot_water_storage"])
@@ -691,9 +751,29 @@ with tab_optimize:
         if has_ww:
             ww_cfg = config.get("hot_water_storage", {})
             fig_th.add_trace(go.Scatter(x=ts, y=result.ww_storage_temp_c, name="WW-Speicher", fill="tozeroy", line=dict(color="steelblue")), row=row_idx, col=1)
-            fig_th.add_hline(y=ww_cfg.get("min_temperature_c", 45), line_dash="dash", line_color="red", row=row_idx, col=1)
-            fws_cfg = config.get("fresh_water_station", {})
-            fig_th.add_hline(y=fws_cfg.get("min_storage_temp_for_dhw_c", 55), line_dash="dot", line_color="orange", row=row_idx, col=1)
+            fig_th.add_hline(y=ww_cfg.get("min_temperature_c", 40), line_dash="dash", line_color="red", annotation_text="Minimum", row=row_idx, col=1)
+
+            # Komfortband als Shading anzeigen
+            comfort_temp = ww_cfg.get("comfort_temperature_c", 0)
+            comfort_periods = ww_cfg.get("comfort_periods", [])
+            if comfort_temp > 0 and comfort_periods and len(ts) > 0:
+                import datetime
+                comfort_min_temps = []
+                for t_stamp in ts:
+                    hour = t_stamp.hour + t_stamp.minute / 60.0 if hasattr(t_stamp, 'hour') else 0
+                    in_comfort = False
+                    for cp in comfort_periods:
+                        s, e = cp.get("start_hour", 0), cp.get("end_hour", 24)
+                        if s <= e:
+                            in_comfort = in_comfort or (s <= hour < e)
+                        else:
+                            in_comfort = in_comfort or (hour >= s or hour < e)
+                    comfort_min_temps.append(comfort_temp if in_comfort else ww_cfg.get("min_temperature_c", 40))
+                fig_th.add_trace(go.Scatter(
+                    x=ts, y=comfort_min_temps, name="Min-Temp (Komfort)",
+                    mode="lines", line=dict(color="orange", width=1, dash="dot"),
+                    fill=None,
+                ), row=row_idx, col=1)
             row_idx += 1
 
         if len(result.q_floor_kw) > 0:
@@ -704,10 +784,9 @@ with tab_optimize:
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))
         st.plotly_chart(fig_th, use_container_width=True)
 
-        # SG-Ready Zustand
+        # SG-Ready Zustand (BWP v1.1)
         if len(result.sg_ready_state) > 0 and np.any(result.sg_ready_state != 2):
-            st.markdown("### SG-Ready Zustand")
-            sg_colors = {2: "green", 3: "yellow", 4: "red"}
+            st.markdown("### SG-Ready Zustand (BWP v1.1)")
             fig_sg = go.Figure()
             fig_sg.add_trace(go.Scatter(
                 x=ts, y=result.sg_ready_state, name="SG-Ready",
@@ -715,7 +794,7 @@ with tab_optimize:
                 fill="tozeroy",
             ))
             fig_sg.update_layout(
-                yaxis=dict(tickvals=[2, 3, 4], ticktext=["Normal", "Empfehlung", "Anlauf"], range=[1.5, 4.5]),
+                yaxis=dict(tickvals=[1, 2, 3], ticktext=["Lastabwurf", "Normal", "Verstaerkt"], range=[0.5, 3.5]),
                 height=200, margin=dict(t=30),
             )
             st.plotly_chart(fig_sg, use_container_width=True)
