@@ -57,6 +57,11 @@ DEFAULT_CONFIG = {
         "min_soc": 0.10,
         "max_soc": 0.90,
         "initial_soc": 0.50,
+        # Alterungskosten (PDF Speichergruppe) — LFP-Defaults
+        "aging_cost_enabled": True,
+        "replacement_cost_eur_per_kwh": 500.0,
+        "residual_value_pct": 0.0,
+        "equivalent_full_cycles": 6000,
     },
     "heat_pump": {
         "enabled": True,
@@ -124,6 +129,10 @@ DEFAULT_CONFIG = {
         "night_start_hour": 22,
         "night_end_hour": 6,
         "building_type": "kfw55",
+        # Gebaeudespeicher (Wand+Luft) — DIN EN ISO 13786 mittelschwere Bauweise
+        "wall_capacity_wh_per_m2_k": 50.0,
+        "volume_factor": 3.1,
+        "heat_loss_coefficient_w_per_k": None,
     },
     "heat_demand": {
         "annual_heating_kwh": 5250,
@@ -222,6 +231,12 @@ def validate_config(config: dict) -> dict:
             errors.append("battery.min_soc muss kleiner als max_soc sein")
         if batt.get("capacity_kwh", 0) <= 0:
             errors.append("battery.capacity_kwh muss positiv sein")
+        if batt.get("equivalent_full_cycles", 1) <= 0:
+            errors.append("battery.equivalent_full_cycles muss positiv sein")
+        if not 0.0 <= batt.get("residual_value_pct", 0.0) < 1.0:
+            errors.append("battery.residual_value_pct muss in [0, 1) liegen")
+        if batt.get("replacement_cost_eur_per_kwh", 1.0) < 0:
+            errors.append("battery.replacement_cost_eur_per_kwh darf nicht negativ sein")
 
     hp = config.get("heat_pump", {})
     if hp.get("enabled"):

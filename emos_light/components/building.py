@@ -23,6 +23,10 @@ class Building(Component):
 
     HW_PER_PERSON_KWH_DAY = 2.0
 
+    # Physikalische Konstanten Luft (aus Projektgruppe Gebaeude)
+    _AIR_DENSITY_KG_M3 = 1.2
+    _AIR_SPECIFIC_HEAT_J_KG_K = 1000.0
+
     def __init__(self, name: str, config: dict):
         super().__init__(name, config)
         self.heated_area_m2 = config.get("heated_area_m2", 150.0)
@@ -35,6 +39,14 @@ class Building(Component):
         self.night_start = config.get("night_start_hour", 22)
         self.night_end = config.get("night_end_hour", 6)
         self.building_type = config.get("building_type", "kfw55")
+
+        # Gebaeude-Thermospeicher (Wand + Luft, zusaetzlich zum Estrich)
+        # Default aus DIN EN ISO 13786 (mittelschwere Bauweise): 50 Wh/(m²·K)
+        self.wall_capacity_wh_per_m2_k = config.get("wall_capacity_wh_per_m2_k", 50.0)
+        # Beheiztes Luftvolumen = Wohnflaeche * Faktor (3.1 aus EFH-Referenz)
+        self.volume_factor = config.get("volume_factor", 3.1)
+        # UA-Wert (W/K): optional explizit, sonst automatisch aus Heizlast
+        self._ua_w_per_k_config = config.get("heat_loss_coefficient_w_per_k")
 
         self.annual_heating_kwh = config.get(
             "annual_heating_kwh",
@@ -49,6 +61,79 @@ class Building(Component):
             "design_heating_load_kw",
             self._estimate_design_load(),
         )
+
+    # ========================================================================
+    # Thermische Kapazitaet der Gebaeudehuelle (Wand + Luft, ohne Estrich)
+    # ========================================================================
+
+    @property
+    def wall_capacity_kwh_per_k(self) -> float:
+        """Waermekapazitaet der Waende in kWh/K.
+
+        C_Wand = A_Wohn * 50 Wh/(m²·K) (DIN EN ISO 13786, mittelschwere Bauweise)
+        """
+        return self.heated_area_m2 * self.wall_capacity_wh_per_m2_k / 1000.0
+
+    @property
+    def air_volume_m3(self) -> float:
+        """Beheiztes Luftvolumen in m³."""
+        return self.heated_area_m2 * self.volume_factor
+
+    @property
+    def air_capacity_kwh_per_k(self) -> float:
+        """Waermekapazitaet der Raumluft in kWh/K.
+
+        C_Luft = V · ρ_Luft · c_p,Luft
+        """
+        joules_per_k = (
+            self.air_volume_m3
+            * self._AIR_DENSITY_KG_M3
+            * self._AIR_SPECIFIC_HEAT_J_KG_K
+        )
+        return joules_per_k / 3_600_000.0  # J/K → kWh/K
+
+    @property
+    def shell_capacity_kwh_per_k(self) -> float:
+        """Gesamte Huellkapazitaet (Wand + Luft, ohne Estrich) in kWh/K."""
+        return self.wall_capacity_kwh_per_k + self.air_capacity_kwh_per_k
+
+    @property
+    def ua_w_per_k(self) -> float:
+        """Effektiver Waermeverlustkoeffizient (UA-Wert) in W/K.
+
+        UA = P_Heizlast / ΔT_Auslegung, sofern nicht explizit konfiguriert.
+        P_Verlust (bei ΔT) = UA · ΔT
+        """
+        if self._ua_w_per_k_config is not None:
+            return float(self._ua_w_per_k_config)
+        delta_design = self.indoor_temp - self.design_temp
+        if delta_design <= 0:
+            return 0.0
+        return self.design_heating_load_kw * 1000.0 / delta_design
+
+    def thermal_time_constant_h(
+        self,
+        estrich_capacity_kwh_per_k: float = 0.0,
+        delta_t_k: float = 5.0,
+    ) -> float:
+        """Thermische Zeitkonstante des Gebaeudes τ = C_Gebaeude / P_Verlust in Stunden.
+
+        Beschreibt, wie schnell das Gebaeude bei gegebenem Temperaturgefaelle
+        zur Aussenluft auskuehlt/aufheizt.
+
+        Args:
+            estrich_capacity_kwh_per_k: Kapazitaet des Estrichs (aus UFH-Komponente).
+            delta_t_k: Angenommene Temperaturdifferenz innen/aussen [K].
+
+        Returns:
+            Zeitkonstante in Stunden. 0 wenn kein Verlust berechenbar.
+        """
+        c_total_kwh_per_k = estrich_capacity_kwh_per_k + self.shell_capacity_kwh_per_k
+        p_loss_kw = self.ua_w_per_k * delta_t_k / 1000.0
+        if p_loss_kw <= 0:
+            return 0.0
+        return c_total_kwh_per_k * delta_t_k / p_loss_kw  # = C·ΔT / (UA·ΔT/1000) in h
+        # Hinweis: Ergebnis = C_total_kwh_per_k * 1000 / UA  (ΔT kuerzt sich)
 
     def _estimate_design_load(self) -> float:
         """Schaetzt die Norm-Heizlast aus Jahresverbrauch."""

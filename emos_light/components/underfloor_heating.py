@@ -51,10 +51,23 @@ class UnderfloorHeating(Component):
         self.temp_min = config.get("floor_temp_min_c", 20.0)
         self.temp_max = config.get("floor_temp_max_c", 26.0)
         self.initial_temp = config.get("initial_floor_temp_c", 22.0)
+        # Optional: Zusatzkapazitaet aus Gebaeudehuelle (Wand+Luft).
+        # Wird von scenario.build_components() aus Building.shell_capacity_kwh_per_k
+        # uebergeben. Lumped-Capacitance-Modell: der Estrich repraesentiert dann
+        # die gesamte thermische Gebaeudemasse.
+        self.additional_capacity_kwh_per_k = config.get(
+            "additional_capacity_kwh_per_k", 0.0
+        )
 
-        # Thermische Kapazitaet in kWh/K
+        # Thermische Kapazitaet in kWh/K (Estrich + optional Gebaeudehuelle)
         mass_kg = self.area_m2 * self.thickness_m * self.density
-        self.capacity_kwh_per_k = mass_kg * self.specific_heat / 3_600_000.0
+        self.estrich_only_capacity_kwh_per_k = (
+            mass_kg * self.specific_heat / 3_600_000.0
+        )
+        self.capacity_kwh_per_k = (
+            self.estrich_only_capacity_kwh_per_k
+            + self.additional_capacity_kwh_per_k
+        )
 
         # Nutzbare Kapazitaet ueber Komfortband
         self.temp_range_k = self.temp_max - self.temp_min

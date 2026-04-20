@@ -342,6 +342,22 @@ class EMOSLightOptimizer:
                 for t in range(num_steps)
             )
 
+        # Batterie-Alterungskosten (PDF Speichergruppe, Kap. 3+4)
+        # Durchsatz (charge + discharge) wird mit c_aging/2 gewichtet,
+        # weil ein Aequivalent-Vollzyklus = 1x laden + 1x entladen.
+        if (
+            self.battery
+            and self.battery.enabled
+            and self.battery.aging_cost_enabled
+        ):
+            c_aging_half_ct = self.battery.aging_cost_ct_per_kwh / 2.0
+            if c_aging_half_ct > 0:
+                cost += pulp.lpSum(
+                    (variables["batt_charge"][t] + variables["batt_discharge"][t])
+                    * c_aging_half_ct * dt_h
+                    for t in range(num_steps)
+                )
+
         model += cost
 
         # ============================================================
@@ -401,6 +417,22 @@ class EMOSLightOptimizer:
             result.batt_soc_kwh = np.array(
                 [v.varValue or 0.0 for v in variables["batt_soc"]]
             )
+            # Alterungskosten-KPIs (PDF Speichergruppe)
+            throughput_kwh = float(
+                (result.batt_charge_kw.sum() + result.batt_discharge_kw.sum()) * dt_h
+            )
+            result.battery_throughput_kwh = throughput_kwh
+            c_aging_ct = self.battery.aging_cost_ct_per_kwh
+            result.battery_aging_cost_eur = (
+                throughput_kwh / 2.0 * c_aging_ct / 100.0
+            )
+            usable = self.battery.usable_capacity_kwh
+            if usable > 0:
+                result.battery_equivalent_cycles = throughput_kwh / (2.0 * usable)
+            # total_cost_eur soll nur die reinen Netzkosten enthalten
+            # (fairer Vergleich mit Baseline, die keine Alterung beruecksichtigt).
+            # Alterungskosten werden separat als battery_aging_cost_eur ausgewiesen.
+            result.total_cost_eur -= result.battery_aging_cost_eur
 
         # Waermepumpe
         result.hp_power_kw = np.array(

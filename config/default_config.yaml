@@ -46,6 +46,11 @@ battery:
   min_soc: 0.10
   max_soc: 0.90
   initial_soc: 0.50
+  # Alterungskosten (PDF Speichergruppe) — LFP-Defaults
+  aging_cost_enabled: true
+  replacement_cost_eur_per_kwh: 500.0
+  residual_value_pct: 0.0
+  equivalent_full_cycles: 6000
 
 heat_pump:
   enabled: true
@@ -112,6 +117,10 @@ building:
   num_occupants: 4
   night_setback_c: 0.0
   building_type: kfw55
+  # Gebaeudespeicher (Wand+Luft) — DIN EN ISO 13786 mittelschwere Bauweise
+  wall_capacity_wh_per_m2_k: 50.0
+  volume_factor: 3.1
+  heat_loss_coefficient_w_per_k: null
 
 heat_demand:
   annual_heating_kwh: 5250

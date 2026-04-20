@@ -295,6 +295,43 @@ with tab_config:
                 config["battery"]["max_soc"] = soc_range[1] / 100
                 config["battery"]["initial_soc"] = st.slider("Start-SOC (%)", soc_range[0], soc_range[1], int(config["battery"]["initial_soc"]*100)) / 100
 
+                # Alterungskosten (PDF Speichergruppe)
+                st.markdown("**Alterungskosten (Zyklus-Verschleiss)**")
+                config["battery"]["aging_cost_enabled"] = st.checkbox(
+                    "Alterungskosten beruecksichtigen",
+                    value=config["battery"].get("aging_cost_enabled", True),
+                    key="bat_aging_en",
+                )
+                config["battery"]["replacement_cost_eur_per_kwh"] = st.number_input(
+                    "Wiederbeschaffungswert (EUR/kWh)",
+                    100.0, 1500.0,
+                    float(config["battery"].get("replacement_cost_eur_per_kwh", 500.0)),
+                    50.0,
+                    key="bat_repl_cost",
+                )
+                config["battery"]["equivalent_full_cycles"] = int(st.number_input(
+                    "Aequivalent-Vollzyklen bis EOL",
+                    1000, 15000,
+                    int(config["battery"].get("equivalent_full_cycles", 6000)),
+                    500,
+                    key="bat_efc",
+                ))
+                config["battery"]["residual_value_pct"] = st.number_input(
+                    "Restwert am Lebensende (0-1)",
+                    0.0, 0.5,
+                    float(config["battery"].get("residual_value_pct", 0.0)),
+                    0.05,
+                    key="bat_residual",
+                )
+
+                from emos_light.components.battery import Battery as _Bat
+                _bat = _Bat("bat_preview", config["battery"])
+                st.caption(
+                    f"Nutzkapazitaet: **{_bat.usable_capacity_kwh:.1f} kWh** | "
+                    f"eta_rt: **{_bat.roundtrip_efficiency*100:.0f}%** | "
+                    f"Alterungskosten: **{_bat.aging_cost_ct_per_kwh:.1f} ct/kWh**"
+                )
+
     # Waermepumpe & SG-Ready
     with st.expander("Waermepumpe & SG-Ready", expanded=False):
         st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/8.1 A')}")
@@ -423,11 +460,20 @@ with tab_config:
                 config["underfloor_heating"]["floor_temp_max_c"] = float(floor_temp[1])
 
                 from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH
-                _ufh = _UFH("ufh_preview", config["underfloor_heating"])
+                from emos_light.components.building import Building as _BPrev
+                _bldg_prev = _BPrev("bldg_preview", config.get("building", {}))
+                _ufh_cfg_prev = dict(config["underfloor_heating"])
+                _ufh_cfg_prev["additional_capacity_kwh_per_k"] = _bldg_prev.shell_capacity_kwh_per_k
+                _ufh = _UFH("ufh_preview", _ufh_cfg_prev)
                 st.caption(
-                    f"Therm. Kapazitaet: **{_ufh.capacity_kwh_per_k:.1f} kWh/K** | "
+                    f"Therm. Kapazitaet (gesamt): **{_ufh.capacity_kwh_per_k:.1f} kWh/K** | "
                     f"Nutzbar: **{_ufh.total_capacity_kwh:.0f} kWh** | "
                     f"Verlustrate: **{_ufh.loss_rate_per_h:.3f}/h**"
+                )
+                st.caption(
+                    f"C_Estrich: **{_ufh.estrich_only_capacity_kwh_per_k:.2f} kWh/K** | "
+                    f"C_Wand: **{_bldg_prev.wall_capacity_kwh_per_k:.2f} kWh/K** | "
+                    f"C_Luft: **{_bldg_prev.air_capacity_kwh_per_k:.2f} kWh/K**"
                 )
 
         with col_bldg:
@@ -453,6 +499,20 @@ with tab_config:
             st.caption(
                 f"Heizwaerme: **{config['building']['annual_heating_kwh']} kWh/a** | "
                 f"Warmwasser: **{config['heat_demand']['annual_hot_water_kwh']} kWh/a**"
+            )
+
+            # Thermische Zeitkonstante tau = C_gesamt / P_Verlust
+            _bldg_tau = _B("bldg_tau", config["building"])
+            _ufh_cap_only = 0.0
+            if config["underfloor_heating"].get("enabled"):
+                from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH2
+                _ufh_tmp = _UFH2("ufh_tau", config["underfloor_heating"])
+                _ufh_cap_only = _ufh_tmp.estrich_only_capacity_kwh_per_k
+            _tau_h = _bldg_tau.thermal_time_constant_h(_ufh_cap_only, 5.0)
+            _ua = _bldg_tau.ua_w_per_k
+            st.caption(
+                f"UA-Wert: **{_ua:.0f} W/K** | "
+                f"Therm. Zeitkonstante tau ~ **{_tau_h:.1f} h** (bei dT=5K)"
             )
 
     # Verbrauch
@@ -699,6 +759,32 @@ with tab_optimize:
         kpi_row2[1].metric("Einspeiseverguetung", f"{result.feed_in_revenue_eur:.2f} EUR")
         kpi_row2[2].metric("PV-Ertrag", f"{result.pv_total_kwh:.1f} kWh")
         kpi_row2[3].metric("Netzbezug", f"{result.grid_buy_total_kwh:.1f} kWh")
+
+        # Batterie-Alterungs-KPIs (PDF Speichergruppe)
+        if config.get("battery", {}).get("enabled") and result.battery_throughput_kwh > 0:
+            kpi_row3 = st.columns(4)
+            kpi_row3[0].metric(
+                "Batterie-Durchsatz",
+                f"{result.battery_throughput_kwh:.1f} kWh",
+            )
+            kpi_row3[1].metric(
+                "Aequiv. Zyklen heute",
+                f"{result.battery_equivalent_cycles:.2f}",
+            )
+            kpi_row3[2].metric(
+                "Alterungskosten heute",
+                f"{result.battery_aging_cost_eur:.2f} EUR",
+            )
+            # Geschaetzte Rest-Lebensdauer in Jahren
+            if result.battery_equivalent_cycles > 0:
+                efc = float(config["battery"].get("equivalent_full_cycles", 6000))
+                years = efc / (result.battery_equivalent_cycles * 365.0)
+                kpi_row3[3].metric(
+                    "Gesch. Lebensdauer",
+                    f"{years:.1f} Jahre",
+                )
+            else:
+                kpi_row3[3].metric("Gesch. Lebensdauer", "-")
 
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")

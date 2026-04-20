@@ -23,6 +23,10 @@ class Battery(Component):
         min_soc (float): Minimaler Ladezustand (0-1).
         max_soc (float): Maximaler Ladezustand (0-1).
         initial_soc (float): Anfangsladezustand (0-1).
+        replacement_cost_eur_per_kwh (float): Wiederbeschaffungswert in EUR/kWh.
+        residual_value_pct (float): Restwert am Lebensende (Anteil 0-1).
+        equivalent_full_cycles (int): Anzahl Aequivalent-Vollzyklen bis EOL.
+        aging_cost_enabled (bool): Alterungskosten in Zielfunktion beruecksichtigen.
     """
 
     def __init__(self, name: str, config: dict):
@@ -35,6 +39,54 @@ class Battery(Component):
         self.min_soc = config.get("min_soc", 0.1)
         self.max_soc = config.get("max_soc", 0.9)
         self.initial_soc = config.get("initial_soc", 0.5)
+
+        # Alterungskosten-Parameter (PDF Speichergruppe, Kap. 3)
+        self.replacement_cost_eur_per_kwh = config.get(
+            "replacement_cost_eur_per_kwh", 500.0
+        )
+        self.residual_value_pct = config.get("residual_value_pct", 0.0)
+        self.equivalent_full_cycles = config.get("equivalent_full_cycles", 6000)
+        self.aging_cost_enabled = config.get("aging_cost_enabled", True)
+
+    # ========================================================================
+    # Alterungskosten-Kennzahlen (PDF Speichergruppe)
+    # ========================================================================
+
+    @property
+    def usable_capacity_kwh(self) -> float:
+        """Nutzkapazitaet innerhalb des erlaubten SoC-Fensters."""
+        return self.capacity_kwh * (self.max_soc - self.min_soc)
+
+    @property
+    def roundtrip_efficiency(self) -> float:
+        """Roundtrip-Wirkungsgrad eta_rt = eta_charge * eta_discharge."""
+        return self.charge_eff * self.discharge_eff
+
+    @property
+    def aging_cost_ct_per_kwh(self) -> float:
+        """Zyklische Alterungskosten pro durchgesetzter kWh in ct/kWh.
+
+        Formel nach PDF Speichergruppe, Kap. 3:
+            c_aging = (C_Ersatz - R_EOL) / (N_EFC * E_nutzbar * eta_rt)
+
+        Der Durchsatz bezieht sich auf den Energiefluss in einer Richtung
+        (Laden ODER Entladen). Ein Aequivalent-Vollzyklus besteht aus
+        einmal laden + einmal entladen, daher wird der Kostenterm in der
+        Zielfunktion je zur Haelfte auf charge und discharge verteilt.
+        """
+        if not self.aging_cost_enabled:
+            return 0.0
+        replacement = self.replacement_cost_eur_per_kwh * self.capacity_kwh
+        residual = replacement * self.residual_value_pct
+        depreciable = replacement - residual
+        throughput_kwh = (
+            self.equivalent_full_cycles
+            * self.usable_capacity_kwh
+            * self.roundtrip_efficiency
+        )
+        if throughput_kwh <= 0:
+            return 0.0
+        return depreciable / throughput_kwh * 100.0  # EUR/kWh -> ct/kWh
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Lade-, Entlade-, SOC- und Binaervariablen.

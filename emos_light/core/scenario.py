@@ -53,14 +53,19 @@ def build_components(config: dict) -> dict:
         FreshWaterStation("fws", config["fresh_water_station"])
         if config["fresh_water_station"].get("enabled") else None
     )
-    underfloor_heating = (
-        UnderfloorHeating("ufh", config["underfloor_heating"])
-        if config["underfloor_heating"].get("enabled") else None
-    )
+    # Building vor UFH erstellen, damit shell_capacity an UFH weitergereicht werden kann
     building = (
         Building("building", config.get("building", {}))
         if config.get("building", {}).get("enabled") else None
     )
+    if config["underfloor_heating"].get("enabled"):
+        ufh_config = dict(config["underfloor_heating"])
+        if building is not None:
+            # Wand+Luft-Kapazitaet als effektive Zusatzmasse des Thermospeichers
+            ufh_config["additional_capacity_kwh_per_k"] = building.shell_capacity_kwh_per_k
+        underfloor_heating = UnderfloorHeating("ufh", ufh_config)
+    else:
+        underfloor_heating = None
     wallboxes = [
         Wallbox(wb.get("name", f"wb_{i}"), wb)
         for i, wb in enumerate(config.get("wallboxes", []))

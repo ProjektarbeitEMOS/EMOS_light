@@ -63,6 +63,9 @@ class OptimizationResult:
     # Kosten-Details
     grid_buy_cost_eur: float = 0.0
     feed_in_revenue_eur: float = 0.0
+    battery_aging_cost_eur: float = 0.0
+    battery_throughput_kwh: float = 0.0
+    battery_equivalent_cycles: float = 0.0
 
     # KPIs
     eigenverbrauch_pct: float = 0.0
