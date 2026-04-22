@@ -1,6 +1,6 @@
 # EMOS Light — Energiemanagement fuer Neubau
 
-Vereinfachtes Energiemanagement- und Optimierungssystem (EMOS) fuer einen typischen Neubau mit Waermepumpe, Fussbodenheizung und Frischwassersystem. Projektarbeit, 15 Personen.
+Vereinfachtes Energiemanagement- und Optimierungssystem (EMOS) fuer einen typischen Neubau mit Waermepumpe, Fussbodenheizung und Frischwassersystem. 
 
 ---
 
