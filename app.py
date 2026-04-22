@@ -588,6 +588,12 @@ with tab_config:
                     ev["name"] = st.text_input("Name", ev.get("name", f"E-Auto {i+1}"), key=f"ev_{i}_name")
                     ev["battery_capacity_kwh"] = st.number_input("Akkukapazitaet (kWh)", 10.0, 200.0, float(ev.get("battery_capacity_kwh", 58.0)), 5.0, key=f"ev_{i}_cap")
                     ev["current_soc"] = st.slider("Aktueller SOC (%)", 0, 100, int(ev.get("current_soc", 0.3)*100), key=f"ev_{i}_soc") / 100
+                    ev["consumption_kwh_per_100km"] = st.number_input(
+                        "Verbrauch (kWh/100km)", 5.0, 40.0,
+                        float(ev.get("consumption_kwh_per_100km", 16.0)), 0.5,
+                        key=f"ev_{i}_cons",
+                        help="Realer Fahrverbrauch inkl. Ladeverluste. Typ.: Kleinwagen ~14, Kompakt ~16, Mittelklasse ~18, SUV ~21 kWh/100km.",
+                    )
                     ev["min_range_km"] = st.number_input("Mindestreichweite (km)", 0.0, 500.0, float(ev.get("min_range_km", 150.0)), 10.0, key=f"ev_{i}_range")
                     target_soc = min(1.0, ev["min_range_km"] * ev.get("consumption_kwh_per_100km", 16.0) / 100 / ev["battery_capacity_kwh"])
                     ev["target_soc"] = max(ev["current_soc"], target_soc)
