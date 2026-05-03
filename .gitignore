@@ -25,6 +25,7 @@ Thumbs.db
 # Data
 *.csv
 !config/*.yaml
+!data/load_profiles/*.csv
 
 # Streamlit
 .streamlit/

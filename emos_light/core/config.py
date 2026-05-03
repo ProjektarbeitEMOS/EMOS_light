@@ -36,6 +36,9 @@ DEFAULT_CONFIG = {
     },
     "household": {
         "annual_consumption_kwh": 4500,
+        # Vermessenes Lastprofil (siehe emos_light/data/household_profiles.py).
+        # Leerer String -> synthetisches Profil als Fallback.
+        "load_profile_id": "2person_2kinder",
     },
     "pv": {
         "enabled": True,

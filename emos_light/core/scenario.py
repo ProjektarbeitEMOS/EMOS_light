@@ -205,9 +205,27 @@ def load_input_data(
             outside_temp=temp,
         )
     else:
-        household_load = generate_load_profile(
-            config["household"]["annual_consumption_kwh"], date, num_steps
-        )
+        household_cfg = config.get("household", {})
+        annual_kwh = household_cfg.get("annual_consumption_kwh", 4500)
+        profile_id = household_cfg.get("load_profile_id", "")
+
+        if profile_id:
+            # Vermessenes Profil + lineare Skalierung auf den gewuenschten
+            # Jahresverbrauch (Profile sind ohne Waermepumpenanteil).
+            from emos_light.data.household_profiles import (
+                load_household_profile, HOUSEHOLD_PROFILES,
+            )
+            if profile_id in HOUSEHOLD_PROFILES:
+                household_load = load_household_profile(
+                    profile_id=profile_id,
+                    target_date=date,
+                    num_steps=num_steps,
+                    target_annual_kwh=annual_kwh,
+                )
+            else:
+                household_load = generate_load_profile(annual_kwh, date, num_steps)
+        else:
+            household_load = generate_load_profile(annual_kwh, date, num_steps)
 
     heating_demand = generate_heat_demand_profile(
         config["heat_demand"]["annual_heating_kwh"], date, num_steps, temp

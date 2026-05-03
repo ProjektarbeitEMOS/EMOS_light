@@ -517,12 +517,56 @@ with tab_config:
 
     # Verbrauch
     with st.expander("Verbrauch", expanded=False):
+        from emos_light.data.household_profiles import list_profiles, get_profile_label
+
+        # Personenanzahl + Jahresverbrauch
         v_col1, v_col2, v_col3 = st.columns(3)
-        config["household"]["annual_consumption_kwh"] = v_col1.number_input(
-            "Jahresstromverbrauch (kWh)", 500, 50000, int(config["household"]["annual_consumption_kwh"]), 500,
+
+        profiles = list_profiles()  # [(id, label, base_annual_kwh), ...]
+        profile_ids = [pid for pid, _, _ in profiles]
+        profile_labels = [lbl for _, lbl, _ in profiles]
+
+        current_pid = config["household"].get("load_profile_id", profile_ids[0])
+        if current_pid not in profile_ids:
+            current_pid = profile_ids[0]
+        current_idx = profile_ids.index(current_pid)
+
+        chosen_label = v_col1.selectbox(
+            "Personenanzahl (Lastprofil)",
+            profile_labels,
+            index=current_idx,
+            help="Vermessenes Lastprofil je Haushaltskonstellation. Wird linear "
+                 "auf den eingestellten Jahresverbrauch skaliert. Profile sind "
+                 "ohne Waermepumpenanteil.",
         )
-        v_col2.metric("Heizwaerme (kWh/a)", config["heat_demand"]["annual_heating_kwh"])
-        v_col3.metric("Warmwasser (kWh/a)", config["heat_demand"]["annual_hot_water_kwh"])
+        chosen_pid = profile_ids[profile_labels.index(chosen_label)]
+        config["household"]["load_profile_id"] = chosen_pid
+
+        config["household"]["annual_consumption_kwh"] = v_col2.number_input(
+            "Jahresstromverbrauch (kWh)",
+            500, 50000,
+            int(config["household"]["annual_consumption_kwh"]), 500,
+            help="Zielwert. Das gewaehlte Profil wird linear auf diesen "
+                 "Jahresverbrauch hoch- oder runterskaliert.",
+        )
+
+        # Hinweis auf Original-Jahreswert des gewaehlten Profils
+        base_annual = next(
+            (ann for pid, _, ann in profiles if pid == chosen_pid), 0.0
+        )
+        if base_annual > 0:
+            scale = config["household"]["annual_consumption_kwh"] / base_annual
+            v_col3.metric(
+                "Skalierungsfaktor",
+                f"{scale:.2f} ×",
+                help=f"Profil-Original: {base_annual:.0f} kWh/a "
+                     f"({chosen_label})",
+            )
+
+        # Waermebedarfe darunter in eigener Zeile
+        h_col1, h_col2 = st.columns(2)
+        h_col1.metric("Heizwaerme (kWh/a)", config["heat_demand"]["annual_heating_kwh"])
+        h_col2.metric("Warmwasser (kWh/a)", config["heat_demand"]["annual_hot_water_kwh"])
 
     # E-Mobilitaet
     with st.expander("E-Mobilitaet", expanded=False):
