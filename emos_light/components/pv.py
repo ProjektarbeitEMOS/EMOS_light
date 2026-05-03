@@ -2,11 +2,10 @@
 
 Berechnet die PV-Erzeugung standortbasiert mit Sonnenstandsberechnung,
 POA-Transposition und Temperaturkorrektur. Keine Optimierungsvariablen,
-da die Erzeugung ein gegebener Input ist.
+da die Erzeugung ein gegebener Input ist — daher Component, nicht MILPComponent.
 """
 
 import datetime
-from typing import Any
 
 import numpy as np
 
@@ -160,11 +159,3 @@ class PVSystem(Component):
         correction = self._degradation_factor() * self.system_efficiency
         generation_kw = self.peak_power_kwp * normalized_ghi * correction
         return np.maximum(generation_kw, 0.0)
-
-    def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
-        """PV hat keine Optimierungsvariablen (Erzeugung ist Input)."""
-        return {}
-
-    def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
-        """PV hat keine eigenen Constraints."""
-        pass

@@ -204,9 +204,3 @@ class Building(Component):
             profile = profile * (daily_kwh / total)
 
         return np.round(np.clip(profile, 0, None), 3)
-
-    def get_optimization_variables(self, num_steps: int, model=None) -> dict:
-        return {}
-
-    def add_constraints(self, model=None, variables=None, step_minutes: int = 15) -> None:
-        pass

@@ -29,6 +29,7 @@ from emos_light.components._milp_helpers import (
     make_var_array,
     steps_for_minutes,
 )
+from emos_light.utils.interpolation import interp_2d
 
 
 # ============================================================
@@ -62,50 +63,6 @@ _CAPACITY_TABLE = np.array([
 # COP-Grenzen fuer Extrapolation
 _COP_MIN = 1.2
 _COP_MAX = 7.0
-
-
-def _interp_2d(
-    x: np.ndarray,
-    y: float,
-    x_grid: np.ndarray,
-    y_grid: np.ndarray,
-    z_grid: np.ndarray,
-) -> np.ndarray:
-    """Bilineare 2D-Interpolation mit Clamp an Raendern.
-
-    Args:
-        x: Array von x-Werten (Aussentemperatur).
-        y: Skalarer y-Wert (Vorlauftemperatur).
-        x_grid: Stuetzstellen x-Achse (sortiert, aufsteigend).
-        y_grid: Stuetzstellen y-Achse (sortiert, aufsteigend).
-        z_grid: 2D-Matrix der Werte [len(x_grid) x len(y_grid)].
-
-    Returns:
-        Interpolierte Werte als numpy-Array.
-    """
-    x = np.atleast_1d(np.asarray(x, dtype=float))
-    x_c = np.clip(x, x_grid[0], x_grid[-1])
-    y_c = np.clip(y, y_grid[0], y_grid[-1])
-
-    # x-Indizes
-    ix = np.searchsorted(x_grid, x_c) - 1
-    ix = np.clip(ix, 0, len(x_grid) - 2)
-
-    # y-Indizes (skalar)
-    iy = int(np.clip(np.searchsorted(y_grid, y_c) - 1, 0, len(y_grid) - 2))
-
-    dx = x_grid[ix + 1] - x_grid[ix]
-    dy = y_grid[iy + 1] - y_grid[iy]
-    wx = np.where(dx > 0, (x_c - x_grid[ix]) / dx, 0.0)
-    wy = (y_c - y_grid[iy]) / dy if dy > 0 else 0.0
-
-    z = (
-        z_grid[ix, iy] * (1 - wx) * (1 - wy)
-        + z_grid[ix + 1, iy] * wx * (1 - wy)
-        + z_grid[ix, iy + 1] * (1 - wx) * wy
-        + z_grid[ix + 1, iy + 1] * wx * wy
-    )
-    return z
 
 
 class HeatPump(MILPComponent):
@@ -159,7 +116,7 @@ class HeatPump(MILPComponent):
         Returns:
             COP-Array gleicher Laenge wie outside_temp_c.
         """
-        cop = _interp_2d(outside_temp_c, flow_temp_c,
+        cop = interp_2d(outside_temp_c, flow_temp_c,
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _COP_TABLE)
         return np.clip(cop, _COP_MIN, _COP_MAX)
 
@@ -175,7 +132,7 @@ class HeatPump(MILPComponent):
         self, outside_temp_c: np.ndarray, flow_temp_c: float
     ) -> np.ndarray:
         """Max. thermische Leistung [kW] aus Kennfeld."""
-        cap = _interp_2d(outside_temp_c, flow_temp_c,
+        cap = interp_2d(outside_temp_c, flow_temp_c,
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _CAPACITY_TABLE)
         return np.clip(cap, 0.0, 20.0)
 
