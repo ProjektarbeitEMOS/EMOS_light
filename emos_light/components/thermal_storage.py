@@ -24,10 +24,16 @@ from typing import Any
 
 import pulp
 
-from emos_light.components.base import Component
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_state_balance,
+    make_binary_array,
+    make_var_array,
+    step_hours,
+)
 
 
-class ThermalStorage(Component):
+class ThermalStorage(MILPComponent):
     """Thermischer Pufferspeicher (Heizwasser oder Warmwasser).
 
     Zwei-Zonen-Schichtenspeicher mit geometriebasierter Verlustberechnung.
@@ -84,39 +90,50 @@ class ThermalStorage(Component):
         # Kaltwasser-Zulauftemperatur (nur relevant fuer Warmwasserpuffer)
         self.cold_water_inlet_temp_c = config.get("cold_water_inlet_temp_c", None)
 
-        # --- Geometrie (Zylinder) ---
+        # Geometrie + abgeleitete Groessen
+        self._init_geometry(config)
+        self._init_capacities()
+        self._init_loss_model()
+        self._init_cold_water_factor()
+
+    # ------------------------------------------------------------------
+    # Initialisierungs-Helfer (privat, nur einmal aufgerufen)
+    # ------------------------------------------------------------------
+
+    def _init_geometry(self, config: dict) -> None:
+        """Berechnet Zylinder-Geometrie aus Volumen + H/D-Verhaeltnis."""
         self.height_diameter_ratio = config.get("height_diameter_ratio", 2.5)
         volume_m3 = self.volume_liters / 1000.0
 
-        # Aus V = pi * r^2 * h und h = ratio * 2r:
-        #   V = pi * r^2 * ratio * 2r = 2 * pi * ratio * r^3
-        #   r = (V / (2 * pi * ratio))^(1/3)
-        self.radius_m = (volume_m3 / (2.0 * math.pi * self.height_diameter_ratio)) ** (1.0 / 3.0)
+        # V = pi * r^2 * h und h = ratio * 2r
+        # → r = (V / (2 * pi * ratio))^(1/3)
+        self.radius_m = (
+            volume_m3 / (2.0 * math.pi * self.height_diameter_ratio)
+        ) ** (1.0 / 3.0)
         self.diameter_m = 2.0 * self.radius_m
         self.height_m = self.height_diameter_ratio * self.diameter_m
 
-        # Oberflaechen in m^2
         self.area_top_m2 = math.pi * self.radius_m ** 2
         self.area_bottom_m2 = self.area_top_m2
         self.area_lateral_m2 = 2.0 * math.pi * self.radius_m * self.height_m
-        self.area_total_m2 = self.area_top_m2 + self.area_bottom_m2 + self.area_lateral_m2
+        self.area_total_m2 = (
+            self.area_top_m2 + self.area_bottom_m2 + self.area_lateral_m2
+        )
 
-        # --- U-Wert ---
         self.u_value_w_m2_k = self._calculate_u_value(config)
 
-        # --- Kapazitaet ---
+    def _init_capacities(self) -> None:
+        """Berechnet Kapazitaet, Anfangsenergie und Legionellenenergie."""
         delta_t = self.max_temp_c - self.min_temp_c
         self.capacity_kwh = (
             self.volume_liters * self.SPECIFIC_HEAT_WH_PER_L_K * delta_t / 1000.0
         )
 
-        # --- Anfangsenergie ---
         initial_delta = max(0, self.initial_temp_c - self.min_temp_c)
         self.initial_energy_kwh = (
             self.volume_liters * self.SPECIFIC_HEAT_WH_PER_L_K * initial_delta / 1000.0
         )
 
-        # --- Legionellenschutz ---
         if self.legionella_temp_c > self.min_temp_c:
             legionella_delta = self.legionella_temp_c - self.min_temp_c
             self.legionella_energy_kwh = (
@@ -125,32 +142,30 @@ class ThermalStorage(Component):
         else:
             self.legionella_energy_kwh = 0.0
 
-        # --- Zwei-Zonen Verlustberechnung ---
+    def _init_loss_model(self) -> None:
+        """Zerlegt die Verluste in einen festen + einen SOC-proportionalen Anteil."""
         u = self.u_value_w_m2_k
         t_hot = self.max_temp_c
         t_cold = self.min_temp_c
         t_amb = self.ambient_temp_c
 
-        # Feste Verluste (unabhaengig vom Fuellstand):
-        #   Deckel (oben, immer heiss) + Boden (unten, immer kalt)
-        #   + gesamter Mantel bei T_min (Grundlast)
+        # Feste Verluste: Deckel (heiss) + Boden (kalt) + Mantel bei T_min
         self.fixed_loss_kw = (
             u * self.area_top_m2 * max(0, t_hot - t_amb)
             + u * self.area_bottom_m2 * max(0, t_cold - t_amb)
             + u * self.area_lateral_m2 * max(0, t_cold - t_amb)
         ) / 1000.0  # W -> kW
 
-        # Variable Verluste (proportional zum Fuellstand SOC = E/capacity):
-        #   Zusaetzlicher Mantel-Verlust wenn heisse Zone waechst
-        #   Q_var = U * A_lateral * (T_hot - T_cold) * SOC
+        # Variable Verluste (proportional zu SOC): Mantel-Aufschlag heisse Zone
         if self.capacity_kwh > 0:
             self.relative_loss_per_h = (
                 u * self.area_lateral_m2 * (t_hot - t_cold)
-            ) / 1000.0 / self.capacity_kwh  # W -> kW, pro kWh gespeichert
+            ) / 1000.0 / self.capacity_kwh
         else:
             self.relative_loss_per_h = 0.0
 
-        # --- Kaltwasser-Nachheizfaktor ---
+    def _init_cold_water_factor(self) -> None:
+        """Aufschlag fuer Kaltwasser-Nachheizung (Frischwasserstation-Pfad)."""
         self.cold_water_reheat_factor = 1.0
         if self.cold_water_inlet_temp_c is not None:
             t_inlet = self.cold_water_inlet_temp_c
@@ -169,18 +184,15 @@ class ThermalStorage(Component):
         3. Rueckrechnung aus heat_loss_coefficient_w_per_k (Fallback)
         4. Default: 0.7 W/(m^2*K) (5cm PU-Schaum)
         """
-        # Prioritaet 1: Direkt angegeben
         if "u_value_w_m2_k" in config:
             return config["u_value_w_m2_k"]
 
-        # Prioritaet 2: Aus Isolierungseigenschaften
         if "insulation_thickness_m" in config:
             thickness = config["insulation_thickness_m"]
             conductivity = config.get("insulation_conductivity_w_m_k", 0.035)
             if thickness > 0:
                 return conductivity / thickness
 
-        # Prioritaet 3: Aus altem heat_loss_coefficient (Gesamt-UA in W/K)
         if "heat_loss_coefficient_w_per_k" in config:
             ua = config["heat_loss_coefficient_w_per_k"]
             if self.area_total_m2 > 0:
@@ -188,6 +200,10 @@ class ThermalStorage(Component):
 
         # Default: 5 cm PU-Schaum (lambda=0.035 W/(m*K))
         return 0.035 / 0.05  # = 0.7 W/(m^2*K)
+
+    # ------------------------------------------------------------------
+    # Konversionen Energie <-> Temperatur und Verlust-Kennwerte
+    # ------------------------------------------------------------------
 
     def energy_to_temp(self, energy_kwh: float) -> float:
         """Rechnet gespeicherte Energie in Temperatur um."""
@@ -214,19 +230,20 @@ class ThermalStorage(Component):
     @property
     def standby_loss_w_at_mean(self) -> float:
         """Verlustleistung bei mittlerem Fuellstand (SOC=0.5) in W."""
-        return (self.fixed_loss_kw + self.relative_loss_per_h * self.capacity_kwh * 0.5) * 1000.0
+        return (
+            self.fixed_loss_kw
+            + self.relative_loss_per_h * self.capacity_kwh * 0.5
+        ) * 1000.0
+
+    # ------------------------------------------------------------------
+    # Komfort-Mindestenergie aus Zeitperioden
+    # ------------------------------------------------------------------
 
     def get_min_energy_schedule(self, timestamps: list) -> list[float]:
         """Gibt zeit-abhaengige Mindestenergie zurueck.
 
         Waehrend Komfort-Perioden gilt comfort_temperature_c,
         ausserhalb gilt min_temperature_c.
-
-        Args:
-            timestamps: Liste von datetime-Objekten pro Zeitschritt.
-
-        Returns:
-            Liste von Mindestenergien [kWh] pro Zeitschritt.
         """
         min_energy = self.temp_to_energy(self.min_temp_c)
 
@@ -237,7 +254,7 @@ class ThermalStorage(Component):
         schedule = []
 
         for ts in timestamps:
-            hour = ts.hour + ts.minute / 60.0 if hasattr(ts, 'hour') else 0
+            hour = ts.hour + ts.minute / 60.0 if hasattr(ts, "hour") else 0
             in_comfort = False
             for period in self.comfort_periods:
                 start = period.get("start_hour", 0)
@@ -251,80 +268,70 @@ class ThermalStorage(Component):
 
         return schedule
 
+    # ------------------------------------------------------------------
+    # MILP-Schnittstelle
+    # ------------------------------------------------------------------
+
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Energie- und Waermestrom-Variablen auf kWh-Basis.
 
-        Variablen:
-            ts_energy_kwh[t]: Gespeicherte Energie in kWh (0 = T_min, capacity = T_max)
-            ts_q_in[t]: Zugefuehrte Waermeleistung in kW
-            ts_q_demand[t]: Waermeentnahme in kW
+        Variablen (Keys mit ``self.prefix`` aus dem Konstruktor):
+            <prefix>_energy_kwh[t]: Gespeicherte Energie in kWh
+                (0 = T_min, capacity = T_max)
+            <prefix>_q_in[t]:       Zugefuehrte Waermeleistung in kW
+            <prefix>_q_demand[t]:   Waermeentnahme in kW
         """
         var_prefix = f"{self.prefix}_{self.name}"
-
-        energy = [
-            pulp.LpVariable(
-                f"{var_prefix}_energy_{t}",
-                lowBound=0.0,
-                upBound=self.capacity_kwh,
-            )
-            for t in range(num_steps)
-        ]
-
-        q_in = [
-            pulp.LpVariable(f"{var_prefix}_q_in_{t}", lowBound=0)
-            for t in range(num_steps)
-        ]
-        q_demand = [
-            pulp.LpVariable(f"{var_prefix}_q_demand_{t}", lowBound=0)
-            for t in range(num_steps)
-        ]
-
         return {
-            f"{self.prefix}_energy_kwh": energy,
-            f"{self.prefix}_q_in": q_in,
-            f"{self.prefix}_q_demand": q_demand,
+            f"{self.prefix}_energy_kwh": make_var_array(
+                f"{var_prefix}_energy", num_steps,
+                low=0.0, high=self.capacity_kwh,
+            ),
+            f"{self.prefix}_q_in": make_var_array(
+                f"{var_prefix}_q_in", num_steps, low=0,
+            ),
+            f"{self.prefix}_q_demand": make_var_array(
+                f"{var_prefix}_q_demand", num_steps, low=0,
+            ),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
-        """Fuegt Energie-Bilanz-Constraints zum Modell hinzu.
+        """Energiebilanz mit festem + SOC-proportionalem Verlust.
 
-        Zwei-Zonen Energiebilanz pro Zeitschritt:
-            E(t) = E(t-1) + (Q_in - Q_demand) * dt
+            E(t) = E(t-1) + (Q_in - Q_demand)*dt
                    - fixed_loss_kw * dt
                    - relative_loss_per_h * E(t-1) * dt
-
-        fixed_loss_kw: Verluste durch Deckel, Boden und kalte Mantelflaeche
-        relative_loss_per_h * E: Zusaetzliche Verluste durch heisse Mantelflaeche
         """
-        dt_h = step_minutes / 60.0
+        dt_h = step_hours(step_minutes)
 
         energy = variables[f"{self.prefix}_energy_kwh"]
         q_in = variables[f"{self.prefix}_q_in"]
         q_demand = variables[f"{self.prefix}_q_demand"]
 
-        num_steps = len(energy)
-
-        for t in range(num_steps):
-            if t == 0:
-                e_prev = self.initial_energy_kwh
-            else:
-                e_prev = energy[t - 1]
-
-            # Zwei-Zonen Energiebilanz:
-            # E(t) = E(t-1) + netto_zufuhr - feste_verluste - variable_verluste
-            model += (
-                energy[t]
-                == e_prev
+        add_state_balance(
+            model, energy,
+            initial=self.initial_energy_kwh,
+            rhs_fn=lambda prev, t: (
+                prev
                 + (q_in[t] - q_demand[t]) * dt_h
                 - self.fixed_loss_kw * dt_h
-                - self.relative_loss_per_h * dt_h * e_prev,
-                f"{self.prefix}_{self.name}_energy_balance_{t}",
-            )
+                - self.relative_loss_per_h * dt_h * prev
+            ),
+            name=f"{self.prefix}_{self.name}_energy",
+        )
 
-    def add_legionella_constraint(self, model: Any, variables: dict, num_steps: int) -> None:
-        """Legionellenschutz: Warmwasser muss mind. 1x/Tag die Legionellentemperatur erreichen.
+    # ------------------------------------------------------------------
+    # Optionale Constraints
+    # ------------------------------------------------------------------
 
-        In kWh-Basis: E(t) >= legionella_energy_kwh fuer mindestens einen Zeitschritt.
+    def add_legionella_constraint(
+        self, model: Any, variables: dict, num_steps: int,
+    ) -> None:
+        """Legionellenschutz: Speicher muss mind. 1x/Tag die Legionellentemp erreichen.
+
+        Modellierung: binaere Hilfsvariable pro Zeitschritt, die nur dann
+        gesetzt sein darf, wenn die Energie ueber dem Legionellen-Threshold
+        liegt; mind. eine davon muss aktiv sein.
         """
         if self.legionella_energy_kwh <= 0:
             return
@@ -332,10 +339,10 @@ class ThermalStorage(Component):
         energy = variables[f"{self.prefix}_energy_kwh"]
         var_prefix = f"{self.prefix}_{self.name}"
 
-        legionella_reached = [
-            pulp.LpVariable(f"{var_prefix}_legionella_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
+        legionella_reached = make_binary_array(
+            f"{var_prefix}_legionella", num_steps,
+        )
+
         for t in range(num_steps):
             model += (
                 energy[t] >= self.legionella_energy_kwh

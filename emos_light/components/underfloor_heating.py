@@ -19,13 +19,15 @@ Alle Relationen bleiben linear → MILP-kompatibel.
 
 from typing import Any
 
-import numpy as np
-import pulp
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_state_balance,
+    make_var_array,
+    step_hours,
+)
 
-from emos_light.components.base import Component
 
-
-class UnderfloorHeating(Component):
+class UnderfloorHeating(MILPComponent):
     """Fussbodenheizung mit Estrich als thermischem Speicher.
 
     Config-Parameter:
@@ -96,6 +98,10 @@ class UnderfloorHeating(Component):
             * (self.supply_temp_max - self.temp_min) / 1000.0
         )
 
+    # ------------------------------------------------------------------
+    # Konversionen Energie <-> Temperatur
+    # ------------------------------------------------------------------
+
     def energy_to_temp(self, energy_kwh: float) -> float:
         """Rechnet Estrich-Energie in Temperatur um."""
         if self.capacity_kwh_per_k <= 0:
@@ -107,6 +113,10 @@ class UnderfloorHeating(Component):
         delta = max(0, min(temp_c - self.temp_min, self.temp_range_k))
         return self.capacity_kwh_per_k * delta
 
+    # ------------------------------------------------------------------
+    # MILP-Schnittstelle
+    # ------------------------------------------------------------------
+
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Estrich-Energie- und Waermezufuhr-Variablen.
 
@@ -115,26 +125,15 @@ class UnderfloorHeating(Component):
                 (0 = temp_min, total_capacity = temp_max)
             q_floor_in[t]: Thermische Leistung von WP an Estrich in kW
         """
-        floor_energy = [
-            pulp.LpVariable(
-                f"floor_energy_{t}",
-                lowBound=0.0,
-                upBound=self.total_capacity_kwh,
-            )
-            for t in range(num_steps)
-        ]
-        q_floor_in = [
-            pulp.LpVariable(
-                f"q_floor_in_{t}",
-                lowBound=0.0,
-                upBound=self.max_thermal_input_kw,
-            )
-            for t in range(num_steps)
-        ]
-
         return {
-            "floor_energy": floor_energy,
-            "q_floor_in": q_floor_in,
+            "floor_energy": make_var_array(
+                "floor_energy", num_steps,
+                low=0.0, high=self.total_capacity_kwh,
+            ),
+            "q_floor_in": make_var_array(
+                "q_floor_in", num_steps,
+                low=0.0, high=self.max_thermal_input_kw,
+            ),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -146,21 +145,17 @@ class UnderfloorHeating(Component):
         Diese Abgabe IST die Raumheizung — wenn der Estrich warm genug bleibt,
         ist der Raum beheizt.
         """
-        dt_h = step_minutes / 60.0
+        dt_h = step_hours(step_minutes)
         floor_energy = variables["floor_energy"]
         q_floor_in = variables["q_floor_in"]
-        num_steps = len(floor_energy)
 
-        for t in range(num_steps):
-            if t == 0:
-                e_prev = self.initial_energy_kwh
-            else:
-                e_prev = floor_energy[t - 1]
-
-            model += (
-                floor_energy[t]
-                == e_prev
+        add_state_balance(
+            model, floor_energy,
+            initial=self.initial_energy_kwh,
+            rhs_fn=lambda prev, t: (
+                prev
                 + q_floor_in[t] * dt_h
-                - self.loss_rate_per_h * dt_h * e_prev,
-                f"floor_energy_balance_{t}",
-            )
+                - self.loss_rate_per_h * dt_h * prev
+            ),
+            name="floor_energy",
+        )
