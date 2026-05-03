@@ -189,8 +189,8 @@ class HeatPump(MILPComponent):
         Variablen:
             hp_on[t]: Binaer — WP an/aus
             hp_power[t]: Elektrische Leistung gesamt [kW]
-            sg_state_1[t]: Binaer — Zustand 1 (Lastabwurf)
-            sg_state_3[t]: Binaer — Zustand 3 (Verstaerkt)
+            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Lastabwurf)
+            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Verstaerkt)
         """
         result = {
             "hp_on": make_binary_array("hp_on", num_steps),
@@ -199,8 +199,8 @@ class HeatPump(MILPComponent):
             ),
         }
         if self.sg_ready:
-            result["sg_state_1"] = make_binary_array("sg_state_1", num_steps)
-            result["sg_state_3"] = make_binary_array("sg_state_3", num_steps)
+            result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
+            result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
         return result
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -224,24 +224,24 @@ class HeatPump(MILPComponent):
         add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
 
         # SG-Ready Constraints (BWP v1.1)
-        if self.sg_ready and "sg_state_1" in variables:
-            sg1 = variables["sg_state_1"]
-            sg3 = variables["sg_state_3"]
+        if self.sg_ready and "hp_sg1" in variables:
+            sg1 = variables["hp_sg1"]
+            sg3 = variables["hp_sg3"]
             min_hold_steps = steps_for_minutes(self.sg_min_hold_minutes, step_minutes)
 
             # Exklusivitaet SG1/SG3
-            add_mutual_exclusion(model, sg1, sg3, name="sg")
+            add_mutual_exclusion(model, sg1, sg3, name="hp_sg")
 
             for t in range(num_steps):
                 # Leistungslimit bei SG1
                 model += (
                     hp_power[t] <= self.max_power_kw * (1 - sg1[t])
                     + self.sg_state1_power_limit * sg1[t],
-                    f"sg1_power_limit_{t}",
+                    f"hp_sg1_power_limit_{t}",
                 )
                 # SG3 setzt Betrieb voraus
-                model += sg3[t] <= hp_on[t], f"sg3_needs_on_{t}"
+                model += sg3[t] <= hp_on[t], f"hp_sg3_needs_on_{t}"
 
             # Mindesthaltezeiten fuer SG1 und SG3
-            add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="sg1")
-            add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="sg3")
+            add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
+            add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")

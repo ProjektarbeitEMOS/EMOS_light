@@ -5,15 +5,15 @@ Thermische Topologie:
          +-- WW-Speicher --> Frischwasserstation --> Brauchwasser
 
 Entscheidungsvariablen (thermisch):
-    hp_power_el[t]: Elektrische WP-Leistung gesamt
-    q_floor[t]: Thermische Leistung an FBH/Estrich
-    q_ww[t]: Thermische Leistung an WW-Speicher
-    floor_energy[t]: Thermische Energie im Estrich
-    ww_energy[t]: Thermische Energie im WW-Speicher
-    hp_power_floor[t]: Elektr. WP-Leistung fuer FBH (COP @ W35)
-    hp_power_ww[t]: Elektr. WP-Leistung fuer WW (COP @ W55)
-    sg_state_1[t]: SG-Ready Zustand 1 (Lastabwurf)
-    sg_state_3[t]: SG-Ready Zustand 3 (Verstaerkt)
+    hp_power_el[t]:     Elektrische WP-Leistung gesamt
+    q_floor[t]:         Thermische Leistung an FBH/Estrich
+    q_ww[t]:            Thermische Leistung an WW-Speicher
+    ufh_floor_energy[t]: Thermische Energie im Estrich
+    ww_energy_kwh[t]:   Thermische Energie im WW-Speicher
+    hp_power_floor[t]:  Elektr. WP-Leistung fuer FBH (COP @ W35)
+    hp_power_ww[t]:     Elektr. WP-Leistung fuer WW (COP @ W55)
+    hp_sg1[t]:          SG-Ready Zustand 1 (Lastabwurf)
+    hp_sg3[t]:          SG-Ready Zustand 3 (Verstaerkt)
 """
 
 import time
@@ -172,7 +172,7 @@ class EMOSLightOptimizer:
                     )
                     # Thermische Leistung je Pfad mit eigenem COP
                     model += (
-                        variables["q_floor_in"][t] == hp_power_floor[t] * float(cop_heating[t]),
+                        variables["ufh_q_floor_in"][t] == hp_power_floor[t] * float(cop_heating[t]),
                         f"heat_to_floor_{t}",
                     )
                     model += (
@@ -183,7 +183,7 @@ class EMOSLightOptimizer:
             elif has_ufh:
                 for t in range(num_steps):
                     model += (
-                        variables["q_floor_in"][t]
+                        variables["ufh_q_floor_in"][t]
                         == variables["hp_power"][t] * float(cop_heating[t]),
                         f"heat_to_floor_{t}",
                     )
@@ -250,9 +250,9 @@ class EMOSLightOptimizer:
             if (
                 has_hp
                 and self.heat_pump.sg_ready
-                and "sg_state_3" in variables
+                and "hp_sg3" in variables
             ):
-                sg3 = variables["sg_state_3"]
+                sg3 = variables["hp_sg3"]
 
                 # Zusaetzliche Kapazitaet durch Temperaturerhoehung in State 3
                 delta_cap_3 = (
@@ -297,8 +297,8 @@ class EMOSLightOptimizer:
             demand = float(inp.household_load_kw[t]) + grid_sell[t]
 
             if self.battery and self.battery.enabled:
-                supply += variables["batt_discharge"][t]
-                demand += variables["batt_charge"][t]
+                supply += variables["bat_discharge"][t]
+                demand += variables["bat_charge"][t]
 
             demand += variables["hp_power"][t]
             demand = demand + wb_total_power[t]
@@ -353,7 +353,7 @@ class EMOSLightOptimizer:
             c_aging_half_ct = self.battery.aging_cost_ct_per_kwh / 2.0
             if c_aging_half_ct > 0:
                 cost += pulp.lpSum(
-                    (variables["batt_charge"][t] + variables["batt_discharge"][t])
+                    (variables["bat_charge"][t] + variables["bat_discharge"][t])
                     * c_aging_half_ct * dt_h
                     for t in range(num_steps)
                 )
@@ -409,13 +409,13 @@ class EMOSLightOptimizer:
         # Batterie
         if self.battery and self.battery.enabled:
             result.batt_charge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["batt_charge"]]
+                [v.varValue or 0.0 for v in variables["bat_charge"]]
             )
             result.batt_discharge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["batt_discharge"]]
+                [v.varValue or 0.0 for v in variables["bat_discharge"]]
             )
             result.batt_soc_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["batt_soc"]]
+                [v.varValue or 0.0 for v in variables["bat_soc"]]
             )
             # Alterungskosten-KPIs (PDF Speichergruppe)
             throughput_kwh = float(
@@ -440,16 +440,16 @@ class EMOSLightOptimizer:
         )
 
         # Estrich / Fussbodenheizung
-        if has_ufh and "floor_energy" in variables:
+        if has_ufh and "ufh_floor_energy" in variables:
             result.floor_energy_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["floor_energy"]]
+                [v.varValue or 0.0 for v in variables["ufh_floor_energy"]]
             )
             result.floor_temp_c = np.array([
                 self.underfloor_heating.energy_to_temp(e)
                 for e in result.floor_energy_kwh
             ])
             result.q_floor_kw = np.array(
-                [v.varValue or 0.0 for v in variables["q_floor_in"]]
+                [v.varValue or 0.0 for v in variables["ufh_q_floor_in"]]
             )
 
         # WW-Speicher
@@ -470,9 +470,9 @@ class EMOSLightOptimizer:
                 )
 
         # SG-Ready Zustand (BWP v1.1: 1=Lastabwurf, 2=Normal, 3=Verstaerkt)
-        if has_hp and self.heat_pump.sg_ready and "sg_state_3" in variables:
-            sg1_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_1"]])
-            sg3_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_3"]])
+        if has_hp and self.heat_pump.sg_ready and "hp_sg3" in variables:
+            sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
+            sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
             result.sg_ready_state = np.where(
                 sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
             )

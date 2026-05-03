@@ -121,17 +121,17 @@ class UnderfloorHeating(MILPComponent):
         """Erstellt Estrich-Energie- und Waermezufuhr-Variablen.
 
         Variablen:
-            floor_energy[t]: Thermische Energie im Estrich in kWh
+            ufh_floor_energy[t]: Thermische Energie im Estrich in kWh
                 (0 = temp_min, total_capacity = temp_max)
-            q_floor_in[t]: Thermische Leistung von WP an Estrich in kW
+            ufh_q_floor_in[t]:  Thermische Leistung von WP an Estrich in kW
         """
         return {
-            "floor_energy": make_var_array(
-                "floor_energy", num_steps,
+            "ufh_floor_energy": make_var_array(
+                "ufh_floor_energy", num_steps,
                 low=0.0, high=self.total_capacity_kwh,
             ),
-            "q_floor_in": make_var_array(
-                "q_floor_in", num_steps,
+            "ufh_q_floor_in": make_var_array(
+                "ufh_q_floor_in", num_steps,
                 low=0.0, high=self.max_thermal_input_kw,
             ),
         }
@@ -146,8 +146,8 @@ class UnderfloorHeating(MILPComponent):
         ist der Raum beheizt.
         """
         dt_h = step_hours(step_minutes)
-        floor_energy = variables["floor_energy"]
-        q_floor_in = variables["q_floor_in"]
+        floor_energy = variables["ufh_floor_energy"]
+        q_floor_in = variables["ufh_q_floor_in"]
 
         add_state_balance(
             model, floor_energy,
@@ -157,5 +157,5 @@ class UnderfloorHeating(MILPComponent):
                 + q_floor_in[t] * dt_h
                 - self.loss_rate_per_h * dt_h * prev
             ),
-            name="floor_energy",
+            name="ufh_floor_energy",
         )

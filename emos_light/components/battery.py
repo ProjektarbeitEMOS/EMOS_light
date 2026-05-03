@@ -102,31 +102,31 @@ class Battery(MILPComponent):
         """Erstellt Lade-, Entlade-, SOC- und Binaervariablen.
 
         Variablen:
-            batt_charge[t]: Ladeleistung in kW (>= 0)
-            batt_discharge[t]: Entladeleistung in kW (>= 0)
-            batt_soc[t]: Ladezustand in kWh
-            batt_b_charge[t]: Binaer - Laden aktiv
-            batt_b_discharge[t]: Binaer - Entladen aktiv
+            bat_charge[t]: Ladeleistung in kW (>= 0)
+            bat_discharge[t]: Entladeleistung in kW (>= 0)
+            bat_soc[t]: Ladezustand in kWh
+            bat_b_charge[t]: Binaer - Laden aktiv
+            bat_b_discharge[t]: Binaer - Entladen aktiv
         """
         prefix = f"bat_{self.name}"
         soc_min_kwh = self.min_soc * self.capacity_kwh
         soc_max_kwh = self.max_soc * self.capacity_kwh
 
         return {
-            "batt_charge": make_var_array(
+            "bat_charge": make_var_array(
                 f"{prefix}_charge", num_steps,
                 low=0, high=self.max_charge_kw,
             ),
-            "batt_discharge": make_var_array(
+            "bat_discharge": make_var_array(
                 f"{prefix}_discharge", num_steps,
                 low=0, high=self.max_discharge_kw,
             ),
-            "batt_soc": make_var_array(
+            "bat_soc": make_var_array(
                 f"{prefix}_soc", num_steps,
                 low=soc_min_kwh, high=soc_max_kwh,
             ),
-            "batt_b_charge": make_binary_array(f"{prefix}_b_charge", num_steps),
-            "batt_b_discharge": make_binary_array(f"{prefix}_b_discharge", num_steps),
+            "bat_b_charge": make_binary_array(f"{prefix}_b_charge", num_steps),
+            "bat_b_discharge": make_binary_array(f"{prefix}_b_discharge", num_steps),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -141,11 +141,11 @@ class Battery(MILPComponent):
         prefix = f"bat_{self.name}"
         dt_h = step_hours(step_minutes)
 
-        charge = variables["batt_charge"]
-        discharge = variables["batt_discharge"]
-        soc = variables["batt_soc"]
-        b_charge = variables["batt_b_charge"]
-        b_discharge = variables["batt_b_discharge"]
+        charge = variables["bat_charge"]
+        discharge = variables["bat_discharge"]
+        soc = variables["bat_soc"]
+        b_charge = variables["bat_b_charge"]
+        b_discharge = variables["bat_b_discharge"]
 
         # 1) Gegenseitiger Ausschluss Laden/Entladen
         add_mutual_exclusion(model, b_charge, b_discharge, name=f"{prefix}_no_simul")
