@@ -17,9 +17,18 @@ SG-Ready Zustaende nach BWP v1.1:
 from typing import Any
 
 import numpy as np
-import pulp
 
-from emos_light.components.base import Component
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_min_hold_time,
+    add_min_pause_time,
+    add_min_run_time,
+    add_mutual_exclusion,
+    add_on_off_power_link,
+    make_binary_array,
+    make_var_array,
+    steps_for_minutes,
+)
 
 
 # ============================================================
@@ -99,7 +108,7 @@ def _interp_2d(
     return z
 
 
-class HeatPump(Component):
+class HeatPump(MILPComponent):
     """Waermepumpe mit realem COP-Kennfeld und SG-Ready (BWP v1.1).
 
     Config-Parameter:
@@ -183,29 +192,15 @@ class HeatPump(Component):
             sg_state_1[t]: Binaer — Zustand 1 (Lastabwurf)
             sg_state_3[t]: Binaer — Zustand 3 (Verstaerkt)
         """
-        hp_on = [
-            pulp.LpVariable(f"hp_on_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
-        hp_power = [
-            pulp.LpVariable(f"hp_power_{t}", lowBound=0, upBound=self.max_power_kw)
-            for t in range(num_steps)
-        ]
-
-        result = {"hp_on": hp_on, "hp_power": hp_power}
-
+        result = {
+            "hp_on": make_binary_array("hp_on", num_steps),
+            "hp_power": make_var_array(
+                "hp_power", num_steps, low=0, high=self.max_power_kw,
+            ),
+        }
         if self.sg_ready:
-            sg_state_1 = [
-                pulp.LpVariable(f"sg_state_1_{t}", cat=pulp.LpBinary)
-                for t in range(num_steps)
-            ]
-            sg_state_3 = [
-                pulp.LpVariable(f"sg_state_3_{t}", cat=pulp.LpBinary)
-                for t in range(num_steps)
-            ]
-            result["sg_state_1"] = sg_state_1
-            result["sg_state_3"] = sg_state_3
-
+            result["sg_state_1"] = make_binary_array("sg_state_1", num_steps)
+            result["sg_state_3"] = make_binary_array("sg_state_3", num_steps)
         return result
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -214,58 +209,39 @@ class HeatPump(Component):
         hp_power = variables["hp_power"]
         num_steps = len(hp_on)
 
-        min_run_steps = max(1, self.min_run_minutes // step_minutes)
-        min_pause_steps = max(1, self.min_pause_minutes // step_minutes)
+        min_run_steps = steps_for_minutes(self.min_run_minutes, step_minutes)
+        min_pause_steps = steps_for_minutes(self.min_pause_minutes, step_minutes)
 
-        for t in range(num_steps):
-            model += hp_power[t] <= self.max_power_kw * hp_on[t], f"hp_max_power_{t}"
-            model += hp_power[t] >= self.min_power_kw * hp_on[t], f"hp_min_power_{t}"
+        # Modulationsbereich (Min/Max Leistung gekoppelt an on/off)
+        add_on_off_power_link(
+            model, hp_power, hp_on,
+            max_power=self.max_power_kw,
+            min_power=self.min_power_kw,
+            name="hp",
+        )
 
-        # Mindestlaufzeit
-        for t in range(1, num_steps):
-            for k in range(1, min_run_steps):
-                if t + k < num_steps:
-                    model += (
-                        hp_on[t] - hp_on[t - 1] <= hp_on[t + k],
-                        f"hp_min_run_{t}_{k}",
-                    )
-
-        # Mindestpausenzeit
-        for t in range(1, num_steps):
-            for k in range(1, min_pause_steps):
-                if t + k < num_steps:
-                    model += (
-                        hp_on[t - 1] - hp_on[t] <= 1 - hp_on[t + k],
-                        f"hp_min_pause_{t}_{k}",
-                    )
+        add_min_run_time(model, hp_on, min_run_steps=min_run_steps, name="hp")
+        add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
 
         # SG-Ready Constraints (BWP v1.1)
         if self.sg_ready and "sg_state_1" in variables:
             sg1 = variables["sg_state_1"]
             sg3 = variables["sg_state_3"]
+            min_hold_steps = steps_for_minutes(self.sg_min_hold_minutes, step_minutes)
 
-            min_hold_steps = max(1, self.sg_min_hold_minutes // step_minutes)
+            # Exklusivitaet SG1/SG3
+            add_mutual_exclusion(model, sg1, sg3, name="sg")
 
             for t in range(num_steps):
-                model += sg1[t] + sg3[t] <= 1, f"sg_exclusive_{t}"
-
+                # Leistungslimit bei SG1
                 model += (
                     hp_power[t] <= self.max_power_kw * (1 - sg1[t])
                     + self.sg_state1_power_limit * sg1[t],
                     f"sg1_power_limit_{t}",
                 )
-
+                # SG3 setzt Betrieb voraus
                 model += sg3[t] <= hp_on[t], f"sg3_needs_on_{t}"
 
-            # Mindesthaltezeiten
-            for t in range(1, num_steps):
-                for k in range(1, min_hold_steps):
-                    if t + k < num_steps:
-                        model += (
-                            sg1[t] - sg1[t - 1] <= sg1[t + k],
-                            f"sg1_hold_{t}_{k}",
-                        )
-                        model += (
-                            sg3[t] - sg3[t - 1] <= sg3[t + k],
-                            f"sg3_hold_{t}_{k}",
-                        )
+            # Mindesthaltezeiten fuer SG1 und SG3
+            add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="sg1")
+            add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="sg3")

@@ -8,10 +8,16 @@ from typing import Any
 
 import pulp
 
-from emos_light.components.base import Component
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_on_off_power_link,
+    make_binary_array,
+    make_var_array,
+    step_hours,
+)
 
 
-class Wallbox(Component):
+class Wallbox(MILPComponent):
     """Wallbox mit Paragraph-14a-Bewusstsein und Phasenumschaltung.
 
     Phasenumschaltung:
@@ -64,81 +70,72 @@ class Wallbox(Component):
         delta_soc = max(0.0, self.target_soc - self.current_soc)
         return delta_soc * self.ev_capacity_kwh / self.charging_efficiency
 
+    # ------------------------------------------------------------------
+    # Anwesenheitslogik
+    # ------------------------------------------------------------------
+
+    def _is_ev_present(self, hour: int) -> bool:
+        """Prueft, ob das EV in der gegebenen Stunde am Stecker ist.
+
+        Tagsszenario  (arrival <= departure): anwesend [arrival, departure)
+        Nachtszenario (arrival >  departure): anwesend [arrival, 24) ∪ [0, departure)
+        """
+        if self.arrival_hour <= self.departure_hour:
+            return self.arrival_hour <= hour < self.departure_hour
+        return hour >= self.arrival_hour or hour < self.departure_hour
+
+    # ------------------------------------------------------------------
+    # MILP-Schnittstelle
+    # ------------------------------------------------------------------
+
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Wallbox-Variablen.
 
         Variablen:
-            wb_power[t]: Ladeleistung in kW (>= 0)
-            wb_on[t]: Binaer - Wallbox aktiv (fuer Mindestleistung)
+            wb_<name>_power[t]: Ladeleistung in kW (>= 0)
+            wb_<name>_on[t]:    Binaer - Wallbox aktiv (fuer Mindestleistung)
         """
         prefix = f"wb_{self.name}"
-
-        power = [
-            pulp.LpVariable(f"{prefix}_power_{t}", lowBound=0, upBound=self.max_power_kw)
-            for t in range(num_steps)
-        ]
-        on = [
-            pulp.LpVariable(f"{prefix}_on_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
-
         return {
-            f"wb_{self.name}_power": power,
-            f"wb_{self.name}_on": on,
+            f"wb_{self.name}_power": make_var_array(
+                f"{prefix}_power", num_steps, low=0, high=self.max_power_kw,
+            ),
+            f"wb_{self.name}_on": make_binary_array(
+                f"{prefix}_on", num_steps,
+            ),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
         """Fuegt Wallbox-Constraints zum Modell hinzu.
 
         Constraints:
-            1. Ladeleistung nur wenn an: power <= max_power * on
-            2. Mindestleistung wenn an: power >= min_power * on
-            3. EV-Anwesenheit: power = 0 ausserhalb Anwesenheitszeit
-            4. Mindestlademenge: sum(power * dt) >= energy_needed
+            1. Ladeleistung an on/off-Variable gekoppelt (Min und Max)
+            2. EV-Anwesenheit: power = 0 ausserhalb Anwesenheitszeit
+            3. Mindestlademenge: sum(power * dt) >= energy_needed
         """
         prefix = f"wb_{self.name}"
-        dt_h = step_minutes / 60.0
+        dt_h = step_hours(step_minutes)
 
         power = variables[f"wb_{self.name}_power"]
         on = variables[f"wb_{self.name}_on"]
         num_steps = len(power)
 
-        # Stunden-Zuordnung pro Zeitschritt
+        # 1) Modulationsbereich (Min/Max gekoppelt an on/off)
+        add_on_off_power_link(
+            model, power, on,
+            max_power=self.max_power_kw,
+            min_power=self.min_power_kw,
+            name=prefix,
+        )
+
+        # 2) EV-Anwesenheit: ausserhalb der Anwesenheit hart auf 0
         steps_per_hour = 60 // step_minutes
-
         for t in range(num_steps):
-            # Aktuelle Stunde dieses Zeitschritts
             hour = (t // steps_per_hour) % 24
+            if not self._is_ev_present(hour):
+                model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
 
-            # Constraint 1: Maximale Ladeleistung nur wenn an
-            model += (
-                power[t] <= self.max_power_kw * on[t],
-                f"{prefix}_max_power_{t}",
-            )
-
-            # Constraint 2: Mindestleistung wenn an
-            model += (
-                power[t] >= self.min_power_kw * on[t],
-                f"{prefix}_min_power_{t}",
-            )
-
-            # Constraint 3: EV-Anwesenheit
-            # EV ist anwesend wenn: arrival_hour <= hour ODER hour < departure_hour
-            # (ueber Nacht: Ankunft 17h, Abfahrt 7h -> anwesend 17-24 und 0-7)
-            if self.arrival_hour <= self.departure_hour:
-                # Tagszenario (z.B. arrival=8, departure=17)
-                ev_present = self.arrival_hour <= hour < self.departure_hour
-            else:
-                # Nachtszenario (z.B. arrival=17, departure=7)
-                ev_present = hour >= self.arrival_hour or hour < self.departure_hour
-
-            if not ev_present:
-                model += (
-                    power[t] == 0,
-                    f"{prefix}_ev_absent_{t}",
-                )
-
-        # Constraint 4: Mindestlademenge erfuellen
+        # 3) Mindestlademenge bis Abfahrt
         total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
         model += (
             total_energy >= self.energy_needed_kwh,
