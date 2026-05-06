@@ -99,5 +99,45 @@ class MILPComponent(Component):
         """
         return 0.0
 
+    def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
+        """Beitrag dieser Komponente zur Waermebedarf-Seite der Senke (kW).
+
+        Waermesenken (z.B. Estrich, Pufferspeicher) liefern hier den
+        Ausdruck, der den ``Q_in``-Beitrag in die Senken-Bilanz
+        einbringt. Komponenten, die selbst Senken sind, setzen
+        :attr:`heat_sink_id`.
+        """
+        return 0.0
+
+    # ------------------------------------------------------------------
+    # Optionale Setup-Methoden — Default ist no-op
+    # ------------------------------------------------------------------
+
+    def prepare(self, inp: Any) -> None:
+        """Optionaler Hook: erlaubt Vorberechnungen mit den Eingabedaten.
+
+        Wird vom Optimizer einmalig vor :meth:`get_optimization_variables`
+        aufgerufen. Default: nichts tun. Die Waermepumpe nutzt das z.B.
+        zur Berechnung der COP-Zeitreihen.
+        """
+
+    def set_active_heat_sinks(self, sinks: set) -> None:
+        """Optionaler Hook: teilt der Komponente die aktiven Waermesenken mit.
+
+        Wird vom Optimizer nach Konstruktion der Komponentenliste
+        aufgerufen, bevor Variablen erzeugt werden. Komponenten, die
+        Waerme an mehrere Senken verteilen (Waermepumpe), brauchen
+        diese Information, um interne Aufteilungs-Variablen zu erzeugen.
+        """
+
+    @property
+    def heat_sink_id(self) -> str | None:
+        """Bezeichner dieser Komponente als Waermesenke (z.B. ``"floor"``).
+
+        Komponenten, die Waermesenken sind, ueberschreiben dies.
+        Default ``None`` = keine Senke.
+        """
+        return None
+
 
 __all__ = ["Component", "MILPComponent"]

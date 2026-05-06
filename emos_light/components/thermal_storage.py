@@ -321,6 +321,21 @@ class ThermalStorage(MILPComponent):
         )
 
     # ------------------------------------------------------------------
+    # Bilanz-Beitraege als Waermesenke
+    # ------------------------------------------------------------------
+
+    @property
+    def heat_sink_id(self) -> str:
+        """Bezeichner als Waermesenke entspricht dem Praefix (z.B. 'ww')."""
+        return self.prefix
+
+    def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
+        """Q_in des Speichers = vom Heizer eingespeiste Leistung."""
+        if sink == self.heat_sink_id:
+            return variables[f"{self.prefix}_q_in"][t]
+        return 0.0
+
+    # ------------------------------------------------------------------
     # Optionale Constraints
     # ------------------------------------------------------------------
 

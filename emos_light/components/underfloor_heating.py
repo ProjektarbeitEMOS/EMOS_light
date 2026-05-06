@@ -159,3 +159,18 @@ class UnderfloorHeating(MILPComponent):
             ),
             name="ufh_floor_energy",
         )
+
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege als Waermesenke
+    # ------------------------------------------------------------------
+
+    @property
+    def heat_sink_id(self) -> str:
+        """Bezeichner als Waermesenke fuer den FBH-/Estrich-Pfad."""
+        return "floor"
+
+    def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
+        """Q_in der FBH = thermische Leistung, die der Estrich aufnimmt."""
+        if sink == self.heat_sink_id:
+            return variables["ufh_q_floor_in"][t]
+        return 0.0

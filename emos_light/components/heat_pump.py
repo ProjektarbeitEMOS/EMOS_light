@@ -100,6 +100,17 @@ class HeatPump(MILPComponent):
         self.sg_min_hold_minutes = config.get("sg_ready_min_hold_minutes", 10)
         self.sg_min_cooldown_minutes = config.get("sg_ready_min_cooldown_minutes", 10)
 
+        # Werden in prepare() / set_active_heat_sinks() vom Optimizer gesetzt.
+        self._cop_heating: np.ndarray | None = None
+        self._cop_dhw: np.ndarray | None = None
+        self._active_sinks: set = set()
+
+    # Vorlauftemperatur je Senken-Bezeichner (Konvention)
+    _SINK_FLOW_TEMP = {
+        "floor": "flow_temp_heating",
+        "ww": "flow_temp_dhw",
+    }
+
     # ============================================================
     # COP-Berechnung (2D-Kennfeld aroTHERM plus)
     # ============================================================
@@ -137,17 +148,36 @@ class HeatPump(MILPComponent):
         return np.clip(cap, 0.0, 20.0)
 
     # ============================================================
+    # Setup-Hooks (vom Optimizer aufgerufen)
+    # ============================================================
+
+    def prepare(self, inp: Any) -> None:
+        """Vorberechnung der COP-Zeitreihen aus der Aussentemperatur."""
+        self._cop_heating = self.calculate_cop_heating(inp.outside_temp_c)
+        self._cop_dhw = self.calculate_cop_dhw(inp.outside_temp_c)
+
+    def set_active_heat_sinks(self, sinks: set) -> None:
+        """Welche Senken sind aktiv? Bestimmt, ob ein WP-Split noetig ist."""
+        # Nur Senken merken, die wir auch bedienen koennen
+        self._active_sinks = set(sinks) & set(self._SINK_FLOW_TEMP.keys())
+
+    # ============================================================
     # MILP-Variablen und Constraints
     # ============================================================
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
-        """Erstellt WP-Variablen inkl. SG-Ready Zustaende (BWP v1.1).
+        """Erstellt WP-Variablen inkl. SG-Ready und ggf. Senken-Split.
 
         Variablen:
             hp_on[t]: Binaer — WP an/aus
             hp_power[t]: Elektrische Leistung gesamt [kW]
             hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Lastabwurf)
             hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Verstaerkt)
+
+        Wenn mehrere Waermesenken aktiv sind, werden zusaetzlich
+        Aufteilungs-Variablen pro Senke erzeugt:
+            hp_power_floor[t]: Anteil der el. Leistung an FBH-Pfad
+            hp_power_ww[t]:    Anteil der el. Leistung an WW-Pfad
         """
         result = {
             "hp_on": make_binary_array("hp_on", num_steps),
@@ -158,6 +188,17 @@ class HeatPump(MILPComponent):
         if self.sg_ready:
             result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
             result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
+
+        # Senken-Split nur wenn mehr als eine Senke aktiv
+        if len(self._active_sinks) > 1:
+            if "floor" in self._active_sinks:
+                result["hp_power_floor"] = make_var_array(
+                    "hp_power_floor", num_steps, low=0, high=self.max_power_kw,
+                )
+            if "ww" in self._active_sinks:
+                result["hp_power_ww"] = make_var_array(
+                    "hp_power_ww", num_steps, low=0, high=self.max_power_kw,
+                )
         return result
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -203,6 +244,21 @@ class HeatPump(MILPComponent):
             add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
             add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
 
+        # Senken-Split-Constraint: hp_power = sum(hp_power_<sink>)
+        # Nur wenn mehrere Senken aktiv sind, sonst speist hp_power direkt
+        # die einzige Senke (siehe heat_supply).
+        if len(self._active_sinks) > 1:
+            split_vars = []
+            if "hp_power_floor" in variables:
+                split_vars.append(variables["hp_power_floor"])
+            if "hp_power_ww" in variables:
+                split_vars.append(variables["hp_power_ww"])
+            for t in range(num_steps):
+                model += (
+                    hp_power[t] == sum(v[t] for v in split_vars),
+                    f"hp_power_split_{t}",
+                )
+
     # ------------------------------------------------------------------
     # Bilanz-Beitraege
     # ------------------------------------------------------------------
@@ -211,5 +267,23 @@ class HeatPump(MILPComponent):
         """Gesamte WP-Wirkleistung als Last am AC-Knoten."""
         return variables["hp_power"][t]
 
-    # heat_supply() bleibt vorerst auf Default 0 — der Waermesplit ist
-    # noch im Optimizer hartcodiert. Phase 5b wird das hierhin verlagern.
+    def heat_supply(self, variables: dict, t: int, sink: str) -> Any:
+        """Thermische Leistung an die jeweilige Senke (kW).
+
+        - Bei aktivem Split (mehrere Senken): hp_power_<sink> * COP_<sink>
+        - Bei nur einer Senke: hp_power * COP_<sink>
+        - Bei nicht-bedienter Senke: 0
+        """
+        if sink not in self._active_sinks:
+            return 0.0
+
+        cop_arr = self._cop_heating if sink == "floor" else self._cop_dhw
+        if cop_arr is None:
+            return 0.0
+        cop_t = float(cop_arr[t])
+
+        split_key = f"hp_power_{sink}"
+        if split_key in variables:
+            return variables[split_key][t] * cop_t
+        # Single-sink-Fall: hp_power speist direkt diese Senke
+        return variables["hp_power"][t] * cop_t
