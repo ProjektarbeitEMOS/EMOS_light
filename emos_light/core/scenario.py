@@ -60,9 +60,9 @@ def build_components(config: dict) -> dict:
     )
     if config["underfloor_heating"].get("enabled"):
         ufh_config = dict(config["underfloor_heating"])
-        if building is not None:
-            # Wand+Luft-Kapazitaet als effektive Zusatzmasse des Thermospeichers
-            ufh_config["additional_capacity_kwh_per_k"] = building.shell_capacity_kwh_per_k
+        # Modell EMOS Light (Mai 2026): nur Estrich als Waermespeicher;
+        # Wand/Luft werden bewusst vernachlaessigt (vgl. Building-Doku).
+        # additional_capacity_kwh_per_k bleibt damit auf Default 0.
         underfloor_heating = UnderfloorHeating("ufh", ufh_config)
     else:
         underfloor_heating = None

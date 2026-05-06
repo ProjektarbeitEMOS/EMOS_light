@@ -1,8 +1,15 @@
 """Tests fuer das Gebaeudemodell der Gebaeudegruppe (Mai 2026).
 
-Validiert die Berechnungen gegen das Lehrbeispiel im XLSX-Sheet
-"Bestimmung und Bedeutung 𝜏" (Bezugskonfiguration: l=15, b=10, h=10,
-A_F=125, U=0.2/0.9/0.4, Lueftung 0.17, Estrich c=1070 ρ=2000 d=0.06).
+Bezugskonfiguration aus dem XLSX-Lehrbeispiel:
+    l=15, b=10, h=10, A_F=125, U=0.2/0.9/0.4, Lueftung 0.17,
+    Estrich c=1070 ρ=2000 d=0.06
+
+Wichtig — Modellabweichung gegenueber XLSX:
+    Die XLSX rechnet C_Gebaeude = C_Estrich + C_Wand. EMOS Light
+    vernachlaessigt die Wand als Speicher (Modellentscheidung Mai 2026)
+    und rechnet nur mit C_Estrich. UA-Werte und P_Verlust sind unveraendert,
+    aber τ und t_aus skalieren mit dem Faktor C_Estrich/(C_Estrich+C_Wand)
+    = 5.35/12.85 ≈ 0.416 gegenueber den XLSX-Werten.
 """
 
 import pytest
@@ -49,38 +56,42 @@ def test_ua_values(lehrbeispiel: Building):
 
 
 def test_capacities(lehrbeispiel: Building):
-    """C_Estrich + C_Wand entsprechen den XLSX-Werten 5350 + 7500 Wh/K."""
+    """C_Estrich + C_Wand wie XLSX, aber total_capacity nur Estrich (EMOS Light)."""
     assert lehrbeispiel.screed_capacity_kwh_per_k == pytest.approx(5.35, abs=0.001)
     assert lehrbeispiel.wall_capacity_kwh_per_k == pytest.approx(7.5, abs=0.001)
-    assert lehrbeispiel.total_capacity_kwh_per_k == pytest.approx(12.85, abs=0.001)
+    # EMOS-Light-Modell: total_capacity = nur Estrich
+    assert lehrbeispiel.total_capacity_kwh_per_k == pytest.approx(5.35, abs=0.001)
 
 
 # ---------------------------------------------------------------------------
 # Verlustleistung, Speicherenergie, Zeitkonstante (XLSX-Werte)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("t_in,p_xls,tau_xls", [
-    (22.0, -1507.5, -8.524046434494196),
-    (22.5, -1256.25, -10.228855721393035),
-    (23.0, -1005.0,  -12.786069651741293),
-    (23.5, -753.75,  -17.04809286898839),
-    (24.0, -502.5,   -25.572139303482587),
+# τ-Werte: XLSX hat C_Gebaeude (Estrich+Wand). EMOS-Light-Modell rechnet
+# nur mit C_Estrich, daher τ skaliert mit 5.35/12.85 ≈ 0.416.
+
+@pytest.mark.parametrize("t_in,p_xls,tau_efh", [
+    (22.0, -1507.5, -3.5489220563847428),
+    (22.5, -1256.25, -4.2587064676616917),
+    (23.0, -1005.0,  -5.3233830845771148),
+    (23.5, -753.75,  -7.0978441127694856),
+    (24.0, -502.5,   -10.6467661691542297),
 ])
-def test_loss_and_tau_t_aussen_25(lehrbeispiel: Building, t_in, p_xls, tau_xls):
-    """Sheet 1 des XLSX: T_aussen=25 const, T_innen variiert."""
+def test_loss_and_tau_t_aussen_25(lehrbeispiel: Building, t_in, p_xls, tau_efh):
+    """Sheet 1 (T_aussen=25): P_Verlust wie XLSX, τ = C_Estrich / P."""
     assert lehrbeispiel.total_loss_w(t_in, 25.0) == pytest.approx(p_xls, abs=0.01)
-    assert lehrbeispiel.time_constant_h(t_in, 25.0) == pytest.approx(tau_xls, abs=0.001)
+    assert lehrbeispiel.time_constant_h(t_in, 25.0) == pytest.approx(tau_efh, abs=0.001)
 
 
-@pytest.mark.parametrize("t_out,p_xls,tau_xls", [
-    (18.0, 2512.5, 5.114427860696518),
-    (17.0, 3015.0, 4.262023217247098),
-    (16.0, 3517.5, 3.6531627576403696),
+@pytest.mark.parametrize("t_out,p_xls,tau_efh", [
+    (18.0, 2512.5, 2.1293532338308458),
+    (17.0, 3015.0, 1.7744610281923714),
+    (16.0, 3517.5, 1.5209665955934613),
 ])
-def test_loss_and_tau_t_innen_23(lehrbeispiel: Building, t_out, p_xls, tau_xls):
-    """Sheet 2 des XLSX: T_innen=23 const, T_aussen variiert."""
+def test_loss_and_tau_t_innen_23(lehrbeispiel: Building, t_out, p_xls, tau_efh):
+    """Sheet 2 (T_innen=23): P_Verlust wie XLSX, τ skaliert mit C_Estrich."""
     assert lehrbeispiel.total_loss_w(23.0, t_out) == pytest.approx(p_xls, abs=0.01)
-    assert lehrbeispiel.time_constant_h(23.0, t_out) == pytest.approx(tau_xls, abs=0.001)
+    assert lehrbeispiel.time_constant_h(23.0, t_out) == pytest.approx(tau_efh, abs=0.001)
 
 
 @pytest.mark.parametrize("t_in,q_xls", [
@@ -96,16 +107,16 @@ def test_stored_energy(lehrbeispiel: Building, t_in, q_xls):
     assert lehrbeispiel.stored_energy_kwh(t_in) == pytest.approx(q_xls, abs=0.001)
 
 
-@pytest.mark.parametrize("t_in,t_aus_xls", [
-    (22.0, -8.524046434494196),
-    (22.5, -15.343283582089553),
-    (23.0, -25.572139303482587),
-    (23.5, -42.62023217247098),
-    (24.0, -76.71641791044776),
+@pytest.mark.parametrize("t_in,t_aus_efh", [
+    (22.0, -3.5489220563847428),
+    (22.5, -6.3880597014925362),
+    (23.0, -10.6467661691542297),
+    (23.5, -17.7446102819237161),
+    (24.0, -31.9402985074626784),
 ])
-def test_cooldown_time(lehrbeispiel: Building, t_in, t_aus_xls):
-    """t_aus = C_Gebaeude·(T_in - T_min)/P_Verlust mit T_min=21."""
-    assert lehrbeispiel.cooldown_time_h(t_in, 25.0) == pytest.approx(t_aus_xls, abs=0.001)
+def test_cooldown_time(lehrbeispiel: Building, t_in, t_aus_efh):
+    """t_aus = C_Estrich·(T_in - T_min)/P_Verlust mit T_min=21."""
+    assert lehrbeispiel.cooldown_time_h(t_in, 25.0) == pytest.approx(t_aus_efh, abs=0.001)
 
 
 # ---------------------------------------------------------------------------

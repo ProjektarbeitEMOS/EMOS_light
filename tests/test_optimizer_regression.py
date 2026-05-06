@@ -37,7 +37,9 @@ EXPECTED = {
     "hp_ufh": {
         "cost_eur":   3.6676,
         "hp_kwh":     0.0,
-        "floor_min":  1.0,    # End-Estrichenergie ueber 1 kWh (= warmer als T_min)
+        "floor_min":  0.0,    # Estrich darf am Tagesende leer sein (April,
+                              #   keine Heizlast, WP laeuft nicht — physikalisch
+                              #   sinnvoll bei "nur Estrich"-Modell)
     },
     "wallbox": {
         "cost_eur":  11.6324,

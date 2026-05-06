@@ -460,20 +460,13 @@ with tab_config:
                 config["underfloor_heating"]["floor_temp_max_c"] = float(floor_temp[1])
 
                 from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH
-                from emos_light.components.building import Building as _BPrev
-                _bldg_prev = _BPrev("bldg_preview", config.get("building", {}))
-                _ufh_cfg_prev = dict(config["underfloor_heating"])
-                _ufh_cfg_prev["additional_capacity_kwh_per_k"] = _bldg_prev.shell_capacity_kwh_per_k
-                _ufh = _UFH("ufh_preview", _ufh_cfg_prev)
+                # Modell EMOS Light (Mai 2026): nur der Estrich als Speicher,
+                # Wand und Luft werden bewusst vernachlaessigt.
+                _ufh = _UFH("ufh_preview", config["underfloor_heating"])
                 st.caption(
-                    f"Therm. Kapazitaet (gesamt): **{_ufh.capacity_kwh_per_k:.1f} kWh/K** | "
+                    f"C_Estrich: **{_ufh.capacity_kwh_per_k:.2f} kWh/K** | "
                     f"Nutzbar: **{_ufh.total_capacity_kwh:.0f} kWh** | "
                     f"Verlustrate: **{_ufh.loss_rate_per_h:.3f}/h**"
-                )
-                st.caption(
-                    f"C_Estrich: **{_ufh.estrich_only_capacity_kwh_per_k:.2f} kWh/K** | "
-                    f"C_Wand: **{_bldg_prev.wall_capacity_kwh_per_k:.2f} kWh/K** | "
-                    f"C_Luft: **{_bldg_prev.air_capacity_kwh_per_k:.2f} kWh/K**"
                 )
 
         with col_bldg:
@@ -561,20 +554,19 @@ with tab_config:
                 f"Warmwasser: **{config['heat_demand']['annual_hot_water_kwh']} kWh/a**"
             )
 
-            # Live-Vorschau: UA, C, tau, t_aus (Gebaeudegruppe)
+            # Live-Vorschau: UA, C_Estrich, tau, t_aus
+            # (Wand wird im Modell als Speicher bewusst vernachlaessigt.)
             _bldg = _B("bldg_preview", config["building"])
             ua_trans = _bldg.transmission_ua_w_per_k
             ua_lueft = _bldg.ventilation_ua_w_per_k
             ua_total = _bldg.total_ua_w_per_k
             c_estrich = _bldg.screed_capacity_kwh_per_k
-            c_wand = _bldg.wall_capacity_kwh_per_k
-            c_total = _bldg.total_capacity_kwh_per_k
 
             st.caption(
                 f"**UA**: Trans **{ua_trans:.0f}** + Lueft **{ua_lueft:.0f}** "
                 f"= **{ua_total:.0f} W/K**  |  "
-                f"**C_Geb**: Estrich **{c_estrich:.2f}** + Wand **{c_wand:.2f}** "
-                f"= **{c_total:.2f} kWh/K**"
+                f"**C_Estrich**: **{c_estrich:.2f} kWh/K**  "
+                f"_(Wand vernachlaessigt — siehe Modellannahme)_"
             )
 
             # Beispielszenarien fuer tau und t_aus

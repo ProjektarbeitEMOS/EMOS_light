@@ -209,12 +209,18 @@ class Building(Component):
     def total_capacity_kwh_per_k(self) -> float:
         """Gesamte thermische Kapazitaet C_Gebaeude in kWh/K.
 
-        Konvention der Gebaeudegruppe (Mai 2026): nur Estrich + Wand.
-        Luft wird ausgeklammert (Beitrag bei typischen Volumina < 5 %,
-        zudem akustisch/thermisch nur transient relevant). Wer die Luft
-        explizit mitnehmen will, addiert :attr:`air_capacity_kwh_per_k`.
+        Modellentscheidung EMOS Light (Mai 2026): **nur der Estrich
+        wird als Speicher gerechnet**. Wand und Luft werden bewusst
+        vernachlaessigt — ihre Energie ist im Verhaeltnis zur Estrich-
+        masse klein, transient nur langsam abrufbar und weicht zudem
+        die Modellgrenzen auf (Was zaehlt zur "Hülle"? Welche Schichten
+        haben welche Kapazität?).
+
+        Die Wand-/Luft-Properties (:attr:`wall_capacity_kwh_per_k`,
+        :attr:`air_capacity_kwh_per_k`) bleiben verfuegbar, falls
+        zukuenftige Modellvarianten sie wieder einbinden moechten.
         """
-        return self.screed_capacity_kwh_per_k + self.wall_capacity_kwh_per_k
+        return self.screed_capacity_kwh_per_k
 
     # ========================================================================
     # Verlustleistung, Speicherenergie, Zeitkonstanten (Gebaeudegruppe)
@@ -287,29 +293,11 @@ class Building(Component):
         delta_to_tmin = t_innen_c - t_min_c
         return self.total_capacity_kwh_per_k * delta_to_tmin * 1000.0 / p_loss_w
 
-    def thermal_time_constant_h(
-        self,
-        estrich_capacity_kwh_per_k: float = 0.0,
-        delta_t_k: float = 5.0,
-    ) -> float:
-        """Thermische Zeitkonstante des Gebaeudes τ = C_Gebaeude / P_Verlust in Stunden.
-
-        Beschreibt, wie schnell das Gebaeude bei gegebenem Temperaturgefaelle
-        zur Aussenluft auskuehlt/aufheizt.
-
-        Args:
-            estrich_capacity_kwh_per_k: Kapazitaet des Estrichs (aus UFH-Komponente).
-            delta_t_k: Angenommene Temperaturdifferenz innen/aussen [K].
-
-        Returns:
-            Zeitkonstante in Stunden. 0 wenn kein Verlust berechenbar.
-        """
-        c_total_kwh_per_k = estrich_capacity_kwh_per_k + self.shell_capacity_kwh_per_k
-        p_loss_kw = self.ua_w_per_k * delta_t_k / 1000.0
-        if p_loss_kw <= 0:
-            return 0.0
-        return c_total_kwh_per_k * delta_t_k / p_loss_kw  # = C·ΔT / (UA·ΔT/1000) in h
-        # Hinweis: Ergebnis = C_total_kwh_per_k * 1000 / UA  (ΔT kuerzt sich)
+    # Hinweis: Die frueher hier vorhandene ``thermal_time_constant_h``-Methode
+    # mit Wand+Luft-Anteil ist entfallen — die Modellentscheidung Mai 2026
+    # vernachlaessigt Wand und Luft als Speicher. Verwende jetzt
+    # :meth:`time_constant_h` (rein aus dem Estrich, mit T_innen/T_außen
+    # statt einer fixen Δt-Annahme).
 
     def _estimate_design_load(self) -> float:
         """Schaetzt die Norm-Heizlast aus Jahresverbrauch."""
