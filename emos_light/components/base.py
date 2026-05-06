@@ -139,5 +139,27 @@ class MILPComponent(Component):
         """
         return None
 
+    @property
+    def is_heat_supplier(self) -> bool:
+        """True, wenn die Komponente Waerme fuer mind. eine Senke liefert.
+
+        Wird vom Optimizer benutzt, um zu entscheiden, ob Waermesenken
+        ueberhaupt sinnvoll ins Modell eingebunden werden — eine UFH
+        ohne Waermeerzeuger waere ein abgekoppelter Knoten und macht
+        das Problem schnell infeasible. Default False, HP ueberschreibt.
+        """
+        return False
+
+    @property
+    def is_par14a_curtailable(self) -> bool:
+        """True, wenn die Komponente unter §14a EnWG drosselbar ist.
+
+        Aktuell trifft das auf WP und Wallboxen zu (steuerbare
+        Verbrauchseinrichtungen i.S.d. §14a). Batterie und Haushaltslast
+        sind ausgenommen. Default False, betroffene Komponenten
+        ueberschreiben.
+        """
+        return False
+
 
 __all__ = ["Component", "MILPComponent"]

@@ -149,3 +149,7 @@ class Wallbox(MILPComponent):
     def electrical_demand(self, variables: dict, t: int) -> Any:
         """Wallbox-Ladeleistung als Last am AC-Knoten."""
         return variables[f"wb_{self.name}_power"][t]
+
+    @property
+    def is_par14a_curtailable(self) -> bool:
+        return True

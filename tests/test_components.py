@@ -161,3 +161,40 @@ def test_heat_pump_splits_with_two_sinks():
     keys = hp.get_optimization_variables(num_steps=2, model=model).keys()
     assert "hp_power_floor" in keys
     assert "hp_power_ww" in keys
+
+
+# ---------------------------------------------------------------------------
+# Predicates: is_heat_supplier, is_par14a_curtailable
+# ---------------------------------------------------------------------------
+
+def test_heat_pump_is_supplier():
+    hp = HeatPump("hp", DEFAULT_CONFIG["heat_pump"])
+    assert hp.is_heat_supplier is True
+
+
+def test_battery_not_supplier():
+    bat = Battery("bat", DEFAULT_CONFIG["battery"])
+    assert bat.is_heat_supplier is False
+
+
+def test_storage_and_ufh_not_suppliers():
+    ufh = UnderfloorHeating("ufh", DEFAULT_CONFIG["underfloor_heating"])
+    ts = ThermalStorage("ww", DEFAULT_CONFIG["hot_water_storage"], prefix="ww")
+    assert ufh.is_heat_supplier is False
+    assert ts.is_heat_supplier is False
+
+
+@pytest.mark.parametrize("cls,cfg_key,curtailable", [
+    (HeatPump, "heat_pump", True),
+    (Wallbox, None, True),  # Wallbox uses WALLBOX_DEFAULT
+    (Battery, "battery", False),
+    (UnderfloorHeating, "underfloor_heating", False),
+])
+def test_par14a_curtailable_predicate(cls, cfg_key, curtailable):
+    if cls is Wallbox:
+        c = cls("wb1", WALLBOX_DEFAULT)
+    elif cls is ThermalStorage:
+        c = cls("x", DEFAULT_CONFIG[cfg_key], prefix="x")
+    else:
+        c = cls("x", DEFAULT_CONFIG[cfg_key])
+    assert c.is_par14a_curtailable is curtailable

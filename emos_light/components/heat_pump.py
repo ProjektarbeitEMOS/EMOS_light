@@ -267,6 +267,14 @@ class HeatPump(MILPComponent):
         """Gesamte WP-Wirkleistung als Last am AC-Knoten."""
         return variables["hp_power"][t]
 
+    @property
+    def is_heat_supplier(self) -> bool:
+        return True
+
+    @property
+    def is_par14a_curtailable(self) -> bool:
+        return True
+
     def heat_supply(self, variables: dict, t: int, sink: str) -> Any:
         """Thermische Leistung an die jeweilige Senke (kW).
 

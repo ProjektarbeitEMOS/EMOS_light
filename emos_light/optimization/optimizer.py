@@ -93,24 +93,33 @@ class EMOSLightOptimizer:
         # ============================================================
         # Phase A — Komponentenliste aufbauen (nur Referenzen sammeln)
         # ============================================================
-        # Heizsenken (UFH, WW-Speicher) sind nur sinnvoll, wenn ein
-        # Waermeerzeuger existiert. Aktuell ist das ausschliesslich die WP.
-        has_hp = bool(self.heat_pump and self.heat_pump.enabled)
+        # Heizsenken (UFH, WW-Speicher) sind nur sinnvoll, wenn ueberhaupt
+        # ein Waermeerzeuger existiert (siehe is_heat_supplier). Sonst
+        # waeren sie abgekoppelte Knoten.
         has_fws = bool(self.fresh_water_station and self.fresh_water_station.enabled)
 
-        milp_components: list = []
+        # Erst alle potenziellen MILP-Komponenten sammeln
+        candidates: list = []
         if self.battery and self.battery.enabled:
-            milp_components.append(self.battery)
-        if has_hp:
-            milp_components.append(self.heat_pump)
-            # Senken nur einbinden, wenn es jemanden gibt, der sie speist
-            if self.underfloor_heating and self.underfloor_heating.enabled:
-                milp_components.append(self.underfloor_heating)
-            if self.hot_water_storage and self.hot_water_storage.enabled:
-                milp_components.append(self.hot_water_storage)
-        active_wallboxes = [wb for wb in self.wallboxes if wb.enabled]
-        for wb in active_wallboxes:
-            milp_components.append(wb)
+            candidates.append(self.battery)
+        if self.heat_pump and self.heat_pump.enabled:
+            candidates.append(self.heat_pump)
+        if self.underfloor_heating and self.underfloor_heating.enabled:
+            candidates.append(self.underfloor_heating)
+        if self.hot_water_storage and self.hot_water_storage.enabled:
+            candidates.append(self.hot_water_storage)
+        for wb in self.wallboxes:
+            if wb.enabled:
+                candidates.append(wb)
+
+        # Wenn keine Waermeerzeuger existieren, Senken rausfiltern
+        has_supplier = any(c.is_heat_supplier for c in candidates)
+        milp_components: list = [
+            c for c in candidates
+            if has_supplier or c.heat_sink_id is None
+        ]
+        active_wallboxes = [c for c in milp_components if isinstance(c, Wallbox)]
+        has_hp = any(c.is_heat_supplier for c in milp_components)
 
         # ============================================================
         # Phase B — Vorbereitung mit Eingangsdaten (z.B. WP berechnet COP)
@@ -241,15 +250,14 @@ class EMOSLightOptimizer:
                 f"feed_in_pv_limit_{t}",
             )
 
-        # §14a Drosselung — Summe der drosselbaren Verbraucher
-        # (aktuell hartcodiert: WP + Wallboxen; in Phase 6 ggf. ueber
-        # ein Komponenten-Property "is_par14a_curtailable" generalisieren)
+        # §14a Drosselung — Summe aller is_par14a_curtailable Lasten
         if inp.par14a_enabled and inp.par14a_curtailed_steps:
+            curtailable = [c for c in milp_components if c.is_par14a_curtailable]
             for t in inp.par14a_curtailed_steps:
                 if 0 <= t < num_steps:
-                    controllable = variables["hp_power"][t]
-                    for wb in active_wallboxes:
-                        controllable = controllable + variables[f"wb_{wb.name}_power"][t]
+                    controllable = pulp.lpSum(
+                        c.electrical_demand(variables, t) for c in curtailable
+                    )
                     model += (
                         controllable <= inp.par14a_curtailment_kw,
                         f"par14a_curtail_{t}",
