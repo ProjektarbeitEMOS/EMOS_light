@@ -48,6 +48,38 @@ class Building(Component):
         # UA-Wert (W/K): optional explizit, sonst automatisch aus Heizlast
         self._ua_w_per_k_config = config.get("heat_loss_coefficient_w_per_k")
 
+        # ------------------------------------------------------------------
+        # Direkte Geometrie + U-Werte (Gebaeudegruppe, Mai 2026)
+        # Wenn nicht in der Config angegeben, l/b aus heated_area abgeleitet
+        # (annaehernd quadratischer Grundriss) und h auf 2.5 m typisches
+        # Stockwerk gesetzt — passt zu vielen Einfamilienhaeusern.
+        # ------------------------------------------------------------------
+        import math
+        side = math.sqrt(self.heated_area_m2)
+        self.length_m = config.get("length_m", side)
+        self.width_m = config.get("width_m", side)
+        self.height_m = config.get("height_m", 2.5)
+        # Default Fensterflaeche = 15% der Bruttowandflaeche (typisch EFH)
+        wall_gross = 2 * self.height_m * (self.length_m + self.width_m)
+        cfg_window = config.get("window_area_m2", None)
+        self.window_area_m2 = (
+            float(cfg_window) if cfg_window is not None else 0.15 * wall_gross
+        )
+
+        self.u_value_wall = config.get("u_value_wall_w_m2_k", 0.2)
+        self.u_value_window = config.get("u_value_window_w_m2_k", 0.9)
+        self.u_value_roof_floor = config.get("u_value_roof_floor_w_m2_k", 0.4)
+        self.ventilation_loss_w_m3_k = config.get("ventilation_loss_w_m3_k", 0.17)
+
+        self.screed_thickness_m = config.get("screed_thickness_m", 0.06)
+        self.screed_density_kg_m3 = config.get("screed_density_kg_m3", 2000.0)
+        self.screed_specific_heat_j_kg_k = config.get(
+            "screed_specific_heat_j_kg_k", 1070.0
+        )
+        self.t_ref_c = config.get("reference_temp_c", 22.0)
+        # Komfort-Untergrenze fuer die t_aus-Berechnung (z.B. 21 °C)
+        self.t_min_c = config.get("comfort_min_temp_c", 21.0)
+
         self.annual_heating_kwh = config.get(
             "annual_heating_kwh",
             self.heated_area_m2 * self.specific_heat,
@@ -97,19 +129,163 @@ class Building(Component):
         """Gesamte Huellkapazitaet (Wand + Luft, ohne Estrich) in kWh/K."""
         return self.wall_capacity_kwh_per_k + self.air_capacity_kwh_per_k
 
+    # ========================================================================
+    # Geometrie und U-Werte (Modell der Gebaeudegruppe, Mai 2026)
+    # ========================================================================
+
+    @property
+    def wall_area_gross_m2(self) -> float:
+        """Brutto-Aussenwandflaeche (mit Fenstern) in m²."""
+        return 2.0 * self.height_m * (self.length_m + self.width_m)
+
+    @property
+    def wall_area_net_m2(self) -> float:
+        """Aussenwandflaeche ohne Fenster (geclamped >= 0)."""
+        return max(0.0, self.wall_area_gross_m2 - self.window_area_m2)
+
+    @property
+    def floor_plan_area_m2(self) -> float:
+        """Grundflaeche l·b in m² (nicht zu verwechseln mit heated_area_m2)."""
+        return self.length_m * self.width_m
+
+    @property
+    def building_volume_m3(self) -> float:
+        """Beheiztes Volumen l·b·h in m³."""
+        return self.floor_plan_area_m2 * self.height_m
+
+    @property
+    def transmission_ua_w_per_k(self) -> float:
+        """UA-Anteil aus Transmission ueber Aussenwand, Fenster, Dach+Boden."""
+        return (
+            self.wall_area_net_m2 * self.u_value_wall
+            + self.window_area_m2 * self.u_value_window
+            + self.floor_plan_area_m2 * self.u_value_roof_floor
+        )
+
+    @property
+    def ventilation_ua_w_per_k(self) -> float:
+        """UA-Anteil aus Lueftung."""
+        return self.ventilation_loss_w_m3_k * self.building_volume_m3
+
+    @property
+    def total_ua_w_per_k(self) -> float:
+        """Gesamt-UA = Transmission + Lueftung."""
+        return self.transmission_ua_w_per_k + self.ventilation_ua_w_per_k
+
     @property
     def ua_w_per_k(self) -> float:
         """Effektiver Waermeverlustkoeffizient (UA-Wert) in W/K.
 
-        UA = P_Heizlast / ΔT_Auslegung, sofern nicht explizit konfiguriert.
-        P_Verlust (bei ΔT) = UA · ΔT
+        Prioritaet:
+        1. ``heat_loss_coefficient_w_per_k`` aus der Config (manuell gesetzt)
+        2. Direkte Berechnung aus U-Werten + Lueftung (Gebaeudegruppe Mai 2026)
+        3. Fallback: Heuristik aus Heizlast und Auslegungstemperatur
         """
         if self._ua_w_per_k_config is not None:
             return float(self._ua_w_per_k_config)
+        if self.total_ua_w_per_k > 0:
+            return self.total_ua_w_per_k
         delta_design = self.indoor_temp - self.design_temp
         if delta_design <= 0:
             return 0.0
         return self.design_heating_load_kw * 1000.0 / delta_design
+
+    # ========================================================================
+    # Estrich-Kapazitaet (Schicht ueber l·b mit d_Estrich)
+    # ========================================================================
+
+    @property
+    def screed_capacity_kwh_per_k(self) -> float:
+        """Waermekapazitaet des Estrichs in kWh/K (c·ρ·V_Estrich)."""
+        joules_per_k = (
+            self.screed_specific_heat_j_kg_k
+            * self.screed_density_kg_m3
+            * self.floor_plan_area_m2
+            * self.screed_thickness_m
+        )
+        return joules_per_k / 3_600_000.0  # J/K → kWh/K
+
+    @property
+    def total_capacity_kwh_per_k(self) -> float:
+        """Gesamte thermische Kapazitaet C_Gebaeude in kWh/K.
+
+        Konvention der Gebaeudegruppe (Mai 2026): nur Estrich + Wand.
+        Luft wird ausgeklammert (Beitrag bei typischen Volumina < 5 %,
+        zudem akustisch/thermisch nur transient relevant). Wer die Luft
+        explizit mitnehmen will, addiert :attr:`air_capacity_kwh_per_k`.
+        """
+        return self.screed_capacity_kwh_per_k + self.wall_capacity_kwh_per_k
+
+    # ========================================================================
+    # Verlustleistung, Speicherenergie, Zeitkonstanten (Gebaeudegruppe)
+    # ========================================================================
+
+    def transmission_loss_w(self, t_innen_c: float, t_aussen_c: float) -> float:
+        """P_Transmission in W bei gegebenen Temperaturen (Vorzeichen mitgefuehrt)."""
+        return self.transmission_ua_w_per_k * (t_innen_c - t_aussen_c)
+
+    def ventilation_loss_w(self, t_innen_c: float, t_aussen_c: float) -> float:
+        """P_Lueftung in W bei gegebenen Temperaturen."""
+        return self.ventilation_ua_w_per_k * (t_innen_c - t_aussen_c)
+
+    def total_loss_w(self, t_innen_c: float, t_aussen_c: float) -> float:
+        """Gesamte Verlustleistung in W = P_Transmission + P_Lueftung."""
+        return self.total_ua_w_per_k * (t_innen_c - t_aussen_c)
+
+    def stored_energy_kwh(self, t_innen_c: float) -> float:
+        """Q_Gebaeude in kWh ueber dem Referenzniveau ``T_ref``.
+
+        Konvention der Gebaeudegruppe (Mai 2026): Q_Gebaeude rechnet
+        nur mit der Estrich-Kapazitaet, weil nur der Estrich seine
+        Waerme "abrufbar" (kurzfristig an den Raum abgebbar) gespeichert
+        hat. Die Wand puffert ueber ``time_constant_h`` mit, gibt ihre
+        Energie aber nur sehr langsam ab — sie zaehlt nicht zur
+        verfuegbaren Heizreserve.
+        """
+        return self.screed_capacity_kwh_per_k * (t_innen_c - self.t_ref_c)
+
+    def time_constant_h(self, t_innen_c: float, t_aussen_c: float) -> float:
+        """Zeitkonstante τ = C_Gebaeude / P_Verlust in Stunden.
+
+        Folgt der Definition der Gebaeudegruppe (Mai 2026):
+            τ(T_innen, T_außen) = C_Gebaeude · 1000 / P_Verlust(T_innen, T_außen)
+
+        Vorzeichen wird durchgereicht — bei positiver Differenz
+        (Innen > Außen, also Auskuehlen) ist τ positiv. Returns 0
+        wenn das Gebaeude im thermischen Gleichgewicht ist (keine
+        Verlustleistung, keine Eigenzeit definiert).
+        """
+        p_loss_w = self.total_loss_w(t_innen_c, t_aussen_c)
+        if p_loss_w == 0:
+            return 0.0
+        return self.total_capacity_kwh_per_k * 1000.0 / p_loss_w
+
+    def cooldown_time_h(
+        self, t_innen_c: float, t_aussen_c: float, t_min_c: float | None = None,
+    ) -> float:
+        """t_aus in Stunden — Zeit bis das Gebaeude auf ``T_min`` abgekuehlt ist.
+
+        Konvention der Gebaeudegruppe (Mai 2026):
+
+            t_aus = C_Gebaeude · (T_innen − T_min) / P_Verlust(T_innen, T_außen)
+
+        wobei C_Gebaeude die *gesamte* thermische Masse ist (Estrich + Wand).
+        T_min ist die Komfort-Untergrenze (z.B. 21 °C), nicht der
+        Referenzpunkt T_ref der Q-Berechnung.
+
+        Vereinfachung: konstante P_Verlust waehrend des gesamten
+        Auskuehlvorgangs (in Wirklichkeit verringert sich der Verlust,
+        wenn die Innentemperatur sinkt — wuerde t_aus etwas verlaengern).
+
+        Negativ wenn Außentemperatur > T_innen (Aufheizen statt Auskuehlen).
+        """
+        if t_min_c is None:
+            t_min_c = self.t_min_c
+        p_loss_w = self.total_loss_w(t_innen_c, t_aussen_c)
+        if p_loss_w == 0:
+            return 0.0
+        delta_to_tmin = t_innen_c - t_min_c
+        return self.total_capacity_kwh_per_k * delta_to_tmin * 1000.0 / p_loss_w
 
     def thermal_time_constant_h(
         self,

@@ -485,8 +485,68 @@ with tab_config:
                 index=list(building_types.keys()).index(config["building"].get("building_type", "kfw55")),
                 format_func=lambda x: building_types[x],
             )
-            config["building"]["heated_area_m2"] = st.number_input("Beheizte Flaeche (m2)", 30, 500, int(config["building"]["heated_area_m2"]), 10)
+            config["building"]["heated_area_m2"] = st.number_input(
+                "Beheizte Flaeche (m²)", 30, 500,
+                int(config["building"]["heated_area_m2"]), 10,
+            )
             config["building"]["num_occupants"] = st.number_input("Bewohner", 1, 10, int(config["building"]["num_occupants"]))
+
+            # Geometrie-Eingaben (Gebaeudegruppe Mai 2026)
+            geo_col1, geo_col2, geo_col3 = st.columns(3)
+            config["building"]["length_m"] = geo_col1.number_input(
+                "Laenge l (m)", 5.0, 50.0,
+                float(config["building"].get("length_m", 15.0)), 0.5,
+            )
+            config["building"]["width_m"] = geo_col2.number_input(
+                "Breite b (m)", 5.0, 50.0,
+                float(config["building"].get("width_m", 10.0)), 0.5,
+            )
+            config["building"]["height_m"] = geo_col3.number_input(
+                "Hoehe h (m)", 2.0, 15.0,
+                float(config["building"].get("height_m", 2.5)), 0.1,
+            )
+            # Fensterflaeche: optional manuell, sonst 15%-Heuristik
+            cur_window = config["building"].get("window_area_m2")
+            wall_gross_preview = (
+                2 * config["building"]["height_m"]
+                * (config["building"]["length_m"] + config["building"]["width_m"])
+            )
+            window_default = (
+                float(cur_window) if cur_window is not None else 0.15 * wall_gross_preview
+            )
+            config["building"]["window_area_m2"] = st.number_input(
+                "Fensterflaeche A_F (m²)", 0.0, 500.0,
+                window_default, 1.0,
+                help="Default: 15 % der Bruttowandflaeche (typisch fuer EFH).",
+            )
+
+            # U-Werte (Gebaeudegruppe-Defaults)
+            uw_col1, uw_col2, uw_col3 = st.columns(3)
+            config["building"]["u_value_wall_w_m2_k"] = uw_col1.number_input(
+                "U Wand W/(m²K)", 0.05, 2.0,
+                float(config["building"].get("u_value_wall_w_m2_k", 0.2)), 0.05,
+            )
+            config["building"]["u_value_window_w_m2_k"] = uw_col2.number_input(
+                "U Fenster W/(m²K)", 0.5, 5.0,
+                float(config["building"].get("u_value_window_w_m2_k", 0.9)), 0.1,
+            )
+            config["building"]["u_value_roof_floor_w_m2_k"] = uw_col3.number_input(
+                "U Dach+Boden W/(m²K)", 0.1, 2.0,
+                float(config["building"].get("u_value_roof_floor_w_m2_k", 0.4)), 0.05,
+            )
+
+            t_col1, t_col2 = st.columns(2)
+            config["building"]["reference_temp_c"] = t_col1.number_input(
+                "Referenztemperatur T_ref (°C)", 15.0, 25.0,
+                float(config["building"].get("reference_temp_c", 22.0)), 0.5,
+                help="Bezugstemperatur fuer die Speicherenergie Q_Gebaeude.",
+            )
+            config["building"]["comfort_min_temp_c"] = t_col2.number_input(
+                "Komfort-Untergrenze T_min (°C)", 14.0, 22.0,
+                float(config["building"].get("comfort_min_temp_c", 21.0)), 0.5,
+                help="Wenn das Gebaeude unter T_min faellt, wird die WP "
+                     "spaetestens hier wieder eingeschaltet.",
+            )
 
             from emos_light.components.building import Building as _B
             std = _B.BUILDING_STANDARDS.get(config["building"]["building_type"], 35)
@@ -501,19 +561,31 @@ with tab_config:
                 f"Warmwasser: **{config['heat_demand']['annual_hot_water_kwh']} kWh/a**"
             )
 
-            # Thermische Zeitkonstante tau = C_gesamt / P_Verlust
-            _bldg_tau = _B("bldg_tau", config["building"])
-            _ufh_cap_only = 0.0
-            if config["underfloor_heating"].get("enabled"):
-                from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH2
-                _ufh_tmp = _UFH2("ufh_tau", config["underfloor_heating"])
-                _ufh_cap_only = _ufh_tmp.estrich_only_capacity_kwh_per_k
-            _tau_h = _bldg_tau.thermal_time_constant_h(_ufh_cap_only, 5.0)
-            _ua = _bldg_tau.ua_w_per_k
+            # Live-Vorschau: UA, C, tau, t_aus (Gebaeudegruppe)
+            _bldg = _B("bldg_preview", config["building"])
+            ua_trans = _bldg.transmission_ua_w_per_k
+            ua_lueft = _bldg.ventilation_ua_w_per_k
+            ua_total = _bldg.total_ua_w_per_k
+            c_estrich = _bldg.screed_capacity_kwh_per_k
+            c_wand = _bldg.wall_capacity_kwh_per_k
+            c_total = _bldg.total_capacity_kwh_per_k
+
             st.caption(
-                f"UA-Wert: **{_ua:.0f} W/K** | "
-                f"Therm. Zeitkonstante tau ~ **{_tau_h:.1f} h** (bei dT=5K)"
+                f"**UA**: Trans **{ua_trans:.0f}** + Lueft **{ua_lueft:.0f}** "
+                f"= **{ua_total:.0f} W/K**  |  "
+                f"**C_Geb**: Estrich **{c_estrich:.2f}** + Wand **{c_wand:.2f}** "
+                f"= **{c_total:.2f} kWh/K**"
             )
+
+            # Beispielszenarien fuer tau und t_aus
+            t_in_ref = float(config["building"].get("reference_temp_c", 22.0))
+            t_out_examples = [-10.0, 0.0, 10.0]
+            tau_str = "  |  ".join(
+                f"T_a={ta:>4.0f}°C → τ={_bldg.time_constant_h(t_in_ref, ta):.1f} h, "
+                f"t_aus={_bldg.cooldown_time_h(t_in_ref, ta):.1f} h"
+                for ta in t_out_examples
+            )
+            st.caption(f"**Bei T_innen={t_in_ref}°C:**  {tau_str}")
 
     # Verbrauch
     with st.expander("Verbrauch", expanded=False):
