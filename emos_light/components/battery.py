@@ -174,3 +174,15 @@ class Battery(MILPComponent):
             ),
             name=f"{prefix}_soc",
         )
+
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege
+    # ------------------------------------------------------------------
+
+    def electrical_supply(self, variables: dict, t: int) -> Any:
+        """Entladung speist den AC-Knoten."""
+        return variables["bat_discharge"][t]
+
+    def electrical_demand(self, variables: dict, t: int) -> Any:
+        """Laden zieht aus dem AC-Knoten."""
+        return variables["bat_charge"][t]

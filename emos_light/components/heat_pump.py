@@ -202,3 +202,14 @@ class HeatPump(MILPComponent):
             # Mindesthaltezeiten fuer SG1 und SG3
             add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
             add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
+
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege
+    # ------------------------------------------------------------------
+
+    def electrical_demand(self, variables: dict, t: int) -> Any:
+        """Gesamte WP-Wirkleistung als Last am AC-Knoten."""
+        return variables["hp_power"][t]
+
+    # heat_supply() bleibt vorerst auf Default 0 — der Waermesplit ist
+    # noch im Optimizer hartcodiert. Phase 5b wird das hierhin verlagern.

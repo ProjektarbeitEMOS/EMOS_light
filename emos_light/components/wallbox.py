@@ -141,3 +141,11 @@ class Wallbox(MILPComponent):
             total_energy >= self.energy_needed_kwh,
             f"{prefix}_min_energy",
         )
+
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege
+    # ------------------------------------------------------------------
+
+    def electrical_demand(self, variables: dict, t: int) -> Any:
+        """Wallbox-Ladeleistung als Last am AC-Knoten."""
+        return variables[f"wb_{self.name}_power"][t]

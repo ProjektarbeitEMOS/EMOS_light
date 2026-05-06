@@ -86,6 +86,10 @@ class EMOSLightOptimizer:
 
         variables: dict = {"grid_buy": grid_buy, "grid_sell": grid_sell}
 
+        # Sammelliste aller aktiven MILP-Komponenten — nach dem Setup
+        # iteriert die Bilanzschleife generisch ueber diese.
+        milp_components: list = []
+
         # ============================================================
         # Batterie
         # ============================================================
@@ -93,6 +97,7 @@ class EMOSLightOptimizer:
             batt_vars = self.battery.get_optimization_variables(num_steps, model)
             variables.update(batt_vars)
             self.battery.add_constraints(model, variables, inp.step_minutes)
+            milp_components.append(self.battery)
 
         # ============================================================
         # Waermepumpe
@@ -102,6 +107,7 @@ class EMOSLightOptimizer:
             hp_vars = self.heat_pump.get_optimization_variables(num_steps, model)
             variables.update(hp_vars)
             self.heat_pump.add_constraints(model, variables, inp.step_minutes)
+            milp_components.append(self.heat_pump)
             hp_active = True
 
         if "hp_power" not in variables:
@@ -279,29 +285,23 @@ class EMOSLightOptimizer:
         # ============================================================
         # Wallboxen
         # ============================================================
-        wb_total_power: list = [0.0] * num_steps
-        for wb in self.wallboxes:
-            if wb.enabled:
-                wb_vars = wb.get_optimization_variables(num_steps, model)
-                variables.update(wb_vars)
-                wb.add_constraints(model, variables, inp.step_minutes)
-                wb_key = f"wb_{wb.name}_power"
-                for t in range(num_steps):
-                    wb_total_power[t] = wb_total_power[t] + variables[wb_key][t]
+        active_wallboxes = [wb for wb in self.wallboxes if wb.enabled]
+        for wb in active_wallboxes:
+            wb_vars = wb.get_optimization_variables(num_steps, model)
+            variables.update(wb_vars)
+            wb.add_constraints(model, variables, inp.step_minutes)
+            milp_components.append(wb)
 
         # ============================================================
-        # Elektrische Energiebilanz
+        # Elektrische Energiebilanz — generisch ueber milp_components
         # ============================================================
         for t in range(num_steps):
             supply = float(inp.pv_generation_kw[t]) + grid_buy[t]
             demand = float(inp.household_load_kw[t]) + grid_sell[t]
 
-            if self.battery and self.battery.enabled:
-                supply += variables["bat_discharge"][t]
-                demand += variables["bat_charge"][t]
-
-            demand += variables["hp_power"][t]
-            demand = demand + wb_total_power[t]
+            for c in milp_components:
+                supply = supply + c.electrical_supply(variables, t)
+                demand = demand + c.electrical_demand(variables, t)
 
             model += supply == demand, f"energy_balance_{t}"
 
@@ -312,11 +312,15 @@ class EMOSLightOptimizer:
                 f"feed_in_pv_limit_{t}",
             )
 
-        # Par14a Drosselung
+        # §14a Drosselung — Summe der drosselbaren Verbraucher
+        # (aktuell hartcodiert: WP + Wallboxen; in Phase 6 ggf. ueber
+        # ein Komponenten-Property "is_par14a_curtailable" generalisieren)
         if inp.par14a_enabled and inp.par14a_curtailed_steps:
             for t in inp.par14a_curtailed_steps:
                 if 0 <= t < num_steps:
-                    controllable = variables["hp_power"][t] + wb_total_power[t]
+                    controllable = variables["hp_power"][t]
+                    for wb in active_wallboxes:
+                        controllable = controllable + variables[f"wb_{wb.name}_power"][t]
                     model += (
                         controllable <= inp.par14a_curtailment_kw,
                         f"par14a_curtail_{t}",
