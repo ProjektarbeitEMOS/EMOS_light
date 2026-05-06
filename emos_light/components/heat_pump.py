@@ -275,6 +275,20 @@ class HeatPump(MILPComponent):
     def is_par14a_curtailable(self) -> bool:
         return True
 
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """WP-Leistung und SG-Ready-Zustand ins Result schreiben."""
+        result.hp_power_kw = np.array(
+            [v.varValue or 0.0 for v in variables["hp_power"]]
+        )
+        if self.sg_ready and "hp_sg3" in variables:
+            sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
+            sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
+            result.sg_ready_state = np.where(
+                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
+            )
+
     def heat_supply(self, variables: dict, t: int, sink: str) -> Any:
         """Thermische Leistung an die jeweilige Senke (kW).
 

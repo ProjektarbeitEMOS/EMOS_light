@@ -161,5 +161,21 @@ class MILPComponent(Component):
         """
         return False
 
+    # ------------------------------------------------------------------
+    # Result-Extraktion
+    # ------------------------------------------------------------------
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Schreibt die Ergebnis-Zeitreihen dieser Komponente in ``result``.
+
+        Wird vom Optimizer nach erfolgreichem Solve aufgerufen, fuer
+        jede aktive MILP-Komponente. Default: nichts tun. Komponenten
+        mit Ergebnisdaten ueberschreiben.
+
+        Die Methode mutiert ``result`` in place — kein Rueckgabewert.
+        """
+
 
 __all__ = ["Component", "MILPComponent"]

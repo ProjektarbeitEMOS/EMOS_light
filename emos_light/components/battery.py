@@ -186,3 +186,30 @@ class Battery(MILPComponent):
     def electrical_demand(self, variables: dict, t: int) -> Any:
         """Laden zieht aus dem AC-Knoten."""
         return variables["bat_charge"][t]
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Schreibt Lade-, Entlade-, SOC- und Alterungs-KPIs ins Result."""
+        import numpy as np
+
+        result.batt_charge_kw = np.array(
+            [v.varValue or 0.0 for v in variables["bat_charge"]]
+        )
+        result.batt_discharge_kw = np.array(
+            [v.varValue or 0.0 for v in variables["bat_discharge"]]
+        )
+        result.batt_soc_kwh = np.array(
+            [v.varValue or 0.0 for v in variables["bat_soc"]]
+        )
+        # Alterungskosten-KPIs (PDF Speichergruppe)
+        throughput_kwh = float(
+            (result.batt_charge_kw.sum() + result.batt_discharge_kw.sum()) * dt_h
+        )
+        result.battery_throughput_kwh = throughput_kwh
+        c_aging_ct = self.aging_cost_ct_per_kwh
+        result.battery_aging_cost_eur = throughput_kwh / 2.0 * c_aging_ct / 100.0
+        if self.usable_capacity_kwh > 0:
+            result.battery_equivalent_cycles = (
+                throughput_kwh / (2.0 * self.usable_capacity_kwh)
+            )

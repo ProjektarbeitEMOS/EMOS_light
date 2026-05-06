@@ -174,3 +174,18 @@ class UnderfloorHeating(MILPComponent):
         if sink == self.heat_sink_id:
             return variables["ufh_q_floor_in"][t]
         return 0.0
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Estrichenergie, Bodentemperatur und Waermezufuhr ins Result."""
+        import numpy as np
+        result.floor_energy_kwh = np.array(
+            [v.varValue or 0.0 for v in variables["ufh_floor_energy"]]
+        )
+        result.floor_temp_c = np.array([
+            self.energy_to_temp(e) for e in result.floor_energy_kwh
+        ])
+        result.q_floor_kw = np.array(
+            [v.varValue or 0.0 for v in variables["ufh_q_floor_in"]]
+        )

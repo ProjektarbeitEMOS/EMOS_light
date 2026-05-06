@@ -345,93 +345,20 @@ class EMOSLightOptimizer:
             grid_buy_kw=np.array([v.varValue or 0.0 for v in grid_buy]),
             grid_sell_kw=np.array([v.varValue or 0.0 for v in grid_sell]),
             timestamps=inp.timestamps,
+            # Default SG-Ready: Normalbetrieb, wird ggf. von HP.extract_result ueberschrieben
+            sg_ready_state=np.full(num_steps, 2),
         )
 
-        # Batterie
-        if self.battery and self.battery.enabled:
-            result.batt_charge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["bat_charge"]]
-            )
-            result.batt_discharge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["bat_discharge"]]
-            )
-            result.batt_soc_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["bat_soc"]]
-            )
-            # Alterungskosten-KPIs (PDF Speichergruppe)
-            throughput_kwh = float(
-                (result.batt_charge_kw.sum() + result.batt_discharge_kw.sum()) * dt_h
-            )
-            result.battery_throughput_kwh = throughput_kwh
-            c_aging_ct = self.battery.aging_cost_ct_per_kwh
-            result.battery_aging_cost_eur = (
-                throughput_kwh / 2.0 * c_aging_ct / 100.0
-            )
-            usable = self.battery.usable_capacity_kwh
-            if usable > 0:
-                result.battery_equivalent_cycles = throughput_kwh / (2.0 * usable)
-            # total_cost_eur soll nur die reinen Netzkosten enthalten
-            # (fairer Vergleich mit Baseline, die keine Alterung beruecksichtigt).
-            # Alterungskosten werden separat als battery_aging_cost_eur ausgewiesen.
+        # Generischer Extraktions-Loop — jede Komponente schreibt ihre
+        # Felder selbst ins Result.
+        for c in milp_components:
+            c.extract_result(result, variables, num_steps, dt_h)
+
+        # Cross-cutting Anpassung: Alterungskosten werden separat als
+        # battery_aging_cost_eur gefuehrt; total_cost_eur enthaelt nur
+        # die reinen Netzkosten (fairer Vergleich mit der Baseline).
+        if result.battery_aging_cost_eur > 0:
             result.total_cost_eur -= result.battery_aging_cost_eur
-
-        # Waermepumpe
-        result.hp_power_kw = np.array(
-            [v.varValue or 0.0 for v in variables["hp_power"]]
-        )
-
-        # Estrich / Fussbodenheizung
-        if has_ufh and "ufh_floor_energy" in variables:
-            result.floor_energy_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["ufh_floor_energy"]]
-            )
-            result.floor_temp_c = np.array([
-                self.underfloor_heating.energy_to_temp(e)
-                for e in result.floor_energy_kwh
-            ])
-            result.q_floor_kw = np.array(
-                [v.varValue or 0.0 for v in variables["ufh_q_floor_in"]]
-            )
-
-        # WW-Speicher
-        if has_ww:
-            prefix = self.hot_water_storage.prefix
-            key = f"{prefix}_energy_kwh"
-            if key in variables:
-                result.ww_storage_energy_kwh = np.array(
-                    [v.varValue or 0.0 for v in variables[key]]
-                )
-                result.ww_storage_temp_c = np.array([
-                    self.hot_water_storage.energy_to_temp(e)
-                    for e in result.ww_storage_energy_kwh
-                ])
-            # q_ww war frueher eine separate Variable; nach dem Refactoring
-            # entspricht sie q_in des WW-Speichers (gleiche Groesse durch
-            # die Senken-Bilanz). Wir geben sie weiterhin als Result-Feld
-            # zurueck, damit Plots/KPIs unveraendert bleiben.
-            q_in_key = f"{prefix}_q_in"
-            if q_in_key in variables:
-                result.q_ww_kw = np.array(
-                    [v.varValue or 0.0 for v in variables[q_in_key]]
-                )
-
-        # SG-Ready Zustand (BWP v1.1: 1=Lastabwurf, 2=Normal, 3=Verstaerkt)
-        if has_hp and self.heat_pump.sg_ready and "hp_sg3" in variables:
-            sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
-            sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
-            result.sg_ready_state = np.where(
-                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
-            )
-        else:
-            result.sg_ready_state = np.full(num_steps, 2)
-
-        # Wallboxen
-        for wb in self.wallboxes:
-            if wb.enabled:
-                wb_key = f"wb_{wb.name}_power"
-                result.wallbox_power_kw[wb.name] = np.array(
-                    [v.varValue or 0.0 for v in variables[wb_key]]
-                )
 
         # KPIs
         from emos_light.utils.kpi import calculate_kpis

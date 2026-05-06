@@ -335,6 +335,30 @@ class ThermalStorage(MILPComponent):
             return variables[f"{self.prefix}_q_in"][t]
         return 0.0
 
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Speicherenergie, Temperatur und Waermestroeme ins Result.
+
+        Schreibt aktuell nur fuer den WW-Speicher in die festen
+        ww_storage_*-Felder. Bei zukuenftiger Erweiterung auf mehrere
+        Speicher (z.B. Heizungspuffer) muss das Result-Schema generischer
+        werden — siehe Phase 5d.
+        """
+        import numpy as np
+        if self.prefix != "ww":
+            return  # nur WW-Speicher hat Result-Felder im aktuellen Schema
+
+        energy = np.array(
+            [v.varValue or 0.0 for v in variables[f"{self.prefix}_energy_kwh"]]
+        )
+        result.ww_storage_energy_kwh = energy
+        result.ww_storage_temp_c = np.array([self.energy_to_temp(e) for e in energy])
+        # q_ww_kw entspricht jetzt q_in (frueher separate Variable)
+        result.q_ww_kw = np.array(
+            [v.varValue or 0.0 for v in variables[f"{self.prefix}_q_in"]]
+        )
+
     # ------------------------------------------------------------------
     # Optionale Constraints
     # ------------------------------------------------------------------

@@ -153,3 +153,12 @@ class Wallbox(MILPComponent):
     @property
     def is_par14a_curtailable(self) -> bool:
         return True
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Wallbox-Ladeleistung in result.wallbox_power_kw[name] ablegen."""
+        import numpy as np
+        result.wallbox_power_kw[self.name] = np.array(
+            [v.varValue or 0.0 for v in variables[f"wb_{self.name}_power"]]
+        )
