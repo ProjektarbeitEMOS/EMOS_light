@@ -25,7 +25,7 @@ from emos_light.core.scenario import (
 )
 from emos_light.data.profiles import parse_csv_load_profile, forecast_load_profile, get_csv_info
 from emos_light.data.prices import get_surcharges_summary
-from emos_light.optimization.baseline import calculate_baseline_cost
+from emos_light.optimization.baseline import calculate_baseline_cost, run_baseline
 from emos_light.optimization.mpc import MPCController
 
 
@@ -131,7 +131,7 @@ with st.sidebar:
     # Optimierungsmodus
     opt_mode = st.radio(
         "Optimierungsmodus",
-        ["Day-Ahead (MILP)", "MPC (rollierend)"],
+        ["Day-Ahead (MILP)", "MPC (rollierend)", "Baseline (regelbasiert)"],
     )
     mpc_execute_hours = 1
     total_horizon_h = general.get("optimization_horizon_hours", 24)
@@ -828,16 +828,25 @@ with tab_optimize:
                 # Optimierung
                 if opt_mode == "Day-Ahead (MILP)":
                     result = optimizer.optimize(inp)
-                else:
+                elif opt_mode == "MPC (rollierend)":
                     mpc = MPCController(optimizer, mpc_horizon_hours, mpc_execute_hours)
                     result = mpc.run_mpc(inp)
+                else:  # Baseline
+                    result = run_baseline(inp, config)
 
-                # Baseline
-                baseline_cost = calculate_baseline_cost(inp, config)
-                result.baseline_cost_eur = baseline_cost
-                if baseline_cost > 0:
-                    result.savings_eur = baseline_cost - result.total_cost_eur
-                    result.savings_pct = (result.savings_eur / baseline_cost) * 100
+                # Baseline-Vergleich (entfaellt, wenn Baseline selbst ausgewaehlt)
+                if opt_mode == "Baseline (regelbasiert)":
+                    result.baseline_cost_eur = result.total_cost_eur
+                    result.savings_eur = 0.0
+                    result.savings_pct = 0.0
+                else:
+                    baseline_cost = calculate_baseline_cost(inp, config)
+                    result.baseline_cost_eur = baseline_cost
+                    if baseline_cost > 0:
+                        result.savings_eur = baseline_cost - result.total_cost_eur
+                        result.savings_pct = (
+                            result.savings_eur / baseline_cost
+                        ) * 100
 
                 st.session_state.result = result
                 st.session_state["opt_inp"] = inp
@@ -860,13 +869,26 @@ with tab_optimize:
         ts = result.timestamps
 
         # KPI-Karten
-        st.markdown("### Ergebnisse")
+        st.markdown(f"### Ergebnisse — {opt_mode}")
+        if opt_mode == "Baseline (regelbasiert)":
+            st.info(
+                "Baseline ist ein **regelbasierter Vergleichsmodus** ohne "
+                "Optimierung. Die WP deckt den Bedarf 1:1, die Wallbox laedt "
+                "sofort bei Ankunft, die Batterie folgt PV-Ueberschuss/-Bedarf — "
+                "es gibt keine Preisreaktion."
+            )
         kpi_row1 = st.columns(4)
         kpi_row1[0].metric("Gesamtkosten", f"{result.total_cost_eur:.2f} EUR")
         kpi_row1[1].metric("Eigenverbrauch", f"{result.eigenverbrauch_pct:.1f}%")
         kpi_row1[2].metric("Autarkie", f"{result.autarkie_pct:.1f}%")
-        if result.savings_eur is not None:
-            kpi_row1[3].metric("Einsparung", f"{result.savings_eur:.2f} EUR ({result.savings_pct:.0f}%)")
+        if (
+            opt_mode != "Baseline (regelbasiert)"
+            and result.savings_eur is not None
+        ):
+            kpi_row1[3].metric(
+                "Einsparung",
+                f"{result.savings_eur:.2f} EUR ({result.savings_pct:.0f}%)",
+            )
 
         kpi_row2 = st.columns(4)
         kpi_row2[0].metric("Netzbezugskosten", f"{result.grid_buy_cost_eur:.2f} EUR")
