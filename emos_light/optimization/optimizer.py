@@ -302,14 +302,34 @@ class EMOSLightOptimizer:
         model += cost
 
         # ============================================================
-        # Loesen
+        # Loesen — Solver-Reihenfolge:
+        #   1. HiGHS (Python-API ueber highspy)  → schnell
+        #   2. HiGHS_CMD (CLI, falls highs.exe im PATH)
+        #   3. PULP_CBC_CMD (Coin-OR Branch-and-Cut, deutlich langsamer)
+        #
+        # MIP-Gap auf 0.5 % entspannt:
+        # Bei einer Optimierung um 1 EUR/Tag entspricht das 0.5 ct Toleranz
+        # — fuer Energieoptimierung absolut ausreichend, spart aber bei
+        # vielen binaeren Variablen (HP-Modulation, SG-Ready, Wallbox)
+        # erheblich Solver-Zeit. timeLimit=30 s als harte Obergrenze.
         # ============================================================
-        try:
-            solver = pulp.HiGHS_CMD(msg=0, timeLimit=120)
-            model.solve(solver)
-        except Exception:
-            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=120)
-            model.solve(solver)
+        solver = None
+        for solver_factory in (
+            lambda: pulp.HiGHS(msg=0, timeLimit=30, gapRel=0.005),
+            lambda: pulp.HiGHS_CMD(msg=0, timeLimit=30, gapRel=0.005),
+            lambda: pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005),
+        ):
+            try:
+                candidate = solver_factory()
+                if candidate.available():
+                    solver = candidate
+                    break
+            except Exception:
+                continue
+        if solver is None:
+            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005)
+
+        model.solve(solver)
         solve_time = time.time() - t_start
 
         status = pulp.LpStatus[model.status]
