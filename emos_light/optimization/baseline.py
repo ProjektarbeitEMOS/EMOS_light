@@ -183,19 +183,28 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     q_floor_all = np.zeros(num_steps)
     q_ww_all = np.zeros(num_steps)
     wallbox_power_all: dict = {}
-    # Wallbox-Result-Key vorbereiten (mit safe_name fuer Konsistenz mit
-    # dem MILP-Pfad, sodass Dashboard-Plots fuer beide Modi funktionieren).
+    # Wallbox-Result-Keys vorbereiten + EV-SOC-State pro Wallbox.
     # Hinweis: Der Strompreis-Perzentil-Filter wird in der BASELINE bewusst
     # nicht angewendet — die Baseline ist die naive Referenzstrategie
     # ("plug in & charge until full"), gegen die MILP/MPC ihre Einsparung
     # messen. Wuerde sie den Filter mit anwenden, waere der Vergleich
     # unfair: schon ein Teil der Optimierung waere in der Referenz drin.
+    # Was die Baseline aber sehr wohl modelliert: die physische Akku-
+    # Obergrenze (max_soc) — sobald das Auto voll ist, hoert die
+    # Wallbox auf zu laden.
+    ev_soc_kwh: dict = {}   # safe_name -> aktueller SOC (kWh, DC-seitig)
+    ev_max_kwh: dict = {}   # safe_name -> max_soc * capacity (Obergrenze)
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
             name = _safe_wb_name(
                 wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             )
             wallbox_power_all[name] = np.zeros(num_steps)
+            cap = float(wb_cfg.get("ev_battery_capacity_kwh", 60.0))
+            current = float(wb_cfg.get("current_soc", 0.3))
+            max_soc = float(wb_cfg.get("max_soc", 1.0))
+            ev_soc_kwh[name] = current * cap
+            ev_max_kwh[name] = max_soc * cap
 
     total_cost_ct = 0.0
     feed_in_tariff = inp.feed_in_tariff_ct_kwh
@@ -282,8 +291,8 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         q_floor_all[t] = q_to_floor
         q_ww_all[t] = q_to_ww
 
-        # Wallboxen — sofort laden, wenn EV anwesend (kein Preisfilter
-        # in der Baseline; der Perzentil-Slider greift nur im MILP).
+        # Wallboxen — sofort laden, wenn EV anwesend UND der Akku noch
+        # nicht voll ist (kein Preisfilter in der Baseline).
         wb_total = 0.0
         for wb_cfg in wallboxes_cfg:
             if not wb_cfg.get("enabled", False):
@@ -299,9 +308,21 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             name = _safe_wb_name(
                 wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             )
-            # Naive Baseline-Logik: laden sobald EV da ist, ohne Preis-
-            # filter. Der Perzentil-Slider greift nur in MILP/MPC.
-            wb_power = wb_cfg.get("max_power_kw", 0.0) if ev_present else 0.0
+            eff = float(wb_cfg.get("charging_efficiency", 0.92))
+            max_kw = float(wb_cfg.get("max_power_kw", 0.0))
+
+            wb_power = 0.0
+            if ev_present:
+                # Headroom bis max_soc (DC-Seite)
+                headroom_dc = max(0.0, ev_max_kwh[name] - ev_soc_kwh[name])
+                if headroom_dc > 1e-6:
+                    # Wallbox liefert AC, Akku nimmt AC*eff auf.
+                    # Maximale AC-Leistung, damit der Akku in diesem
+                    # Schritt nicht ueber max_soc geht:
+                    max_ac_kw = headroom_dc / (dt_h * eff)
+                    wb_power = min(max_kw, max_ac_kw)
+                    # SOC nachfuehren (DC-seitig)
+                    ev_soc_kwh[name] += wb_power * dt_h * eff
             wallbox_power_all[name][t] = wb_power
             wb_total += wb_power
 
