@@ -777,11 +777,35 @@ with tab_input:
 
         # Wetter & PV
         st.markdown("### Wetter & PV-Prognose")
-        fig_pv = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                               subplot_titles=("Temperatur & Einstrahlung", "PV-Erzeugung"))
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["temp"], name="Temperatur (C)", line=dict(color="orange")), row=1, col=1)
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["ghi"], name="GHI (W/m2)", line=dict(color="gold"), yaxis="y2"), row=1, col=1)
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["pv_generation"], name="PV (kW)", fill="tozeroy", line=dict(color="goldenrod")), row=2, col=1)
+        # Temperatur und Einstrahlung haben sehr unterschiedliche Bereiche
+        # (typ. 0–30 °C vs. 0–1000 W/m²) — daher separate Y-Achsen im
+        # gleichen Subplot.
+        fig_pv = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+            subplot_titles=("Temperatur & Einstrahlung", "PV-Erzeugung"),
+            specs=[[{"secondary_y": True}], [{}]],
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["temp"], name="Temperatur (°C)",
+                       line=dict(color="orange")),
+            row=1, col=1, secondary_y=False,
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["ghi"], name="GHI (W/m²)",
+                       line=dict(color="gold")),
+            row=1, col=1, secondary_y=True,
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["pv_generation"], name="PV (kW)",
+                       fill="tozeroy", line=dict(color="goldenrod")),
+            row=2, col=1,
+        )
+        # Achsen-Titel und sinnvolle Bereiche pro Groesse
+        fig_pv.update_yaxes(title_text="Temperatur (°C)",
+                            row=1, col=1, secondary_y=False)
+        fig_pv.update_yaxes(title_text="GHI (W/m²)", rangemode="tozero",
+                            row=1, col=1, secondary_y=True)
+        fig_pv.update_yaxes(title_text="PV (kW)", row=2, col=1)
         fig_pv.update_layout(height=400, margin=dict(t=40))
         st.plotly_chart(fig_pv, use_container_width=True)
 
