@@ -56,6 +56,14 @@ class Wallbox(MILPComponent):
         self.arrival_hour = config.get("arrival_hour", 17)
         self.charging_efficiency = config.get("charging_efficiency", 0.92)
 
+        # Garantierte Mindestreichweite (Min-Energy-Constraint).
+        # Wenn False: kein Energie-Constraint, stattdessen wird in jedem
+        # erlaubten Slot (Anwesenheit ∩ Preisperzentil) mit voller Leistung
+        # geladen (siehe add_constraints). Nuetzlich, wenn Auto/Wallbox
+        # den SOC nicht ausgeben — dann ist eine garantierte Lademenge
+        # technisch nicht zuverlaessig erreichbar.
+        self.min_range_enabled = bool(config.get("min_range_enabled", True))
+
         # Preisgesteuerte Ladestrategie (Ersatz fuer fehlendes V2H):
         # Nur in den guenstigsten X % der Tagespreise (Day-Ahead) laden.
         # 100 % = keine Beschraenkung (Default).
@@ -180,12 +188,31 @@ class Wallbox(MILPComponent):
                         f"{prefix}_price_filter_{t}",
                     )
 
-        # 3) Mindestlademenge bis Abfahrt
-        total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
-        model += (
-            total_energy >= self.energy_needed_kwh,
-            f"{prefix}_min_energy",
-        )
+        # 3) Lade-Strategie je nach min_range_enabled
+        if self.min_range_enabled:
+            # 3a) Garantierte Mindestlademenge bis Abfahrt
+            #     (setzt voraus, dass current_soc/target_soc bekannt sind)
+            total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
+            model += (
+                total_energy >= self.energy_needed_kwh,
+                f"{prefix}_min_energy",
+            )
+        else:
+            # 3b) Ohne SOC-Kommunikation: Fahrzeug laedt mit voller Leistung
+            #     in jedem erlaubten Slot (Anwesenheit ∩ Preisperzentil).
+            #     Damit ist das Verhalten deterministisch und benoetigt
+            #     keinen Akku-Endzustand.
+            for t in range(num_steps):
+                hour = (t // steps_per_hour) % 24
+                if not self._is_ev_present(hour):
+                    continue
+                if (self._allowed_charging_steps is not None
+                        and t not in self._allowed_charging_steps):
+                    continue
+                model += (
+                    power[t] == self.max_power_kw,
+                    f"{prefix}_force_full_charge_{t}",
+                )
 
     # ------------------------------------------------------------------
     # Bilanz-Beitraege

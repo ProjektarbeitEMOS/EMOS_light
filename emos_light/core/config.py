@@ -206,6 +206,10 @@ EV_DEFAULT = {
     "v2h_capable": False,
     "v2h_min_soc": 0.30,
     "linked_wallbox": "Wallbox 1",
+    # Garantierte Mindestreichweite (Constraint: erreiche bis Abfahrt
+    # mindestens diese Reichweite). Setzt voraus, dass Auto und Wallbox
+    # den aktuellen SOC kommunizieren. Default an.
+    "min_range_enabled": True,
     # Wenn das EV/die Wallbox kein bidirektionales Laden (V2H) unterstuetzt,
     # kann stattdessen eine preisgesteuerte Ladestrategie genutzt werden:
     # nur in den guenstigsten X % der Tagesstunden (Day-Ahead) laden.

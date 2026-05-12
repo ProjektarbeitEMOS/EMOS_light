@@ -239,3 +239,69 @@ def test_wallbox_price_filter_50_percent():
     wb.prepare(inp)
     # Median = 35 → erlaubt 10/20/30
     assert wb._allowed_charging_steps == {0, 1, 2}
+
+
+# ---------------------------------------------------------------------------
+# Wallbox: min_range_enabled — Mindestreichweite an/aus
+# ---------------------------------------------------------------------------
+
+def test_wallbox_default_has_min_range_enabled():
+    wb = Wallbox("wb1", WALLBOX_DEFAULT)
+    assert wb.min_range_enabled is True
+
+
+def test_wallbox_min_range_disabled():
+    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "min_range_enabled": False})
+    assert wb.min_range_enabled is False
+
+
+def test_wallbox_constraints_use_min_energy_when_enabled():
+    """Mit min_range_enabled=True existiert ein Energie-Mindestmenge-Constraint."""
+    wb = Wallbox("wb1", {
+        **WALLBOX_DEFAULT,
+        "min_range_enabled": True,
+        "current_soc": 0.30,
+        "target_soc": 0.80,
+        "arrival_hour": 17,
+        "departure_hour": 7,
+    })
+    model = pulp.LpProblem("test")
+    vars_ = wb.get_optimization_variables(num_steps=96, model=model)
+    wb.add_constraints(model, vars_, step_minutes=15)
+    names = list(model.constraints.keys())
+    assert any(n.endswith("_min_energy") for n in names), (
+        "Bei min_range_enabled=True muss ein _min_energy-Constraint existieren"
+    )
+    assert not any("_force_full_charge_" in n for n in names), (
+        "Bei min_range_enabled=True darf KEIN _force_full_charge_-Constraint existieren"
+    )
+
+
+def test_wallbox_constraints_use_forced_charge_when_disabled():
+    """Mit min_range_enabled=False werden 'force_full_charge'-Constraints
+    in den erlaubten Anwesenheits-Slots gesetzt, kein min_energy-Constraint."""
+    import types
+    import numpy as np
+    wb = Wallbox("wb1", {
+        **WALLBOX_DEFAULT,
+        "min_range_enabled": False,
+        "arrival_hour": 17,
+        "departure_hour": 7,
+        "charge_only_below_percentile_pct": 25.0,
+    })
+    # Preisreihe vorbereiten (96 Slots, 24h)
+    n = 96
+    prices = np.linspace(20, 40, n)
+    wb.prepare(types.SimpleNamespace(prices_ct_kwh=prices))
+
+    model = pulp.LpProblem("test")
+    vars_ = wb.get_optimization_variables(num_steps=n, model=model)
+    wb.add_constraints(model, vars_, step_minutes=15)
+    names = list(model.constraints.keys())
+    assert not any(n.endswith("_min_energy") for n in names), (
+        "Bei min_range_enabled=False darf KEIN _min_energy-Constraint existieren"
+    )
+    assert any("_force_full_charge_" in n for n in names), (
+        "Bei min_range_enabled=False muessen _force_full_charge_-Constraints"
+        " in den erlaubten Anwesenheits-Slots existieren"
+    )

@@ -733,10 +733,52 @@ with tab_config:
                         key=f"ev_{i}_cons",
                         help="Realer Fahrverbrauch inkl. Ladeverluste. Typ.: Kleinwagen ~14, Kompakt ~16, Mittelklasse ~18, SUV ~21 kWh/100km.",
                     )
-                    ev["min_range_km"] = st.number_input("Mindestreichweite (km)", 0.0, 500.0, float(ev.get("min_range_km", 150.0)), 10.0, key=f"ev_{i}_range")
-                    target_soc = min(1.0, ev["min_range_km"] * ev.get("consumption_kwh_per_100km", 16.0) / 100 / ev["battery_capacity_kwh"])
-                    ev["target_soc"] = max(ev["current_soc"], target_soc)
-                    st.caption(f"Ziel-SOC: **{ev['target_soc']*100:.0f}%**")
+
+                    # ---- Mindestreichweite (garantiertes Ladeziel) ----
+                    st.info(
+                        "ℹ️ **Hinweis zur Mindestreichweite:** "
+                        "Das garantierte Laden auf eine vorgegebene Reichweite "
+                        "setzt voraus, dass Fahrzeug und Wallbox den aktuellen "
+                        "Ladezustand (SOC) miteinander kommunizieren — "
+                        "ueblicherweise ueber ISO 15118 oder herstellerspezifische "
+                        "Protokolle. Steht diese Kommunikation nicht zur Verfuegung, "
+                        "deaktivieren Sie die Mindestreichweite. Das Fahrzeug wird "
+                        "dann ausschliesslich im konfigurierten unteren Strompreis-"
+                        "Perzentil mit voller Leistung geladen."
+                    )
+                    ev["min_range_enabled"] = st.checkbox(
+                        "Mindestreichweite garantieren",
+                        value=bool(ev.get("min_range_enabled", True)),
+                        key=f"ev_{i}_minrange_en",
+                        help=(
+                            "An: bis Abfahrt wird mindestens die unten "
+                            "konfigurierte Reichweite garantiert. "
+                            "Aus: keine Garantie — das Fahrzeug laedt nur "
+                            "im Strompreis-Perzentil unten."
+                        ),
+                    )
+                    ev["min_range_km"] = st.number_input(
+                        "Mindestreichweite (km)", 0.0, 500.0,
+                        float(ev.get("min_range_km", 150.0)), 10.0,
+                        key=f"ev_{i}_range",
+                        disabled=not ev["min_range_enabled"],
+                    )
+                    if ev["min_range_enabled"]:
+                        target_soc = min(
+                            1.0,
+                            ev["min_range_km"] * ev.get("consumption_kwh_per_100km", 16.0)
+                            / 100 / ev["battery_capacity_kwh"],
+                        )
+                        ev["target_soc"] = max(ev["current_soc"], target_soc)
+                        st.caption(f"Ziel-SOC: **{ev['target_soc']*100:.0f}%**")
+                    else:
+                        # Ohne Mindestreichweite: target_soc auf current_soc,
+                        # damit energy_needed_kwh = 0 — relevant fuer Logs/KPIs.
+                        ev["target_soc"] = ev["current_soc"]
+                        st.caption(
+                            "_Mindestreichweite ist deaktiviert — Ziel-SOC "
+                            "wird nicht erzwungen._"
+                        )
 
                     ev_col1, ev_col2 = st.columns(2)
                     ev["arrival_hour"] = ev_col1.number_input("Ankunft (h)", 0, 23, int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr")
@@ -748,15 +790,7 @@ with tab_config:
                         idx = wb_names.index(linked) if linked in wb_names else 0
                         ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=f"ev_{i}_wb")
 
-                    # ---- Bidirektionales Laden / preisgesteuerte Strategie ----
-                    st.info(
-                        "ℹ️ **Bidirektionales Laden (V2H/V2G)** ist nur nutzbar, "
-                        "wenn sowohl die **Wallbox** als auch das **E-Auto** das "
-                        "unterstuetzen — in der Praxis selten der Fall. "
-                        "Stattdessen kannst du eine **preisgesteuerte "
-                        "Ladestrategie** waehlen: das Auto laedt dann nur in den "
-                        "guenstigsten X % der Tagesstunden."
-                    )
+                    # ---- Preisgesteuerte Ladestrategie (Strompreis-Perzentil) ----
                     pct_default = float(ev.get("charge_only_below_percentile_pct", 100.0))
                     ev["charge_only_below_percentile_pct"] = st.slider(
                         "Strompreis-Perzentil zum Laden (%)",
@@ -765,11 +799,10 @@ with tab_config:
                         step=5,
                         key=f"ev_{i}_pct",
                         help=(
-                            "100 %% = laden jederzeit moeglich (keine Beschraenkung). "
-                            "Niedrigere Werte = strikter: bei 25 %% darf nur in den "
-                            "guenstigsten 25 %% der Tagesstunden geladen werden. "
-                            "Achtung: zu niedrige Werte koennen die Mindestlademenge "
-                            "unerreichbar machen — der Solver meldet das."
+                            "Erlaubt das Laden nur in den guenstigsten X %% der "
+                            "Tagesstunden. 100 %% = keine Beschraenkung. "
+                            "Niedrigere Werte = strikter (bei 25 %% darf nur in "
+                            "den guenstigsten 25 %% der Stunden geladen werden)."
                         ),
                     )
                     if ev["charge_only_below_percentile_pct"] < 100:
@@ -777,6 +810,13 @@ with tab_config:
                             f"→ Laden nur in den **guenstigsten "
                             f"{ev['charge_only_below_percentile_pct']:.0f} %** "
                             f"der Tagesstunden."
+                        )
+                    elif not ev["min_range_enabled"]:
+                        st.warning(
+                            "⚠️ Mindestreichweite aus und Perzentil = 100 %: "
+                            "das Fahrzeug wuerde in jedem Anwesenheits-Slot "
+                            "mit voller Leistung laden. Empfehlung: Perzentil "
+                            "auf < 100 % setzen."
                         )
 
                 if st.button("E-Auto entfernen", key=f"ev_{i}_rm"):
@@ -798,6 +838,10 @@ with tab_config:
                         wb["target_soc"] = ev.get("target_soc", 0.8)
                         wb["arrival_hour"] = ev.get("arrival_hour", 17)
                         wb["departure_hour"] = ev.get("departure_hour", 7)
+                        # Mindestreichweite-Garantie (Constraint an/aus)
+                        wb["min_range_enabled"] = bool(
+                            ev.get("min_range_enabled", True)
+                        )
                         # Preissensitive Ladestrategie (Ersatz fuer V2H)
                         wb["charge_only_below_percentile_pct"] = ev.get(
                             "charge_only_below_percentile_pct", 100.0
