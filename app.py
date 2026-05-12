@@ -924,10 +924,12 @@ with tab_optimize:
 
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")
+        # Zwei Subplots, der untere mit sekundaerer Y-Achse fuer SOC %/kWh.
         fig_el = make_subplots(
             rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-            subplot_titles=("Leistung (kW)", "Batterie SOC (kWh)"),
+            subplot_titles=("Leistung (kW)", "Batterie SOC"),
             row_heights=[0.7, 0.3],
+            specs=[[{}], [{"secondary_y": True}]],
         )
 
         if inp is not None:
@@ -942,7 +944,33 @@ with tab_optimize:
             fig_el.add_trace(go.Scatter(x=ts, y=inp.household_load_kw, name="Haushalt", line=dict(color="blue", dash="dot")), row=1, col=1)
 
         if len(result.batt_soc_kwh) > 0:
-            fig_el.add_trace(go.Scatter(x=ts, y=result.batt_soc_kwh, name="Batterie SOC", fill="tozeroy", line=dict(color="purple")), row=2, col=1)
+            capacity_kwh = float(config["battery"]["capacity_kwh"])
+            # SOC in % zeichnen (primaere Achse links). Die sekundaere Achse
+            # rechts wird parallel auf [0, capacity_kwh] gesetzt, sodass die
+            # gleiche Kurve auch in kWh ablesbar ist.
+            soc_pct = (result.batt_soc_kwh / capacity_kwh) * 100.0 if capacity_kwh > 0 else result.batt_soc_kwh * 0
+            fig_el.add_trace(
+                go.Scatter(
+                    x=ts, y=soc_pct, name="Batterie SOC",
+                    fill="tozeroy", line=dict(color="purple"),
+                    hovertemplate=(
+                        "%{x|%H:%M}<br>"
+                        "SOC: %{y:.1f} %<br>"
+                        "= %{customdata:.2f} kWh<extra></extra>"
+                    ),
+                    customdata=result.batt_soc_kwh,
+                ),
+                row=2, col=1, secondary_y=False,
+            )
+            # Achsen: links %, rechts kWh — beide synchron auf [0, max]
+            fig_el.update_yaxes(
+                title_text="SOC (%)", range=[0, 100],
+                row=2, col=1, secondary_y=False,
+            )
+            fig_el.update_yaxes(
+                title_text="SOC (kWh)", range=[0, capacity_kwh],
+                row=2, col=1, secondary_y=True,
+            )
 
         fig_el.update_layout(height=500, margin=dict(t=40))
         st.plotly_chart(fig_el, use_container_width=True)
