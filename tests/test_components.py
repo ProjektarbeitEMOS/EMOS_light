@@ -204,41 +204,77 @@ def test_par14a_curtailable_predicate(cls, cfg_key, curtailable):
 # Wallbox: preisgesteuerte Ladestrategie (Ersatz fuer V2H)
 # ---------------------------------------------------------------------------
 
-def test_wallbox_no_price_filter_when_pct_is_100():
-    """pct=100 → kein Filter, _allowed_charging_steps bleibt None."""
+def _stub_inp(prices, step_minutes=15):
+    """Hilfsfunktion: minimaler TimeSeriesInput-Stub fuer Wallbox.prepare."""
     import types
     import numpy as np
-    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 100.0})
-    inp = types.SimpleNamespace(prices_ct_kwh=np.array([10.0, 20.0, 30.0, 40.0]))
-    wb.prepare(inp)
+    return types.SimpleNamespace(
+        prices_ct_kwh=np.asarray(prices, dtype=float),
+        step_minutes=step_minutes,
+    )
+
+
+def _wb_always_present(extra_cfg):
+    """Wallbox mit 24h-Anwesenheit (arrival=0, departure=23+1) fuer Tests."""
+    # arrival > departure -> "ueber Nacht" → anwesend [arr, 24) ∪ [0, dep)
+    # Mit arrival=0, departure=23 wuerde Stunde 23 fehlen.
+    # Wir setzen arrival=1, departure=0 → anwesend hour>=1 oder hour<0 → 1..23
+    # Einfacher: konstruiere Tests so, dass alle Slots in die Anwesenheit fallen.
+    cfg = {**WALLBOX_DEFAULT, "arrival_hour": 17, "departure_hour": 7, **extra_cfg}
+    return Wallbox("wb1", cfg)
+
+
+def test_wallbox_no_price_filter_when_pct_is_100():
+    """pct=100 → kein Filter, _allowed_charging_steps bleibt None."""
+    wb = _wb_always_present({"charge_only_below_percentile_pct": 100.0})
+    wb.prepare(_stub_inp([10.0, 20.0, 30.0, 40.0]))
     assert wb._allowed_charging_steps is None
 
 
 def test_wallbox_price_filter_picks_cheapest():
-    """pct=25 → nur die guenstigsten 25 % erlaubt."""
-    import types
-    import numpy as np
-    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 25.0})
-    # 8 Schritte mit aufsteigenden Preisen → unterstes Viertel = Index 0,1
-    inp = types.SimpleNamespace(
-        prices_ct_kwh=np.array([10., 12., 14., 16., 18., 20., 22., 24.])
-    )
-    wb.prepare(inp)
-    # 25. Perzentil von [10..24] ist 13.5 → erlaubt sind alle mit price <= 13.5
+    """pct=25 → nur die guenstigsten 25 % der Anwesenheitsstunden erlaubt."""
+    # 8 Slots × 15min = 2h → Stunden 0,0,0,0,1,1,1,1. Beide < 7 -> Anwesenheit
+    # (Default arrival=17, departure=7 → Nachts anwesend).
+    wb = _wb_always_present({"charge_only_below_percentile_pct": 25.0})
+    wb.prepare(_stub_inp([10., 12., 14., 16., 18., 20., 22., 24.]))
+    # 25. Perzentil von [10..24] = 13.5 → erlaubt sind {0, 1}
     assert wb._allowed_charging_steps == {0, 1}
 
 
 def test_wallbox_price_filter_50_percent():
-    """pct=50 → erlaubt nur untere Haelfte."""
-    import types
-    import numpy as np
-    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 50.0})
-    inp = types.SimpleNamespace(
-        prices_ct_kwh=np.array([10., 20., 30., 40., 50., 60.])
-    )
-    wb.prepare(inp)
-    # Median = 35 → erlaubt 10/20/30
+    """pct=50 → erlaubt nur untere Haelfte der Anwesenheitsstunden."""
+    wb = _wb_always_present({"charge_only_below_percentile_pct": 50.0})
+    wb.prepare(_stub_inp([10., 20., 30., 40., 50., 60.]))
+    # Median = 35 → erlaubt {0, 1, 2}
     assert wb._allowed_charging_steps == {0, 1, 2}
+
+
+def test_wallbox_percentile_is_over_presence_not_full_day():
+    """Schluesseltest: Perzentil bezieht sich auf Anwesenheits-, nicht Tagespreise.
+
+    Szenario: Auto nur 0-2 Uhr (sehr teuer) anwesend, von 2-24 Uhr abwesend
+    (billig). Bei Tages-Perzentil 50 % wuerden gar keine Anwesenheitsslots
+    erlaubt sein. Bei Anwesenheits-Perzentil 50 % muss es trotzdem 2 von 4
+    Slots geben.
+    """
+    import numpy as np
+    # 4 Slots × 30 min = 2h Anwesenheit ab 0 Uhr.
+    # arrival=0, departure=2 → Anwesenheit hour ∈ {0, 1}
+    wb = Wallbox("wb1", {
+        **WALLBOX_DEFAULT,
+        "arrival_hour": 0,
+        "departure_hour": 2,
+        "charge_only_below_percentile_pct": 50.0,
+    })
+    # Slot 0,1 (h=0): teuer 50, 60.  Slot 2,3 (h=1): teurer 70, 80.
+    # Alle restlichen Stunden des Tages waeren billig 10–40, aber das EV
+    # ist da nicht anwesend → muessen ignoriert werden.
+    prices = [50., 60., 70., 80.]
+    # Werden hier nur 4 Slots eingespeist (=2h), also der "Tag" hat nur 4 Slots.
+    # step_minutes=30 → 2 Slots/Stunde → Stunden = [0, 0, 1, 1]
+    wb.prepare(_stub_inp(prices, step_minutes=30))
+    # 50. Perzentil von [50, 60, 70, 80] = 65 → erlaubt {0, 1}
+    assert wb._allowed_charging_steps == {0, 1}
 
 
 # ---------------------------------------------------------------------------

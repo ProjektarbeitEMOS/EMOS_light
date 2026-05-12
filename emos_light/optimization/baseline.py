@@ -21,6 +21,14 @@ import numpy as np
 from emos_light.core.types import OptimizationResult, TimeSeriesInput
 
 
+def _is_hour_present(hour: int, arrival: int, departure: int) -> bool:
+    """Ist das EV zur gegebenen Stunde anwesend? Identische Konvention wie
+    in Wallbox._is_ev_present (Tag- vs. Nachtszenario je nach arrival/dep)."""
+    if arrival <= departure:
+        return arrival <= hour < departure
+    return hour >= arrival or hour < departure
+
+
 def calculate_baseline_cost(inp: TimeSeriesInput, config: dict) -> float:
     """Berechnet die Energiekosten der Baseline-Strategie.
 
@@ -154,18 +162,35 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     q_ww_all = np.zeros(num_steps)
     wallbox_power_all: dict = {}
     # Pro Wallbox die Preis-Schwelle fuer die preisgesteuerte Ladestrategie:
-    # Nur in den guenstigsten X % der Tagespreise laden (analog zur MILP-
-    # Implementierung in Wallbox.prepare).
+    # Nur in den guenstigsten X % der Strompreise **innerhalb der
+    # Anwesenheit** des Fahrzeugs laden (analog zur MILP-Implementierung
+    # in Wallbox.prepare). Dadurch gibt es immer Lade-Slots — auch wenn
+    # die Anwesenheit in eine objektiv teure Tageszeit faellt.
     wallbox_price_threshold: dict = {}
+    steps_per_hour_baseline = max(1, 60 // inp.step_minutes)
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
             name = wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             wallbox_power_all[name] = np.zeros(num_steps)
             pct = float(wb_cfg.get("charge_only_below_percentile_pct", 100.0))
             if pct < 100.0:
-                wallbox_price_threshold[name] = float(
-                    np.percentile(inp.prices_ct_kwh, pct)
-                )
+                # Preise nur fuer Anwesenheits-Slots sammeln
+                arrival = wb_cfg.get("arrival_hour", 17)
+                departure = wb_cfg.get("departure_hour", 7)
+                present_prices = [
+                    float(inp.prices_ct_kwh[t])
+                    for t in range(num_steps)
+                    if _is_hour_present(
+                        (t // steps_per_hour_baseline) % 24,
+                        arrival, departure,
+                    )
+                ]
+                if present_prices:
+                    wallbox_price_threshold[name] = float(
+                        np.percentile(present_prices, pct)
+                    )
+                else:
+                    wallbox_price_threshold[name] = float("-inf")
             else:
                 wallbox_price_threshold[name] = float("inf")
 

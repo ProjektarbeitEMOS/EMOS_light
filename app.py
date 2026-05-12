@@ -791,6 +791,15 @@ with tab_config:
                         ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=f"ev_{i}_wb")
 
                     # ---- Preisgesteuerte Ladestrategie (Strompreis-Perzentil) ----
+                    st.info(
+                        "ℹ️ **Hinweis zur Bezugsgroesse:** Das Perzentil bezieht "
+                        "sich auf den Strompreis **innerhalb der Anwesenheits"
+                        "stunden Ihres Fahrzeugs** — nicht auf den ganzen Tag. "
+                        "Bei 25 % wird also in den guenstigsten 25 % der Stunden "
+                        "geladen, in denen das Auto an der Wallbox steht. "
+                        "Dadurch sind immer Lade-Slots verfuegbar, auch wenn die "
+                        "Anwesenheit zufaellig in eine teure Tageszeit faellt."
+                    )
                     pct_default = float(ev.get("charge_only_below_percentile_pct", 100.0))
                     ev["charge_only_below_percentile_pct"] = st.slider(
                         "Strompreis-Perzentil zum Laden (%)",
@@ -800,16 +809,17 @@ with tab_config:
                         key=f"ev_{i}_pct",
                         help=(
                             "Erlaubt das Laden nur in den guenstigsten X %% der "
-                            "Tagesstunden. 100 %% = keine Beschraenkung. "
-                            "Niedrigere Werte = strikter (bei 25 %% darf nur in "
-                            "den guenstigsten 25 %% der Stunden geladen werden)."
+                            "**Anwesenheitsstunden**. 100 %% = keine Beschraen"
+                            "kung. Niedrigere Werte = strikter (bei 25 %% darf "
+                            "nur in den guenstigsten 25 %% der Anwesenheits"
+                            "stunden geladen werden)."
                         ),
                     )
                     if ev["charge_only_below_percentile_pct"] < 100:
                         st.caption(
                             f"→ Laden nur in den **guenstigsten "
                             f"{ev['charge_only_below_percentile_pct']:.0f} %** "
-                            f"der Tagesstunden."
+                            f"der Anwesenheitsstunden."
                         )
                     elif not ev["min_range_enabled"]:
                         st.warning(

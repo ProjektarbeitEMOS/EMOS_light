@@ -86,23 +86,50 @@ class Wallbox(MILPComponent):
         """Berechnet, in welchen Zeitschritten ueberhaupt geladen werden darf.
 
         Wenn ``charge_only_below_percentile_pct < 100``, wird das Laden auf
-        die guenstigsten X % der Day-Ahead-Preise des Optimierungstags
-        eingeschraenkt. Das simuliert eine preissensitive Ladestrategie
-        ohne V2H-Hardware — der Nutzer entscheidet sich freiwillig, das
-        Auto nur bei billigem Strom zu laden.
+        die guenstigsten X % der Strompreise **innerhalb der Anwesenheits-
+        zeit** des Fahrzeugs eingeschraenkt. Das simuliert eine preis-
+        sensitive Ladestrategie ohne V2H-Hardware — der Nutzer entscheidet
+        sich freiwillig, das Auto nur in den relativ guenstigsten Stunden
+        seiner Standzeit zu laden.
 
-        Achtung: Wenn die zulaessigen Zeitschritte (∩ EV-Anwesenheit)
-        zusammen mit max_power_kw nicht ausreichen, die Mindestlademenge
-        zu erreichen, wird der Solver ein infeasibles Problem melden.
+        Wichtig: das Perzentil bezieht sich auf die **Anwesenheitsstunden**,
+        nicht auf den ganzen Tag. Damit garantiert das System, dass auch
+        bei ungluecklicher Anwesenheit (z.B. nur waehrend der Preisspitze)
+        immer Ladeslots verfuegbar sind — naemlich die billigsten *dieser*
+        teuren Stunden.
+
+        Achtung: Wenn die zulaessigen Zeitschritte zusammen mit
+        max_power_kw nicht ausreichen, die Mindestlademenge zu erreichen,
+        wird der Solver ein infeasibles Problem melden.
         """
         import numpy as np
         if self.charge_only_below_percentile_pct >= 100.0:
             self._allowed_charging_steps = None
             return
+
         prices = np.asarray(inp.prices_ct_kwh, dtype=float)
-        threshold = float(np.percentile(prices, self.charge_only_below_percentile_pct))
+        n = len(prices)
+        step_minutes = getattr(inp, "step_minutes", 15)
+        steps_per_hour = max(1, 60 // step_minutes)
+
+        # Anwesenheits-Slots ermitteln
+        present_steps = [
+            t for t in range(n)
+            if self._is_ev_present((t // steps_per_hour) % 24)
+        ]
+        if not present_steps:
+            # Kein Anwesenheitsslot — Filter unwirksam (alles geht), denn
+            # die EV-Anwesenheits-Constraints unterbinden das Laden bereits.
+            self._allowed_charging_steps = None
+            return
+
+        # Perzentil ueber die Preise *in den Anwesenheitsstunden*.
+        present_prices = prices[present_steps]
+        threshold = float(np.percentile(
+            present_prices, self.charge_only_below_percentile_pct
+        ))
         self._allowed_charging_steps = {
-            t for t, p in enumerate(prices) if p <= threshold
+            t for t in present_steps if prices[t] <= threshold
         }
 
     @property
