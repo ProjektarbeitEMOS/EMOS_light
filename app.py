@@ -1345,5 +1345,11 @@ with tab_optimize:
                 fig_overlay.add_trace(go.Scatter(x=ts, y=result.hp_power_kw, name="WP", line=dict(color="orange")), secondary_y=False)
             fig_overlay.update_layout(height=300, margin=dict(t=30))
             fig_overlay.update_yaxes(title_text="kW", secondary_y=False)
-            fig_overlay.update_yaxes(title_text="ct/kWh", secondary_y=True)
+            # Preis-Achse: immer bei 0 ct beginnen, damit Lade-/Entlade-
+            # Entscheidungen relativ zum echten Nullpunkt lesbar sind.
+            # rangemode="tozero" laesst die Range bei negativen Preisen
+            # automatisch nach unten erweitern (also bis zum echten Minimum).
+            fig_overlay.update_yaxes(
+                title_text="ct/kWh", rangemode="tozero", secondary_y=True,
+            )
             st.plotly_chart(fig_overlay, use_container_width=True)
