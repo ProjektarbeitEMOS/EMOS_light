@@ -83,13 +83,22 @@ with st.sidebar:
                         base_config[key] = val
                 st.session_state.config = base_config
 
-                # Session-State-Caches loeschen, die beim ersten Render aus
-                # der Config gebaut wurden und sonst die alten Werte
-                # ueberleben (PV-Flaechen-Liste + Widget-Keys).
+                # Alle Widget-Zustaende beseitigen, damit beim Re-Render
+                # jedes Widget seinen Initialwert frisch aus der neuen
+                # config liest. Vorher hatte ich nur bekannte Prefixe
+                # gefiltert (pv_s_, wb_, ev_, …) — das schloss die
+                # Sidebar-Widgets (Einspeiseverguetung, Standort, …)
+                # nicht ein. Folge: deren alte Streamlit-Werte ueberleben
+                # den Import und kollidieren mit dem neuen config-Wert,
+                # was zu falschen Anzeigen (z.B. doppelte Einspeisever-
+                # guetung) fuehren kann.
+                #
+                # Was bleibt:
+                # - "config"                  -> gerade frisch gemerged
+                # - "_imported_config_id"     -> Marker setzen wir gleich
+                KEEP_KEYS = {"config", "_imported_config_id"}
                 for key in list(st.session_state.keys()):
-                    if key in ("pv_surfaces",) or key.startswith((
-                        "pv_s_", "wb_", "ev_", "batt_", "hp_",
-                    )):
+                    if key not in KEEP_KEYS:
                         del st.session_state[key]
 
                 st.session_state["_imported_config_id"] = file_id
