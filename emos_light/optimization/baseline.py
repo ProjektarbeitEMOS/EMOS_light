@@ -133,19 +133,32 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     ww_cap = 0.0
     ww_low_e = 0.0
     ww_high_e = 0.0
+    # Pro Zeitschritt eine separate Untergrenze (Komfort-Perioden anheben):
+    # in Komfortzeit Mindestenergie = comfort_temperature_c-Aequivalent,
+    # ausserhalb = min_temperature_c-Aequivalent.
+    ww_low_schedule_kwh: list[float] | None = None
+
     if ww_active:
         from emos_light.components.thermal_storage import ThermalStorage
         ts_obj = ThermalStorage("baseline_ww", ww_cfg, prefix="ww")
         ww_e = ts_obj.initial_energy_kwh
         ww_cap = ts_obj.capacity_kwh
-        # Hysterese-Schwellen physikalisch sinnvoll waehlen, damit der
-        # Speicher nicht unter die Komfort-/Hygienegrenze faellt:
-        # Untergrenze = max(T_min + 10 K, T_komfort - 5 K)
-        ww_low_temp = max(
+        # Komfort-aware Untergrenze:
+        # 1. Basis-Sicherheitspuffer: max(T_min + 10 K, T_komfort - 5 K)
+        # 2. ZUSAETZLICH pro Zeitschritt aus get_min_energy_schedule —
+        #    haebt die Grenze waehrend Komfortzeit auf comfort_temp_c.
+        # Effektiv low_e[t] = max(static_base, schedule[t]).
+        static_low_temp = max(
             ts_obj.min_temp_c + 10.0,
             (ts_obj.comfort_temp_c or 0) - 5.0,
         )
-        ww_low_e = ts_obj.temp_to_energy(ww_low_temp)
+        static_low_e = ts_obj.temp_to_energy(static_low_temp)
+        schedule = ts_obj.get_min_energy_schedule(inp.timestamps)
+        ww_low_schedule_kwh = [max(static_low_e, s) for s in schedule]
+        # ww_low_e wird in der Hauptschleife je Zeitschritt gelesen;
+        # halte den statischen Wert als Fallback (z.B. wenn das Schedule
+        # leer ist).
+        ww_low_e = static_low_e
         ww_high_e = ww_cap  # bis T_max nachladen
         if fws_cfg.get("enabled", False):
             from emos_light.components.fresh_water_station import FreshWaterStation
@@ -234,6 +247,14 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                     + ts_obj.relative_loss_per_h * ww_e
                 )
 
+            # WW-Untergrenze ZEITABHAENGIG: in Komfortzeit angehoben
+            # auf comfort_temperature_c (ueber get_min_energy_schedule).
+            ww_low_e_t = (
+                ww_low_schedule_kwh[t]
+                if ww_active and ww_low_schedule_kwh is not None
+                else ww_low_e
+            )
+
             # Hysterese-Logik: Statemaschine
             # Priorisierung: WW vor FBH (Brauchwasser zeitkritischer)
             if hp_state == "WW" and (not ww_active or ww_e >= ww_high_e):
@@ -244,7 +265,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 hp_state = "OFF"
 
             if hp_state == "OFF":
-                if ww_active and ww_e < ww_low_e:
+                if ww_active and ww_e < ww_low_e_t:
                     hp_state = "WW"
                 elif ufh_active and floor_e < floor_low_e:
                     hp_state = "FLOOR"
