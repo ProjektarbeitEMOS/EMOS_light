@@ -47,9 +47,24 @@ class PVSystem(Component):
         self.tilt_deg = config.get("tilt_deg", 35.0)
         # Azimut: 0=Nord, 90=Ost, 180=Sued, 270=West (Standardkonvention)
         self.azimuth_deg = config.get("azimuth_deg", 180.0)
-        self.system_efficiency = config.get(
-            "system_efficiency", config.get("efficiency", 0.85)
-        )
+        # System-Effizienz: alle AC-Verluste zusammen (Wechselrichter,
+        # Kabel, Verschmutzung). Typisch 0.80–0.90.
+        # NICHT der Modul-Wirkungsgrad (0.18–0.22) — der ist schon in
+        # peak_power_kwp enthalten.
+        raw_eff = config.get("system_efficiency", config.get("efficiency", 0.85))
+        if 0 < raw_eff < 0.5:
+            # Alte EMOS-Light-Configs (vor Nov 2026) hatten faelschlich
+            # 0.18 als "efficiency"-Default, was den Modul-Wirkungsgrad
+            # mit der System-Effizienz verwechselt hat. Defensiv hochziehen.
+            import warnings
+            warnings.warn(
+                f"pv.efficiency={raw_eff} sieht nach Modul-Wirkungsgrad aus; "
+                f"erwartet ist System-Effizienz (0.80-0.90). Wert wird auf "
+                f"0.85 hochgezogen.",
+                stacklevel=2,
+            )
+            raw_eff = 0.85
+        self.system_efficiency = raw_eff
         self.age_years = config.get("age_years", 0.0)
         self.degradation_rate = config.get(
             "degradation_rate_per_year",

@@ -45,7 +45,10 @@ DEFAULT_CONFIG = {
         "peak_power_kwp": 12.0,
         "azimuth_deg": 180,
         "tilt_deg": 30,
-        "efficiency": 0.18,
+        # System-Effizienz (Wechselrichter, Kabel, Verschmutzung, Mismatch)
+        # — typischerweise 80-90 %. NICHT zu verwechseln mit dem Modul-
+        # Wirkungsgrad (typ. 18-22 %), der bereits in peak_power_kwp steckt.
+        "efficiency": 0.85,
         "degradation_pct_per_year": 0.5,
         "age_years": 0,
         "surfaces": [],
