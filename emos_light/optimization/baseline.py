@@ -29,6 +29,12 @@ def _is_hour_present(hour: int, arrival: int, departure: int) -> bool:
     return hour >= arrival or hour < departure
 
 
+def _safe_wb_name(name: str) -> str:
+    """Identisch zu Wallbox.__init__ — sorgt fuer konsistente Result-Keys
+    zwischen MILP- und Baseline-Pfad (Dashboard-Plots lookupen darueber)."""
+    return name.replace(" ", "_").replace("-", "_")
+
+
 def calculate_baseline_cost(inp: TimeSeriesInput, config: dict) -> float:
     """Berechnet die Energiekosten der Baseline-Strategie.
 
@@ -170,7 +176,13 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     steps_per_hour_baseline = max(1, 60 // inp.step_minutes)
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
-            name = wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
+            # Result-Key mit gleichem safe_name wie die MILP-Wallbox-Komponente
+            # (Wallbox.__init__ normalisiert Leerzeichen/Bindestriche zu '_').
+            # Wichtig fuer Dashboard-Plots, die den Wallbox-Cfg via safe-Name
+            # zurueckmappen — wuerde sonst nur fuer MILP-Results funktionieren.
+            name = _safe_wb_name(
+                wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
+            )
             wallbox_power_all[name] = np.zeros(num_steps)
             pct = float(wb_cfg.get("charge_only_below_percentile_pct", 100.0))
             if pct < 100.0:
@@ -284,7 +296,9 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 if arrival > departure
                 else arrival <= hour < departure
             )
-            name = wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
+            name = _safe_wb_name(
+                wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
+            )
             # Preisfilter: nur laden, wenn Preis unter der Tages-Schwelle
             price_ok = price <= wallbox_price_threshold.get(name, float("inf"))
             wb_power = (
