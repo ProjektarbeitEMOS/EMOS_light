@@ -1057,9 +1057,19 @@ with tab_optimize:
         if opt_mode == "Baseline (regelbasiert)":
             st.info(
                 "Baseline ist ein **regelbasierter Vergleichsmodus** ohne "
-                "Optimierung. Die WP deckt den Bedarf 1:1, die Wallbox laedt "
-                "sofort bei Ankunft, die Batterie folgt PV-Ueberschuss/-Bedarf — "
-                "es gibt keine Preisreaktion."
+                "Preisoptimierung:\n\n"
+                "- **Waermepumpe**: schaltet sich erst ein, wenn eine "
+                "**Komfort-Untergrenze** unterschritten wird "
+                "(Estrich- oder WW-Speicher-Temperatur, in Komfortzeiten "
+                "auch die hoehere Soll-Temperatur). Laeuft dann mit voller "
+                "Leistung, bis die Obergrenze erreicht ist. WW-Speicher "
+                "hat Vorrang vor Estrich.\n"
+                "- **Wallbox**: laedt sofort bei Ankunft mit voller "
+                "Leistung, bis das EV abfaehrt — kein Preisfilter.\n"
+                "- **Batterie**: laedt PV-Ueberschuss, entlaedt bei "
+                "Restbedarf — keine Preisarbitrage.\n\n"
+                "Diese naive Strategie dient als Referenz, gegen die "
+                "MILP/MPC ihre Einsparung messen."
             )
         kpi_row1 = st.columns(4)
         kpi_row1[0].metric("Gesamtkosten", f"{result.total_cost_eur:.2f} EUR")
