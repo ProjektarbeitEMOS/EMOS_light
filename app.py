@@ -74,7 +74,21 @@ with st.sidebar:
                 else:
                     base_config[key] = val
             st.session_state.config = base_config
+
+            # Session-State-Caches loeschen, die beim ersten Render aus der
+            # Config gebaut wurden und sonst die alten Werte ueberleben.
+            # Die PV-Flaechen ("Dachflaeche 1"-Liste) sind das prominenteste
+            # Beispiel — ohne Reset werden die importierten pv.surfaces
+            # ignoriert. Auch die Widget-Keys (pv_s_*, wb_*, ev_*) muessen
+            # weg, sonst halten die Streamlit-Widgets ihre alten Werte.
+            for key in list(st.session_state.keys()):
+                if key in ("pv_surfaces",) or key.startswith((
+                    "pv_s_", "wb_", "ev_", "batt_", "hp_",
+                )):
+                    del st.session_state[key]
+
             st.success("Konfiguration geladen!")
+            st.rerun()
         except Exception as e:
             st.error(f"Fehler: {e}")
 
