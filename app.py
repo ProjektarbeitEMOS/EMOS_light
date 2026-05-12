@@ -781,8 +781,17 @@ with tab_config:
                         )
 
                     ev_col1, ev_col2 = st.columns(2)
-                    ev["arrival_hour"] = ev_col1.number_input("Ankunft (h)", 0, 23, int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr")
-                    ev["departure_hour"] = ev_col2.number_input("Abfahrt (h)", 0, 23, int(ev.get("departure_hour", 7)), key=f"ev_{i}_dep")
+                    # 0..24 erlaubt — 24 bedeutet "Mitternacht" und ist semantisch
+                    # gleichwertig zu 0 (z.B. Ankunft 18 / Abfahrt 24 = anwesend
+                    # 18:00..23:59).
+                    ev["arrival_hour"] = ev_col1.number_input(
+                        "Ankunft (h)", 0, 24,
+                        int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr",
+                    )
+                    ev["departure_hour"] = ev_col2.number_input(
+                        "Abfahrt (h)", 0, 24,
+                        int(ev.get("departure_hour", 7)), key=f"ev_{i}_dep",
+                    )
 
                     wb_names = [wb.get("name") for wb in config.get("wallboxes", []) if wb.get("enabled")]
                     if wb_names:
