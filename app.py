@@ -283,6 +283,37 @@ with tab_config:
                 config["pv"]["surfaces"] = surfaces
                 config["pv"]["peak_power_kwp"] = total_kwp
 
+                # -------- Ertragsprognose-Modell --------
+                st.info(
+                    "ℹ️ **Hinweis zur Ertragsprognose:** Beide hier waehlbaren "
+                    "Modelle sind **Uebergangsloesungen**, bis die endgueltige "
+                    "Prognose (inkl. Intraday-Messwertkorrektur) feststeht."
+                )
+                _models = {
+                    "perez": "Perez (1990) — anisotrop, Standard",
+                    "isotropic": "Liu & Jordan (1963) — isotrop, alte EMOS",
+                }
+                _current = config["pv"].get("transposition_model", "perez")
+                if _current not in _models:
+                    _current = "perez"
+                _model_keys = list(_models.keys())
+                config["pv"]["transposition_model"] = st.selectbox(
+                    "Transpositionsmodell GHI → POA",
+                    _model_keys,
+                    index=_model_keys.index(_current),
+                    format_func=lambda k: _models[k],
+                    key="pv_transposition_model",
+                    help=(
+                        "Wie wird die horizontale Globalstrahlung (GHI) auf "
+                        "die geneigte Modulflaeche umgerechnet?\n\n"
+                        "• **Perez** beruecksichtigt Zirkumsolar- und "
+                        "Horizont-Helligkeit, ist an klaren Tagen genauer.\n"
+                        "• **Liu & Jordan** rechnet die Diffusstrahlung als "
+                        "gleichmaessig aus der Himmelshalbkugel — robuster, "
+                        "unterschaetzt aber meist."
+                    ),
+                )
+
         with col_batt:
             st.markdown("**Batteriespeicher**")
             config["battery"]["enabled"] = st.checkbox("Batterie aktiviert", value=config["battery"].get("enabled", True), key="batt_en")

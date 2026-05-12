@@ -49,6 +49,10 @@ DEFAULT_CONFIG = {
         "degradation_pct_per_year": 0.5,
         "age_years": 0,
         "surfaces": [],
+        # Transpositionsmodell GHI -> POA: "perez" (Default) oder
+        # "isotropic" (Liu & Jordan 1963, aus alter EMOS — Uebergangs-
+        # loesung, bis die finale Prognose feststeht).
+        "transposition_model": "perez",
     },
     "battery": {
         "enabled": True,

@@ -166,6 +166,7 @@ def load_input_data(
                 "system_efficiency": pv_config.get("system_efficiency", pv_config.get("efficiency", 0.85)),
                 "age_years": pv_config.get("age_years", 0),
                 "degradation_pct_per_year": pv_config.get("degradation_pct_per_year", 0.5),
+                "transposition_model": pv_config.get("transposition_model", "perez"),
             }
             pv_surf = PVSystem(surf.get("name", "pv"), surf_config)
             pv_generation += pv_surf.estimate_generation(

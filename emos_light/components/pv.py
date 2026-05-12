@@ -58,6 +58,9 @@ class PVSystem(Component):
         self.temp_coefficient = config.get("temp_coefficient", -0.004)
         self.noct = config.get("noct", 45.0)
         self.albedo = config.get("albedo", 0.2)
+        # Transpositionsmodell GHI -> POA: "perez" (Default, anisotrop)
+        # oder "isotropic" (Liu & Jordan 1963, einfacher, aus alter EMOS).
+        self.transposition_model = config.get("transposition_model", "perez")
 
     def _degradation_factor(self) -> float:
         """Berechnet den Degradationsfaktor basierend auf dem Anlagenalter."""
@@ -121,12 +124,14 @@ class PVSystem(Component):
             timestamps, latitude, longitude, tz_offset
         )
 
-        # GHI -> POA-Einstrahlung (Perez-Modell mit optionalen API-DNI/DHI)
+        # GHI -> POA-Einstrahlung (Perez oder isotropic, mit optionalen
+        # API-DNI/DHI). Modell wird aus self.transposition_model gewaehlt.
         doy = timestamps[0].timetuple().tm_yday
         poa = ghi_to_poa(
             ghi_series, sun_elevation, sun_azimuth,
             self.tilt_deg, self.azimuth_deg, self.albedo, doy,
             dni_override=dni_series, dhi_override=dhi_series,
+            model=self.transposition_model,
         )
 
         # Zelltemperatur schaetzen
