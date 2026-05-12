@@ -65,32 +65,38 @@ with st.sidebar:
     # Import
     config_file = st.file_uploader("YAML-Konfiguration importieren", type=["yaml", "yml"])
     if config_file is not None:
-        try:
-            user_yaml = yaml.safe_load(config_file)
-            base_config = load_config(None)
-            for key, val in user_yaml.items():
-                if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
-                    base_config[key].update(val)
-                else:
-                    base_config[key] = val
-            st.session_state.config = base_config
+        # Pro Upload eine eindeutige ID. Streamlit haengt diese an das
+        # UploadedFile-Objekt — sie ist nach einem st.rerun() identisch zum
+        # vorherigen Run, daher koennen wir damit erkennen, ob *dieser*
+        # konkrete Upload schon importiert wurde. Ohne diesen Marker
+        # entstand eine Endlosschleife (Import → rerun → Import → …),
+        # die als Dashboard-"Zittern" sichtbar war.
+        file_id = getattr(config_file, "file_id", None) or config_file.name
+        if st.session_state.get("_imported_config_id") != file_id:
+            try:
+                user_yaml = yaml.safe_load(config_file)
+                base_config = load_config(None)
+                for key, val in user_yaml.items():
+                    if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
+                        base_config[key].update(val)
+                    else:
+                        base_config[key] = val
+                st.session_state.config = base_config
 
-            # Session-State-Caches loeschen, die beim ersten Render aus der
-            # Config gebaut wurden und sonst die alten Werte ueberleben.
-            # Die PV-Flaechen ("Dachflaeche 1"-Liste) sind das prominenteste
-            # Beispiel — ohne Reset werden die importierten pv.surfaces
-            # ignoriert. Auch die Widget-Keys (pv_s_*, wb_*, ev_*) muessen
-            # weg, sonst halten die Streamlit-Widgets ihre alten Werte.
-            for key in list(st.session_state.keys()):
-                if key in ("pv_surfaces",) or key.startswith((
-                    "pv_s_", "wb_", "ev_", "batt_", "hp_",
-                )):
-                    del st.session_state[key]
+                # Session-State-Caches loeschen, die beim ersten Render aus
+                # der Config gebaut wurden und sonst die alten Werte
+                # ueberleben (PV-Flaechen-Liste + Widget-Keys).
+                for key in list(st.session_state.keys()):
+                    if key in ("pv_surfaces",) or key.startswith((
+                        "pv_s_", "wb_", "ev_", "batt_", "hp_",
+                    )):
+                        del st.session_state[key]
 
-            st.success("Konfiguration geladen!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Fehler: {e}")
+                st.session_state["_imported_config_id"] = file_id
+                st.success("Konfiguration geladen!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Fehler: {e}")
 
     # Export
     config_yaml = yaml.dump(
