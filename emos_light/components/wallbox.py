@@ -51,6 +51,10 @@ class Wallbox(MILPComponent):
         self.phases = config.get("phases", 3)
         self.ev_capacity_kwh = config.get("ev_battery_capacity_kwh", 60.0)
         self.target_soc = config.get("target_soc", 0.8)
+        # max_soc ist die physische Obergrenze des Akkus (1.0 = 100 %),
+        # ggf. abgesenkt zum Akkuschutz (z.B. 0.8). Der Solver darf
+        # niemals ueber diesen Punkt laden.
+        self.max_soc = config.get("max_soc", 1.0)
         self.current_soc = config.get("current_soc", 0.3)
         self.departure_hour = config.get("departure_hour", 7)
         self.arrival_hour = config.get("arrival_hour", 17)
@@ -141,6 +145,18 @@ class Wallbox(MILPComponent):
         delta_soc = max(0.0, self.target_soc - self.current_soc)
         return delta_soc * self.ev_capacity_kwh / self.charging_efficiency
 
+    @property
+    def max_charge_kwh(self) -> float:
+        """Maximal moegliche Ladeenergie in kWh (AC-seitig) bis max_soc.
+
+        Obere Schranke fuer das gesamte Laden ueber den Optimierungs-
+        zeitraum — verhindert, dass der Solver das Auto ueber max_soc
+        hinaus 'belaedt' (was real durch die Akku-BMS-Begrenzung passiert
+        aber im Modell ohne diese Schranke nicht abgebildet ist).
+        """
+        delta_soc = max(0.0, self.max_soc - self.current_soc)
+        return delta_soc * self.ev_capacity_kwh / self.charging_efficiency
+
     # ------------------------------------------------------------------
     # Anwesenheitslogik
     # ------------------------------------------------------------------
@@ -154,6 +170,17 @@ class Wallbox(MILPComponent):
         if self.arrival_hour <= self.departure_hour:
             return self.arrival_hour <= hour < self.departure_hour
         return hour >= self.arrival_hour or hour < self.departure_hour
+
+    def _count_charging_slots(self, num_steps: int, step_minutes: int) -> int:
+        """Anzahl der Slots, in denen das Auto laden darf
+        (Anwesenheit ∩ Preisfilter)."""
+        steps_per_hour = max(1, 60 // step_minutes)
+        if self._allowed_charging_steps is not None:
+            return len(self._allowed_charging_steps)
+        return sum(
+            1 for t in range(num_steps)
+            if self._is_ev_present((t // steps_per_hour) % 24)
+        )
 
     # ------------------------------------------------------------------
     # MILP-Schnittstelle
@@ -215,30 +242,38 @@ class Wallbox(MILPComponent):
                         f"{prefix}_price_filter_{t}",
                     )
 
-        # 3) Lade-Strategie je nach min_range_enabled
+        # 3) Lade-Strategie
+        #
+        # Immer eine HARTE OBERGRENZE: niemals ueber max_soc laden
+        # (entspricht physisch dem Akku-BMS).
+        total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
+        model += (
+            total_energy <= self.max_charge_kwh,
+            f"{prefix}_max_energy",
+        )
+
         if self.min_range_enabled:
-            # 3a) Garantierte Mindestlademenge bis Abfahrt
-            #     (setzt voraus, dass current_soc/target_soc bekannt sind)
-            total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
+            # 3a) Garantierte Mindestlademenge bis Abfahrt (target_soc).
+            #     Solver darf zwischen target_soc und max_soc frei waehlen.
             model += (
                 total_energy >= self.energy_needed_kwh,
                 f"{prefix}_min_energy",
             )
         else:
-            # 3b) Ohne SOC-Kommunikation: Fahrzeug laedt mit voller Leistung
-            #     in jedem erlaubten Slot (Anwesenheit ∩ Preisperzentil).
-            #     Damit ist das Verhalten deterministisch und benoetigt
-            #     keinen Akku-Endzustand.
-            for t in range(num_steps):
-                hour = (t // steps_per_hour) % 24
-                if not self._is_ev_present(hour):
-                    continue
-                if (self._allowed_charging_steps is not None
-                        and t not in self._allowed_charging_steps):
-                    continue
+            # 3b) Ohne SOC-Kommunikation: lade in den erlaubten Slots
+            #     "so viel wie moeglich" — entweder bis voll (max_soc)
+            #     oder bis die erlaubten Slots ausgehen. Realisiert als
+            #     Min-Constraint mit dem kleineren der beiden Werte;
+            #     mit der oberen Schranke aus 3) zusammen ist der
+            #     Solver gezwungen, dort exakt zu laden, ohne ueber
+            #     max_soc hinauszuschiessen.
+            allowed_slots = self._count_charging_slots(num_steps, step_minutes)
+            max_via_slots = allowed_slots * dt_h * self.max_power_kw
+            opportunistic_min = min(self.max_charge_kwh, max_via_slots)
+            if opportunistic_min > 0:
                 model += (
-                    power[t] == self.max_power_kw,
-                    f"{prefix}_force_full_charge_{t}",
+                    total_energy >= opportunistic_min,
+                    f"{prefix}_opportunistic_charge",
                 )
 
     # ------------------------------------------------------------------

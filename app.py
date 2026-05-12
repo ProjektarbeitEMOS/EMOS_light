@@ -884,6 +884,8 @@ with tab_config:
                         wb["ev_battery_capacity_kwh"] = ev.get("battery_capacity_kwh", 58.0)
                         wb["current_soc"] = ev.get("current_soc", 0.3)
                         wb["target_soc"] = ev.get("target_soc", 0.8)
+                        # Akku-Obergrenze (Akkuschutz / 100 % Default)
+                        wb["max_soc"] = ev.get("max_soc", 1.0)
                         wb["arrival_hour"] = ev.get("arrival_hour", 17)
                         wb["departure_hour"] = ev.get("departure_hour", 7)
                         # Mindestreichweite-Garantie (Constraint an/aus)

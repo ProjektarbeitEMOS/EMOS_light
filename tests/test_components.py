@@ -291,13 +291,27 @@ def test_wallbox_min_range_disabled():
     assert wb.min_range_enabled is False
 
 
+def test_wallbox_always_has_max_energy_cap():
+    """Egal welcher Modus: das Max-Energy-Constraint (bis max_soc) muss existieren."""
+    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "min_range_enabled": True})
+    model = pulp.LpProblem("test")
+    vars_ = wb.get_optimization_variables(num_steps=96, model=model)
+    wb.add_constraints(model, vars_, step_minutes=15)
+    names = list(model.constraints.keys())
+    assert any(n.endswith("_max_energy") for n in names), (
+        "Es muss IMMER ein _max_energy-Constraint geben (Akku-Obergrenze)"
+    )
+
+
 def test_wallbox_constraints_use_min_energy_when_enabled():
-    """Mit min_range_enabled=True existiert ein Energie-Mindestmenge-Constraint."""
+    """Mit min_range_enabled=True existiert ein Min-Energy-Constraint
+    UND das Max-Energy-Constraint."""
     wb = Wallbox("wb1", {
         **WALLBOX_DEFAULT,
         "min_range_enabled": True,
         "current_soc": 0.30,
         "target_soc": 0.80,
+        "max_soc": 1.0,
         "arrival_hour": 17,
         "departure_hour": 7,
     })
@@ -305,17 +319,14 @@ def test_wallbox_constraints_use_min_energy_when_enabled():
     vars_ = wb.get_optimization_variables(num_steps=96, model=model)
     wb.add_constraints(model, vars_, step_minutes=15)
     names = list(model.constraints.keys())
-    assert any(n.endswith("_min_energy") for n in names), (
-        "Bei min_range_enabled=True muss ein _min_energy-Constraint existieren"
-    )
-    assert not any("_force_full_charge_" in n for n in names), (
-        "Bei min_range_enabled=True darf KEIN _force_full_charge_-Constraint existieren"
-    )
+    assert any(n.endswith("_min_energy") for n in names)
+    assert any(n.endswith("_max_energy") for n in names)
+    assert not any("_opportunistic_charge" in n for n in names)
 
 
-def test_wallbox_constraints_use_forced_charge_when_disabled():
-    """Mit min_range_enabled=False werden 'force_full_charge'-Constraints
-    in den erlaubten Anwesenheits-Slots gesetzt, kein min_energy-Constraint."""
+def test_wallbox_uses_opportunistic_when_disabled():
+    """Mit min_range_enabled=False gibt es ein opportunistic_charge-Min
+    (= lade bis voll oder bis Slots aus) plus das Max-Energy-Cap."""
     import types
     import numpy as np
     wb = Wallbox("wb1", {
@@ -325,19 +336,27 @@ def test_wallbox_constraints_use_forced_charge_when_disabled():
         "departure_hour": 7,
         "charge_only_below_percentile_pct": 25.0,
     })
-    # Preisreihe vorbereiten (96 Slots, 24h)
     n = 96
-    prices = np.linspace(20, 40, n)
-    wb.prepare(types.SimpleNamespace(prices_ct_kwh=prices))
-
+    wb.prepare(types.SimpleNamespace(
+        prices_ct_kwh=np.linspace(20, 40, n), step_minutes=15,
+    ))
     model = pulp.LpProblem("test")
     vars_ = wb.get_optimization_variables(num_steps=n, model=model)
     wb.add_constraints(model, vars_, step_minutes=15)
     names = list(model.constraints.keys())
-    assert not any(n.endswith("_min_energy") for n in names), (
-        "Bei min_range_enabled=False darf KEIN _min_energy-Constraint existieren"
-    )
-    assert any("_force_full_charge_" in n for n in names), (
-        "Bei min_range_enabled=False muessen _force_full_charge_-Constraints"
-        " in den erlaubten Anwesenheits-Slots existieren"
-    )
+    assert not any(n.endswith("_min_energy") for n in names)
+    assert any(n.endswith("_max_energy") for n in names)
+    assert any("_opportunistic_charge" in n for n in names)
+
+
+def test_wallbox_max_charge_kwh_property():
+    """max_charge_kwh entspricht (max_soc - current_soc) * cap / eff."""
+    wb = Wallbox("wb1", {
+        **WALLBOX_DEFAULT,
+        "current_soc": 0.30,
+        "max_soc": 1.0,
+        "ev_battery_capacity_kwh": 60.0,
+        "charging_efficiency": 0.92,
+    })
+    expected = (1.0 - 0.30) * 60.0 / 0.92  # ≈ 45.65 kWh AC
+    assert abs(wb.max_charge_kwh - expected) < 0.01
