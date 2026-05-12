@@ -66,9 +66,12 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
           mehrere Stunden Reserve im Estrich hat).
         * Fallback ohne Speicher: WP deckt heating+hw 1:1 mit
           gewichtetem COP (alte Logik).
-    - **Wallboxen** laden sofort bei Ankunft mit voller Leistung,
-      gefiltert ueber den Strompreis-Perzentil (preisgesteuerte
-      Strategie aus Punkt 2 der Aufgabenliste).
+    - **Wallboxen** laden sofort bei Ankunft mit voller Leistung, bis
+      das EV abfaehrt — KEIN Preis- oder Perzentil-Filter. Der Perzentil-
+      Slider und das Mindestreichweite-Constraint sind reine Optimierungs-
+      features (MILP/MPC). In der Baseline-Referenz waeren sie unfair,
+      weil dann schon ein Teil der Optimierung in der Vergleichsstrategie
+      drin waere.
     - **Batterie** laedt mit PV-Ueberschuss, entlaedt bei Restbedarf.
     - Restenergie geht ins/aus dem Netz.
     """
@@ -180,44 +183,19 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     q_floor_all = np.zeros(num_steps)
     q_ww_all = np.zeros(num_steps)
     wallbox_power_all: dict = {}
-    # Pro Wallbox die Preis-Schwelle fuer die preisgesteuerte Ladestrategie:
-    # Nur in den guenstigsten X % der Strompreise **innerhalb der
-    # Anwesenheit** des Fahrzeugs laden (analog zur MILP-Implementierung
-    # in Wallbox.prepare). Dadurch gibt es immer Lade-Slots — auch wenn
-    # die Anwesenheit in eine objektiv teure Tageszeit faellt.
-    wallbox_price_threshold: dict = {}
-    steps_per_hour_baseline = max(1, 60 // inp.step_minutes)
+    # Wallbox-Result-Key vorbereiten (mit safe_name fuer Konsistenz mit
+    # dem MILP-Pfad, sodass Dashboard-Plots fuer beide Modi funktionieren).
+    # Hinweis: Der Strompreis-Perzentil-Filter wird in der BASELINE bewusst
+    # nicht angewendet — die Baseline ist die naive Referenzstrategie
+    # ("plug in & charge until full"), gegen die MILP/MPC ihre Einsparung
+    # messen. Wuerde sie den Filter mit anwenden, waere der Vergleich
+    # unfair: schon ein Teil der Optimierung waere in der Referenz drin.
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
-            # Result-Key mit gleichem safe_name wie die MILP-Wallbox-Komponente
-            # (Wallbox.__init__ normalisiert Leerzeichen/Bindestriche zu '_').
-            # Wichtig fuer Dashboard-Plots, die den Wallbox-Cfg via safe-Name
-            # zurueckmappen — wuerde sonst nur fuer MILP-Results funktionieren.
             name = _safe_wb_name(
                 wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             )
             wallbox_power_all[name] = np.zeros(num_steps)
-            pct = float(wb_cfg.get("charge_only_below_percentile_pct", 100.0))
-            if pct < 100.0:
-                # Preise nur fuer Anwesenheits-Slots sammeln
-                arrival = wb_cfg.get("arrival_hour", 17)
-                departure = wb_cfg.get("departure_hour", 7)
-                present_prices = [
-                    float(inp.prices_ct_kwh[t])
-                    for t in range(num_steps)
-                    if _is_hour_present(
-                        (t // steps_per_hour_baseline) % 24,
-                        arrival, departure,
-                    )
-                ]
-                if present_prices:
-                    wallbox_price_threshold[name] = float(
-                        np.percentile(present_prices, pct)
-                    )
-                else:
-                    wallbox_price_threshold[name] = float("-inf")
-            else:
-                wallbox_price_threshold[name] = float("inf")
 
     total_cost_ct = 0.0
     feed_in_tariff = inp.feed_in_tariff_ct_kwh
@@ -304,7 +282,8 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         q_floor_all[t] = q_to_floor
         q_ww_all[t] = q_to_ww
 
-        # Wallboxen — sofort laden, wenn EV anwesend UND Preisfilter okay
+        # Wallboxen — sofort laden, wenn EV anwesend (kein Preisfilter
+        # in der Baseline; der Perzentil-Slider greift nur im MILP).
         wb_total = 0.0
         for wb_cfg in wallboxes_cfg:
             if not wb_cfg.get("enabled", False):
@@ -320,12 +299,9 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             name = _safe_wb_name(
                 wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             )
-            # Preisfilter: nur laden, wenn Preis unter der Tages-Schwelle
-            price_ok = price <= wallbox_price_threshold.get(name, float("inf"))
-            wb_power = (
-                wb_cfg.get("max_power_kw", 0.0)
-                if (ev_present and price_ok) else 0.0
-            )
+            # Naive Baseline-Logik: laden sobald EV da ist, ohne Preis-
+            # filter. Der Perzentil-Slider greift nur in MILP/MPC.
+            wb_power = wb_cfg.get("max_power_kw", 0.0) if ev_present else 0.0
             wallbox_power_all[name][t] = wb_power
             wb_total += wb_power
 
