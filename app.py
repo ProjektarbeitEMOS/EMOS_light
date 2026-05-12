@@ -1068,13 +1068,28 @@ with tab_optimize:
 
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")
-        # Zwei Subplots, der untere mit sekundaerer Y-Achse fuer SOC %/kWh.
-        fig_el = make_subplots(
-            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-            subplot_titles=("Leistung (kW)", "Batterie SOC"),
-            row_heights=[0.7, 0.3],
-            specs=[[{}], [{"secondary_y": True}]],
-        )
+        # Drei Subplots:
+        #   Row 1: Leistung (kW)
+        #   Row 2: Batterie-SOC (% links, kWh rechts — synchron)
+        #   Row 3: EV-SOC pro Wallbox (nur sichtbar wenn mind. ein EV aktiv)
+        # Plot-Aufbau setzt das EV-SOC-Subplot immer mit auf, damit die
+        # Layout-Indizes stabil bleiben — wir blenden den Plot dynamisch ein.
+        wb_traces = list(result.wallbox_power_kw.items())
+        has_evs = len(wb_traces) > 0
+        if has_evs:
+            fig_el = make_subplots(
+                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                subplot_titles=("Leistung (kW)", "Batterie SOC", "E-Auto SOC"),
+                row_heights=[0.55, 0.225, 0.225],
+                specs=[[{}], [{"secondary_y": True}], [{"secondary_y": True}]],
+            )
+        else:
+            fig_el = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                subplot_titles=("Leistung (kW)", "Batterie SOC"),
+                row_heights=[0.7, 0.3],
+                specs=[[{}], [{"secondary_y": True}]],
+            )
 
         if inp is not None:
             fig_el.add_trace(go.Scatter(x=ts, y=inp.pv_generation_kw, name="PV", fill="tozeroy", line=dict(color="gold")), row=1, col=1)
@@ -1116,7 +1131,96 @@ with tab_optimize:
                 row=2, col=1, secondary_y=True,
             )
 
-        fig_el.update_layout(height=500, margin=dict(t=40))
+        # --- EV-SOC-Trajektorien (Row 3) ---
+        # Aus den Ladeleistungen pro Wallbox + EV-Daten den SOC-Verlauf
+        # integrieren. Ausserhalb der Anwesenheit: NaN, dann zeigt Plotly
+        # eine Luecke (sichtbar als "Auto ist weg").
+        if has_evs:
+            dt_h_plot = data["step_minutes"] / 60.0
+            steps_per_hour = max(1, 60 // data["step_minutes"])
+            n_steps = len(ts)
+            # Wallbox.__init__ normalisiert Namen (Leerzeichen/Bindestriche zu '_'),
+            # daher kann der Result-Key vom Originalnamen abweichen.
+            def _safe(n: str) -> str:
+                return n.replace(" ", "_").replace("-", "_")
+            # Mapping: linked_wallbox-Name (Original) → EV-Eintrag
+            ev_by_wb: dict = {}
+            for ev in config.get("electric_vehicles", []):
+                if ev.get("enabled"):
+                    ev_by_wb[ev.get("linked_wallbox")] = ev
+            # Pro Wallbox SOC integrieren
+            ev_palette = ["cyan", "deepskyblue", "lightskyblue", "steelblue"]
+            ref_capacity: float | None = None
+            for wi, (wb_result_name, wb_power) in enumerate(wb_traces):
+                # Originale Wallbox-Cfg ueber safe-Name finden
+                wb_cfg = next(
+                    (w for w in config.get("wallboxes", [])
+                     if _safe(w.get("name", "")) == wb_result_name),
+                    {},
+                )
+                ev_cfg = ev_by_wb.get(wb_cfg.get("name"), {})
+                cap = float(ev_cfg.get("battery_capacity_kwh",
+                                       wb_cfg.get("ev_battery_capacity_kwh", 60.0)))
+                eff = float(wb_cfg.get("charging_efficiency", 0.92))
+                soc0 = float(ev_cfg.get("current_soc",
+                                        wb_cfg.get("current_soc", 0.3)))
+                arrival = int(wb_cfg.get("arrival_hour", 17))
+                departure = int(wb_cfg.get("departure_hour", 7))
+                # Trajektorie aufbauen
+                soc_kwh = np.full(n_steps, np.nan)
+                e = soc0 * cap
+                for t in range(n_steps):
+                    hour = (t // steps_per_hour) % 24
+                    present = (
+                        arrival <= hour < departure
+                        if arrival <= departure
+                        else (hour >= arrival or hour < departure)
+                    )
+                    if present:
+                        e = min(cap, e + wb_power[t] * dt_h_plot * eff)
+                        soc_kwh[t] = e
+                soc_pct = (soc_kwh / cap) * 100.0 if cap > 0 else soc_kwh * 0
+                color = ev_palette[wi % len(ev_palette)]
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=soc_pct,
+                        name=f"EV SOC ({wb_name})",
+                        line=dict(color=color),
+                        connectgaps=False,
+                        hovertemplate=(
+                            "%{x|%H:%M}<br>"
+                            "SOC: %{y:.1f} %<br>"
+                            "= %{customdata:.2f} kWh<extra></extra>"
+                        ),
+                        customdata=soc_kwh,
+                    ),
+                    row=3, col=1, secondary_y=False,
+                )
+                if ref_capacity is None:
+                    ref_capacity = cap
+            fig_el.update_yaxes(
+                title_text="SOC (%)", range=[0, 100],
+                row=3, col=1, secondary_y=False,
+            )
+            if len(wb_traces) == 1:
+                # Nur 1 EV → kWh-Achse synchron sinnvoll
+                fig_el.update_yaxes(
+                    title_text="SOC (kWh)",
+                    range=[0, ref_capacity],
+                    row=3, col=1, secondary_y=True,
+                )
+            else:
+                # Mehrere EVs mit ggf. verschiedenen Kapazitaeten → kWh-Achse
+                # waere mehrdeutig; wir verstecken sie.
+                fig_el.update_yaxes(
+                    visible=False,
+                    row=3, col=1, secondary_y=True,
+                )
+
+        fig_el.update_layout(
+            height=600 if has_evs else 500,
+            margin=dict(t=40),
+        )
         st.plotly_chart(fig_el, use_container_width=True)
 
         # Thermische Uebersicht
