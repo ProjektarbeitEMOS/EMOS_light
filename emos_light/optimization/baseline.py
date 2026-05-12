@@ -175,10 +175,21 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     batt_discharge_all = np.zeros(num_steps)
     batt_soc_all = np.zeros(num_steps)
     wallbox_power_all: dict = {}
+    # Pro Wallbox die Preis-Schwelle fuer die preisgesteuerte Ladestrategie:
+    # Nur in den guenstigsten X % der Tagespreise laden (analog zur MILP-
+    # Implementierung in Wallbox.prepare).
+    wallbox_price_threshold: dict = {}
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
             name = wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
             wallbox_power_all[name] = np.zeros(num_steps)
+            pct = float(wb_cfg.get("charge_only_below_percentile_pct", 100.0))
+            if pct < 100.0:
+                wallbox_price_threshold[name] = float(
+                    np.percentile(inp.prices_ct_kwh, pct)
+                )
+            else:
+                wallbox_price_threshold[name] = float("inf")
 
     total_cost_ct = 0.0
     feed_in_tariff = inp.feed_in_tariff_ct_kwh
@@ -202,7 +213,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 hp_el = min(heat_demand / cop, hp_max_power)
         hp_power_all[t] = hp_el
 
-        # Wallboxen — sofort laden, wenn EV anwesend
+        # Wallboxen — sofort laden, wenn EV anwesend UND Preisfilter okay
         wb_total = 0.0
         for wb_cfg in wallboxes_cfg:
             if not wb_cfg.get("enabled", False):
@@ -215,8 +226,13 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 if arrival > departure
                 else arrival <= hour < departure
             )
-            wb_power = wb_cfg.get("max_power_kw", 0.0) if ev_present else 0.0
             name = wb_cfg.get("name", f"wb_{len(wallbox_power_all)}")
+            # Preisfilter: nur laden, wenn Preis unter der Tages-Schwelle
+            price_ok = price <= wallbox_price_threshold.get(name, float("inf"))
+            wb_power = (
+                wb_cfg.get("max_power_kw", 0.0)
+                if (ev_present and price_ok) else 0.0
+            )
             wallbox_power_all[name][t] = wb_power
             wb_total += wb_power
 

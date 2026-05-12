@@ -717,6 +717,37 @@ with tab_config:
                         idx = wb_names.index(linked) if linked in wb_names else 0
                         ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=f"ev_{i}_wb")
 
+                    # ---- Bidirektionales Laden / preisgesteuerte Strategie ----
+                    st.info(
+                        "ℹ️ **Bidirektionales Laden (V2H/V2G)** ist nur nutzbar, "
+                        "wenn sowohl die **Wallbox** als auch das **E-Auto** das "
+                        "unterstuetzen — in der Praxis selten der Fall. "
+                        "Stattdessen kannst du eine **preisgesteuerte "
+                        "Ladestrategie** waehlen: das Auto laedt dann nur in den "
+                        "guenstigsten X % der Tagesstunden."
+                    )
+                    pct_default = float(ev.get("charge_only_below_percentile_pct", 100.0))
+                    ev["charge_only_below_percentile_pct"] = st.slider(
+                        "Strompreis-Perzentil zum Laden (%)",
+                        min_value=10, max_value=100,
+                        value=int(round(pct_default)),
+                        step=5,
+                        key=f"ev_{i}_pct",
+                        help=(
+                            "100 %% = laden jederzeit moeglich (keine Beschraenkung). "
+                            "Niedrigere Werte = strikter: bei 25 %% darf nur in den "
+                            "guenstigsten 25 %% der Tagesstunden geladen werden. "
+                            "Achtung: zu niedrige Werte koennen die Mindestlademenge "
+                            "unerreichbar machen — der Solver meldet das."
+                        ),
+                    )
+                    if ev["charge_only_below_percentile_pct"] < 100:
+                        st.caption(
+                            f"→ Laden nur in den **guenstigsten "
+                            f"{ev['charge_only_below_percentile_pct']:.0f} %** "
+                            f"der Tagesstunden."
+                        )
+
                 if st.button("E-Auto entfernen", key=f"ev_{i}_rm"):
                     st.session_state["_ev_rm_idx"] = i
                     st.rerun()
@@ -736,6 +767,10 @@ with tab_config:
                         wb["target_soc"] = ev.get("target_soc", 0.8)
                         wb["arrival_hour"] = ev.get("arrival_hour", 17)
                         wb["departure_hour"] = ev.get("departure_hour", 7)
+                        # Preissensitive Ladestrategie (Ersatz fuer V2H)
+                        wb["charge_only_below_percentile_pct"] = ev.get(
+                            "charge_only_below_percentile_pct", 100.0
+                        )
 
 
 # ================================================================

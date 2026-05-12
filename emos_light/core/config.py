@@ -202,6 +202,11 @@ EV_DEFAULT = {
     "v2h_capable": False,
     "v2h_min_soc": 0.30,
     "linked_wallbox": "Wallbox 1",
+    # Wenn das EV/die Wallbox kein bidirektionales Laden (V2H) unterstuetzt,
+    # kann stattdessen eine preisgesteuerte Ladestrategie genutzt werden:
+    # nur in den guenstigsten X % der Tagesstunden (Day-Ahead) laden.
+    # 100 % = keine Beschraenkung (Default = wie bisher).
+    "charge_only_below_percentile_pct": 100.0,
 }
 
 

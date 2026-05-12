@@ -56,10 +56,46 @@ class Wallbox(MILPComponent):
         self.arrival_hour = config.get("arrival_hour", 17)
         self.charging_efficiency = config.get("charging_efficiency", 0.92)
 
+        # Preisgesteuerte Ladestrategie (Ersatz fuer fehlendes V2H):
+        # Nur in den guenstigsten X % der Tagespreise (Day-Ahead) laden.
+        # 100 % = keine Beschraenkung (Default).
+        self.charge_only_below_percentile_pct = float(
+            config.get("charge_only_below_percentile_pct", 100.0)
+        )
+        # Wird in prepare(inp) gesetzt — None = keine Beschraenkung.
+        self._allowed_charging_steps: set[int] | None = None
+
         # Leistungsgrenzen basierend auf Phasenkonfiguration anpassen
         phase_limits = self.PHASE_LIMITS.get(self.phases, self.PHASE_LIMITS[3])
         self.max_power_kw = min(self.max_power_kw, phase_limits["max_kw"])
         self.min_power_kw = max(self.min_power_kw, phase_limits["min_kw"])
+
+    # ------------------------------------------------------------------
+    # Setup-Hook fuer preisgesteuerte Ladestrategie
+    # ------------------------------------------------------------------
+
+    def prepare(self, inp: Any) -> None:
+        """Berechnet, in welchen Zeitschritten ueberhaupt geladen werden darf.
+
+        Wenn ``charge_only_below_percentile_pct < 100``, wird das Laden auf
+        die guenstigsten X % der Day-Ahead-Preise des Optimierungstags
+        eingeschraenkt. Das simuliert eine preissensitive Ladestrategie
+        ohne V2H-Hardware — der Nutzer entscheidet sich freiwillig, das
+        Auto nur bei billigem Strom zu laden.
+
+        Achtung: Wenn die zulaessigen Zeitschritte (∩ EV-Anwesenheit)
+        zusammen mit max_power_kw nicht ausreichen, die Mindestlademenge
+        zu erreichen, wird der Solver ein infeasibles Problem melden.
+        """
+        import numpy as np
+        if self.charge_only_below_percentile_pct >= 100.0:
+            self._allowed_charging_steps = None
+            return
+        prices = np.asarray(inp.prices_ct_kwh, dtype=float)
+        threshold = float(np.percentile(prices, self.charge_only_below_percentile_pct))
+        self._allowed_charging_steps = {
+            t for t, p in enumerate(prices) if p <= threshold
+        }
 
     @property
     def energy_needed_kwh(self) -> float:
@@ -134,6 +170,15 @@ class Wallbox(MILPComponent):
             hour = (t // steps_per_hour) % 24
             if not self._is_ev_present(hour):
                 model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
+
+        # 2b) Preisfilter: nur in den guenstigsten X % der Tagesstunden laden
+        if self._allowed_charging_steps is not None:
+            for t in range(num_steps):
+                if t not in self._allowed_charging_steps:
+                    model += (
+                        power[t] == 0,
+                        f"{prefix}_price_filter_{t}",
+                    )
 
         # 3) Mindestlademenge bis Abfahrt
         total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))

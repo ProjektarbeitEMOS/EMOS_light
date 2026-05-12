@@ -198,3 +198,44 @@ def test_par14a_curtailable_predicate(cls, cfg_key, curtailable):
     else:
         c = cls("x", DEFAULT_CONFIG[cfg_key])
     assert c.is_par14a_curtailable is curtailable
+
+
+# ---------------------------------------------------------------------------
+# Wallbox: preisgesteuerte Ladestrategie (Ersatz fuer V2H)
+# ---------------------------------------------------------------------------
+
+def test_wallbox_no_price_filter_when_pct_is_100():
+    """pct=100 → kein Filter, _allowed_charging_steps bleibt None."""
+    import types
+    import numpy as np
+    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 100.0})
+    inp = types.SimpleNamespace(prices_ct_kwh=np.array([10.0, 20.0, 30.0, 40.0]))
+    wb.prepare(inp)
+    assert wb._allowed_charging_steps is None
+
+
+def test_wallbox_price_filter_picks_cheapest():
+    """pct=25 → nur die guenstigsten 25 % erlaubt."""
+    import types
+    import numpy as np
+    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 25.0})
+    # 8 Schritte mit aufsteigenden Preisen → unterstes Viertel = Index 0,1
+    inp = types.SimpleNamespace(
+        prices_ct_kwh=np.array([10., 12., 14., 16., 18., 20., 22., 24.])
+    )
+    wb.prepare(inp)
+    # 25. Perzentil von [10..24] ist 13.5 → erlaubt sind alle mit price <= 13.5
+    assert wb._allowed_charging_steps == {0, 1}
+
+
+def test_wallbox_price_filter_50_percent():
+    """pct=50 → erlaubt nur untere Haelfte."""
+    import types
+    import numpy as np
+    wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "charge_only_below_percentile_pct": 50.0})
+    inp = types.SimpleNamespace(
+        prices_ct_kwh=np.array([10., 20., 30., 40., 50., 60.])
+    )
+    wb.prepare(inp)
+    # Median = 35 → erlaubt 10/20/30
+    assert wb._allowed_charging_steps == {0, 1, 2}
