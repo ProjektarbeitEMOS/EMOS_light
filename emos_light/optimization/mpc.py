@@ -2,7 +2,20 @@
 
 Rollierender Optimierungshorizont mit Zustandsuebertragung
 fuer Batterie-SOC, Estrich-Temperatur und WW-Speicher-Energie.
+
+Day-Ahead-konformer Horizont: An Strommaerkten (EPEX SPOT) werden die
+Preise fuer den naechsten Tag i.d.R. um ~13 Uhr CET veroeffentlicht.
+Daher passt sich der Horizont an die aktuelle Uhrzeit an:
+
+  vor 13 Uhr Ortszeit → Horizont bis Tagesende heute
+                        (morgige Preise noch nicht verfuegbar)
+  ab 13 Uhr Ortszeit  → Horizont bis Tagesende morgen
+                        (Day-Ahead fuer morgen ist gerade publiziert)
+
+Hard cap: nie ueber das Ende der bereitgestellten Eingangsdaten hinaus.
 """
+
+import datetime
 
 import numpy as np
 
@@ -10,24 +23,70 @@ from emos_light.core.types import TimeSeriesInput, OptimizationResult
 from emos_light.optimization.optimizer import EMOSLightOptimizer
 
 
+# Stunde (Ortszeit), ab der die morgigen Day-Ahead-Preise verfuegbar sind.
+DAY_AHEAD_PUBLISH_HOUR = 13
+
+
 class MPCController:
-    """MPC-Wrapper fuer den EMOS Light Optimizer."""
+    """MPC-Wrapper fuer den EMOS Light Optimizer mit Day-Ahead-Horizont."""
 
     def __init__(
         self,
         optimizer: EMOSLightOptimizer,
-        horizon_hours: int = 24,
+        horizon_hours: int | None = None,
         execute_hours: int = 1,
     ):
+        """Args:
+            optimizer: konfigurierter EMOSLightOptimizer.
+            horizon_hours: Wenn None (Default), wird pro Iteration dynamisch
+                der Horizont bis zum heutigen oder morgigen Tagesende
+                berechnet (siehe Modul-Doku). Wenn gesetzt, wird der
+                klassische rollierende MPC mit festem Fenster ausgefuehrt.
+            execute_hours: Wie viele Stunden des Fensters werden umgesetzt,
+                bevor neu optimiert wird (Default 1).
+        """
         self.optimizer = optimizer
         self.horizon_hours = horizon_hours
         self.execute_hours = execute_hours
+
+    def _horizon_end_step(
+        self, full_input: TimeSeriesInput, current_step: int
+    ) -> int:
+        """Endindex (exklusiv) des aktuellen Optimierungsfensters.
+
+        Day-Ahead-konformes Verhalten: vor 13 Uhr Ortszeit reicht das
+        Fenster bis Mitternacht heute, ab 13 Uhr bis Mitternacht morgen.
+        Limit: nicht ueber die vorhandenen Eingangsdaten hinaus.
+        """
+        total_steps = len(full_input.prices_ct_kwh)
+
+        # Wenn ein fester Horizont konfiguriert ist, klassisch rollend
+        if self.horizon_hours is not None:
+            steps_per_hour = 60 // full_input.step_minutes
+            return min(
+                current_step + self.horizon_hours * steps_per_hour,
+                total_steps,
+            )
+
+        # Dynamisch: aktuelle Ortszeit bestimmt das Tagesende-Ziel
+        now = full_input.timestamps[current_step]
+        midnight_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if now.hour < DAY_AHEAD_PUBLISH_HOUR:
+            # bis Tagesende heute = Mitternacht am Anfang des naechsten Tages
+            target = midnight_today + datetime.timedelta(days=1)
+        else:
+            # bis Tagesende morgen
+            target = midnight_today + datetime.timedelta(days=2)
+
+        t0 = full_input.timestamps[0]
+        delta_min = (target - t0).total_seconds() / 60.0
+        target_step = int(round(delta_min / full_input.step_minutes))
+        return max(current_step + 1, min(target_step, total_steps))
 
     def run_mpc(self, full_input: TimeSeriesInput) -> OptimizationResult:
         """Fuehrt die MPC-Optimierung durch."""
         steps_per_hour = 60 // full_input.step_minutes
         total_steps = len(full_input.prices_ct_kwh)
-        horizon_steps = self.horizon_hours * steps_per_hour
         execute_steps = self.execute_hours * steps_per_hour
 
         # Ergebnis-Arrays
@@ -53,7 +112,7 @@ class MPCController:
         current_step = 0
 
         while current_step < total_steps:
-            window_end = min(current_step + horizon_steps, total_steps)
+            window_end = self._horizon_end_step(full_input, current_step)
             exec_end = min(current_step + execute_steps, total_steps)
 
             window_input = self._slice_input(full_input, current_step, window_end)

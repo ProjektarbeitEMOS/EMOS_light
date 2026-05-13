@@ -164,15 +164,22 @@ with st.sidebar:
     )
     mpc_execute_hours = 1
     total_horizon_h = general.get("optimization_horizon_hours", 24)
-    mpc_horizon_hours = total_horizon_h
+    # mpc_horizon_hours = None → MPCController nutzt dynamischen Day-Ahead-
+    # Horizont (vor 13 Uhr bis Tagesende heute, ab 13 Uhr bis Tagesende morgen).
+    mpc_horizon_hours = None
     if opt_mode == "MPC (rollierend)":
         mpc_execute_hours = st.slider("MPC Ausfuehrungsfenster (h)", 1, 6, 1)
-        mpc_horizon_hours = st.slider(
-            "MPC Vorhersagehorizont (h)", 2, int(total_horizon_h),
-            min(6, int(total_horizon_h)),
+        st.info(
+            "ℹ️ **Day-Ahead-Horizont:** Der MPC-Vorhersagehorizont wird "
+            "automatisch aus der aktuellen Ortszeit abgeleitet — analog "
+            "zur EPEX-SPOT-Preisveroeffentlichung:\n\n"
+            "- **Vor 13 Uhr** Ortszeit → Horizont bis Tagesende **heute** "
+            "(morgige Preise noch nicht verfuegbar)\n"
+            "- **Ab 13 Uhr** Ortszeit → Horizont bis Tagesende **morgen**\n\n"
+            "Das Fenster ist nie laenger als die hinterlegten Preisdaten."
         )
         n_windows = int(np.ceil(total_horizon_h / mpc_execute_hours))
-        st.caption(f"MPC: {n_windows} Fenster a {mpc_execute_hours}h")
+        st.caption(f"MPC: bis zu {n_windows} Fenster a {mpc_execute_hours}h Ausfuehrung")
 
     st.divider()
 
