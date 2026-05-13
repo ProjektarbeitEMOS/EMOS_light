@@ -229,20 +229,6 @@ class EMOSLightOptimizer:
             heating_slack = [
                 pulp.LpVariable(f"heating_slack_{t}", 0) for t in range(num_steps)
             ]
-            # Komfort-Mindestenergie des Estrichs durchsetzen (weich ueber
-            # heating_slack — bei genug guenstigem Strom haelt der Solver
-            # den Estrich automatisch ueber dieser Schwelle; nur wenn das
-            # ohne Strafkosten-Verletzung nicht erreichbar ist, wird der
-            # Slack > 0 und der Solver "kauft" sich die Verletzung gegen
-            # UNMET_HEAT_PENALTY_CT/kWh).
-            comfort_min_e = self.underfloor_heating.comfort_min_energy_kwh
-            if comfort_min_e > 0:
-                for t in range(num_steps):
-                    model += (
-                        variables["ufh_floor_energy"][t] + heating_slack[t]
-                        >= comfort_min_e,
-                        f"ufh_min_comfort_{t}",
-                    )
 
         # ============================================================
         # Elektrische Energiebilanz — generisch ueber milp_components

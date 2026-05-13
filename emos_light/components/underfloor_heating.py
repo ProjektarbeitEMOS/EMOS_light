@@ -53,13 +53,6 @@ class UnderfloorHeating(MILPComponent):
         self.temp_min = config.get("floor_temp_min_c", 20.0)
         self.temp_max = config.get("floor_temp_max_c", 26.0)
         self.initial_temp = config.get("initial_floor_temp_c", 22.0)
-        # Komfort-Untergrenze als Anteil der nutzbaren Bandbreite [T_min, T_max].
-        # Default 0.25 entspricht ~T_min + 1.5 K (bei 6-K-Band 20-26 °C).
-        # Die MILP-Optimierung hat ohne dieses Constraint keinen Pull-Faktor,
-        # den Estrich warm zu halten — sie wuerde ihn auf T_min auskuehlen
-        # lassen (= Komfortverletzung). Mit dem Constraint zwingt heating_slack
-        # eine Strafkostenbelastung auf zu kalte Phasen.
-        self.comfort_min_fraction = config.get("comfort_min_fraction", 0.25)
         # Optional: Zusatzkapazitaet aus Gebaeudehuelle (Wand+Luft).
         # Wird von scenario.build_components() aus Building.shell_capacity_kwh_per_k
         # uebergeben. Lumped-Capacitance-Modell: der Estrich repraesentiert dann
@@ -119,18 +112,6 @@ class UnderfloorHeating(MILPComponent):
         """Rechnet Temperatur in Estrich-Energie um."""
         delta = max(0, min(temp_c - self.temp_min, self.temp_range_k))
         return self.capacity_kwh_per_k * delta
-
-    @property
-    def comfort_min_energy_kwh(self) -> float:
-        """Komfort-Mindest-Estrich-Energie als absoluter kWh-Wert.
-
-        = comfort_min_fraction × Komfort-Bandbreite. Wenn der MILP-Estrich
-        diese Schwelle unterschreitet, wird heating_slack aktiviert und
-        eine Strafkostenbelastung in die Zielfunktion eingebracht — der
-        Solver wird darauf reagieren, indem er die WP rechtzeitig
-        einschaltet.
-        """
-        return max(0.0, min(1.0, self.comfort_min_fraction)) * self.total_capacity_kwh
 
     # ------------------------------------------------------------------
     # MILP-Schnittstelle
