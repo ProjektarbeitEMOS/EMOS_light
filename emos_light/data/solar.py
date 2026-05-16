@@ -364,11 +364,23 @@ def ghi_to_poa(
     doy: int = 1,
     dni_override: np.ndarray | None = None,
     dhi_override: np.ndarray | None = None,
+    model: str = "perez",
 ) -> np.ndarray:
     """Konvertiert GHI zu POA (Plane-of-Array) Einstrahlung.
 
-    Verwendet das Perez (1990) anisotrope Transpositionsmodell:
-        POA = DNI * cos(AOI) + POA_diffuse_perez + GHI * albedo * (1-cos(tilt))/2
+    Unterstuetzt zwei Transpositionsmodelle:
+
+    - ``"perez"`` (Default, Standard EMOS Light) — Perez (1990)
+      anisotropes Modell mit Sky-Clearness/Brightness und
+      F1/F2-Koeffizienten. Praezise an klaren und mittelbedeckten
+      Tagen, etwas rechenaufwendiger.
+
+    - ``"isotropic"`` (alte EMOS, Liu & Jordan 1963) — einfaches
+      isotropes Modell:
+            POA = DNI·cos(AOI) + DHI·(1+cos(tilt))/2
+                + GHI·albedo·(1-cos(tilt))/2
+      Schnell und robust, aber unterschaetzt typischerweise den
+      Diffusanteil aus der Sonnenhalbkugel an klaren Tagen.
 
     DNI und DHI werden direkt aus API-Daten uebernommen (wenn vorhanden)
     oder ueber das DISC-Modell (Maxwell 1987) aus GHI geschaetzt.
@@ -383,18 +395,26 @@ def ghi_to_poa(
         doy: Tag des Jahres (1-366).
         dni_override: DNI aus API-Daten [W/m²] (optional, Fallback: DISC).
         dhi_override: DHI aus API-Daten [W/m²] (optional, Fallback: DISC).
+        model: ``"perez"`` (Default) oder ``"isotropic"`` (Liu & Jordan).
 
     Returns:
         POA-Einstrahlung in W/m^2.
     """
+    if model not in ("perez", "isotropic"):
+        raise ValueError(
+            f"Unbekanntes Transpositionsmodell: {model!r}. "
+            "Erlaubt: 'perez' oder 'isotropic'."
+        )
+
     n = len(ghi)
     poa = np.zeros(n)
 
     tilt_rad = math.radians(panel_tilt_deg)
     panel_az_rad = math.radians(panel_azimuth_deg)
 
-    # Bodenreflexion (konstant ueber alle Zeitschritte)
+    # Vorfaktoren (konstant ueber alle Zeitschritte)
     ground_factor = albedo * (1.0 - math.cos(tilt_rad)) / 2.0
+    iso_diffuse_factor = (1.0 + math.cos(tilt_rad)) / 2.0  # nur fuer isotropic
 
     for i in range(n):
         # Kein Ertrag bei Nacht oder sehr niedrigem Sonnenstand
@@ -426,15 +446,18 @@ def ghi_to_poa(
         )
         cos_aoi = max(0.0, cos_aoi)
 
-        # Luftmasse fuer Perez-Modell
-        am = _kasten_airmass(zenith_deg)
-
-        # Perez (1990) anisotropes Transpositionsmodell
+        # Direktstrahlung und Bodenreflexion sind modell-unabhaengig
         beam = dni * cos_aoi
-        diffuse = _perez_diffuse(
-            dhi, dni, cos_zenith, zenith_rad, cos_aoi, tilt_rad, am, doy,
-        )
         ground_reflected = ghi_val * ground_factor
+
+        # Diffusanteil je nach gewaehltem Modell
+        if model == "perez":
+            am = _kasten_airmass(zenith_deg)
+            diffuse = _perez_diffuse(
+                dhi, dni, cos_zenith, zenith_rad, cos_aoi, tilt_rad, am, doy,
+            )
+        else:  # isotropic / Liu & Jordan
+            diffuse = dhi * iso_diffuse_factor
 
         poa[i] = beam + diffuse + ground_reflected
 

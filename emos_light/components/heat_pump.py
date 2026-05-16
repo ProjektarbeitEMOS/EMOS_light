@@ -17,9 +17,19 @@ SG-Ready Zustaende nach BWP v1.1:
 from typing import Any
 
 import numpy as np
-import pulp
 
-from emos_light.components.base import Component
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_min_hold_time,
+    add_min_pause_time,
+    add_min_run_time,
+    add_mutual_exclusion,
+    add_on_off_power_link,
+    make_binary_array,
+    make_var_array,
+    steps_for_minutes,
+)
+from emos_light.utils.interpolation import interp_2d
 
 
 # ============================================================
@@ -55,51 +65,7 @@ _COP_MIN = 1.2
 _COP_MAX = 7.0
 
 
-def _interp_2d(
-    x: np.ndarray,
-    y: float,
-    x_grid: np.ndarray,
-    y_grid: np.ndarray,
-    z_grid: np.ndarray,
-) -> np.ndarray:
-    """Bilineare 2D-Interpolation mit Clamp an Raendern.
-
-    Args:
-        x: Array von x-Werten (Aussentemperatur).
-        y: Skalarer y-Wert (Vorlauftemperatur).
-        x_grid: Stuetzstellen x-Achse (sortiert, aufsteigend).
-        y_grid: Stuetzstellen y-Achse (sortiert, aufsteigend).
-        z_grid: 2D-Matrix der Werte [len(x_grid) x len(y_grid)].
-
-    Returns:
-        Interpolierte Werte als numpy-Array.
-    """
-    x = np.atleast_1d(np.asarray(x, dtype=float))
-    x_c = np.clip(x, x_grid[0], x_grid[-1])
-    y_c = np.clip(y, y_grid[0], y_grid[-1])
-
-    # x-Indizes
-    ix = np.searchsorted(x_grid, x_c) - 1
-    ix = np.clip(ix, 0, len(x_grid) - 2)
-
-    # y-Indizes (skalar)
-    iy = int(np.clip(np.searchsorted(y_grid, y_c) - 1, 0, len(y_grid) - 2))
-
-    dx = x_grid[ix + 1] - x_grid[ix]
-    dy = y_grid[iy + 1] - y_grid[iy]
-    wx = np.where(dx > 0, (x_c - x_grid[ix]) / dx, 0.0)
-    wy = (y_c - y_grid[iy]) / dy if dy > 0 else 0.0
-
-    z = (
-        z_grid[ix, iy] * (1 - wx) * (1 - wy)
-        + z_grid[ix + 1, iy] * wx * (1 - wy)
-        + z_grid[ix, iy + 1] * (1 - wx) * wy
-        + z_grid[ix + 1, iy + 1] * wx * wy
-    )
-    return z
-
-
-class HeatPump(Component):
+class HeatPump(MILPComponent):
     """Waermepumpe mit realem COP-Kennfeld und SG-Ready (BWP v1.1).
 
     Config-Parameter:
@@ -134,6 +100,17 @@ class HeatPump(Component):
         self.sg_min_hold_minutes = config.get("sg_ready_min_hold_minutes", 10)
         self.sg_min_cooldown_minutes = config.get("sg_ready_min_cooldown_minutes", 10)
 
+        # Werden in prepare() / set_active_heat_sinks() vom Optimizer gesetzt.
+        self._cop_heating: np.ndarray | None = None
+        self._cop_dhw: np.ndarray | None = None
+        self._active_sinks: set = set()
+
+    # Vorlauftemperatur je Senken-Bezeichner (Konvention)
+    _SINK_FLOW_TEMP = {
+        "floor": "flow_temp_heating",
+        "ww": "flow_temp_dhw",
+    }
+
     # ============================================================
     # COP-Berechnung (2D-Kennfeld aroTHERM plus)
     # ============================================================
@@ -150,7 +127,7 @@ class HeatPump(Component):
         Returns:
             COP-Array gleicher Laenge wie outside_temp_c.
         """
-        cop = _interp_2d(outside_temp_c, flow_temp_c,
+        cop = interp_2d(outside_temp_c, flow_temp_c,
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _COP_TABLE)
         return np.clip(cop, _COP_MIN, _COP_MAX)
 
@@ -166,46 +143,62 @@ class HeatPump(Component):
         self, outside_temp_c: np.ndarray, flow_temp_c: float
     ) -> np.ndarray:
         """Max. thermische Leistung [kW] aus Kennfeld."""
-        cap = _interp_2d(outside_temp_c, flow_temp_c,
+        cap = interp_2d(outside_temp_c, flow_temp_c,
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _CAPACITY_TABLE)
         return np.clip(cap, 0.0, 20.0)
+
+    # ============================================================
+    # Setup-Hooks (vom Optimizer aufgerufen)
+    # ============================================================
+
+    def prepare(self, inp: Any) -> None:
+        """Vorberechnung der COP-Zeitreihen aus der Aussentemperatur."""
+        self._cop_heating = self.calculate_cop_heating(inp.outside_temp_c)
+        self._cop_dhw = self.calculate_cop_dhw(inp.outside_temp_c)
+
+    def set_active_heat_sinks(self, sinks: set) -> None:
+        """Welche Senken sind aktiv? Bestimmt, ob ein WP-Split noetig ist."""
+        # Nur Senken merken, die wir auch bedienen koennen
+        self._active_sinks = set(sinks) & set(self._SINK_FLOW_TEMP.keys())
 
     # ============================================================
     # MILP-Variablen und Constraints
     # ============================================================
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
-        """Erstellt WP-Variablen inkl. SG-Ready Zustaende (BWP v1.1).
+        """Erstellt WP-Variablen inkl. SG-Ready und ggf. Senken-Split.
 
         Variablen:
             hp_on[t]: Binaer — WP an/aus
             hp_power[t]: Elektrische Leistung gesamt [kW]
-            sg_state_1[t]: Binaer — Zustand 1 (Lastabwurf)
-            sg_state_3[t]: Binaer — Zustand 3 (Verstaerkt)
+            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Lastabwurf)
+            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Verstaerkt)
+
+        Wenn mehrere Waermesenken aktiv sind, werden zusaetzlich
+        Aufteilungs-Variablen pro Senke erzeugt:
+            hp_power_floor[t]: Anteil der el. Leistung an FBH-Pfad
+            hp_power_ww[t]:    Anteil der el. Leistung an WW-Pfad
         """
-        hp_on = [
-            pulp.LpVariable(f"hp_on_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
-        hp_power = [
-            pulp.LpVariable(f"hp_power_{t}", lowBound=0, upBound=self.max_power_kw)
-            for t in range(num_steps)
-        ]
-
-        result = {"hp_on": hp_on, "hp_power": hp_power}
-
+        result = {
+            "hp_on": make_binary_array("hp_on", num_steps),
+            "hp_power": make_var_array(
+                "hp_power", num_steps, low=0, high=self.max_power_kw,
+            ),
+        }
         if self.sg_ready:
-            sg_state_1 = [
-                pulp.LpVariable(f"sg_state_1_{t}", cat=pulp.LpBinary)
-                for t in range(num_steps)
-            ]
-            sg_state_3 = [
-                pulp.LpVariable(f"sg_state_3_{t}", cat=pulp.LpBinary)
-                for t in range(num_steps)
-            ]
-            result["sg_state_1"] = sg_state_1
-            result["sg_state_3"] = sg_state_3
+            result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
+            result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
 
+        # Senken-Split nur wenn mehr als eine Senke aktiv
+        if len(self._active_sinks) > 1:
+            if "floor" in self._active_sinks:
+                result["hp_power_floor"] = make_var_array(
+                    "hp_power_floor", num_steps, low=0, high=self.max_power_kw,
+                )
+            if "ww" in self._active_sinks:
+                result["hp_power_ww"] = make_var_array(
+                    "hp_power_ww", num_steps, low=0, high=self.max_power_kw,
+                )
         return result
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -214,58 +207,105 @@ class HeatPump(Component):
         hp_power = variables["hp_power"]
         num_steps = len(hp_on)
 
-        min_run_steps = max(1, self.min_run_minutes // step_minutes)
-        min_pause_steps = max(1, self.min_pause_minutes // step_minutes)
+        min_run_steps = steps_for_minutes(self.min_run_minutes, step_minutes)
+        min_pause_steps = steps_for_minutes(self.min_pause_minutes, step_minutes)
 
-        for t in range(num_steps):
-            model += hp_power[t] <= self.max_power_kw * hp_on[t], f"hp_max_power_{t}"
-            model += hp_power[t] >= self.min_power_kw * hp_on[t], f"hp_min_power_{t}"
+        # Modulationsbereich (Min/Max Leistung gekoppelt an on/off)
+        add_on_off_power_link(
+            model, hp_power, hp_on,
+            max_power=self.max_power_kw,
+            min_power=self.min_power_kw,
+            name="hp",
+        )
 
-        # Mindestlaufzeit
-        for t in range(1, num_steps):
-            for k in range(1, min_run_steps):
-                if t + k < num_steps:
-                    model += (
-                        hp_on[t] - hp_on[t - 1] <= hp_on[t + k],
-                        f"hp_min_run_{t}_{k}",
-                    )
-
-        # Mindestpausenzeit
-        for t in range(1, num_steps):
-            for k in range(1, min_pause_steps):
-                if t + k < num_steps:
-                    model += (
-                        hp_on[t - 1] - hp_on[t] <= 1 - hp_on[t + k],
-                        f"hp_min_pause_{t}_{k}",
-                    )
+        add_min_run_time(model, hp_on, min_run_steps=min_run_steps, name="hp")
+        add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
 
         # SG-Ready Constraints (BWP v1.1)
-        if self.sg_ready and "sg_state_1" in variables:
-            sg1 = variables["sg_state_1"]
-            sg3 = variables["sg_state_3"]
+        if self.sg_ready and "hp_sg1" in variables:
+            sg1 = variables["hp_sg1"]
+            sg3 = variables["hp_sg3"]
+            min_hold_steps = steps_for_minutes(self.sg_min_hold_minutes, step_minutes)
 
-            min_hold_steps = max(1, self.sg_min_hold_minutes // step_minutes)
+            # Exklusivitaet SG1/SG3
+            add_mutual_exclusion(model, sg1, sg3, name="hp_sg")
 
             for t in range(num_steps):
-                model += sg1[t] + sg3[t] <= 1, f"sg_exclusive_{t}"
-
+                # Leistungslimit bei SG1
                 model += (
                     hp_power[t] <= self.max_power_kw * (1 - sg1[t])
                     + self.sg_state1_power_limit * sg1[t],
-                    f"sg1_power_limit_{t}",
+                    f"hp_sg1_power_limit_{t}",
+                )
+                # SG3 setzt Betrieb voraus
+                model += sg3[t] <= hp_on[t], f"hp_sg3_needs_on_{t}"
+
+            # Mindesthaltezeiten fuer SG1 und SG3
+            add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
+            add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
+
+        # Senken-Split-Constraint: hp_power = sum(hp_power_<sink>)
+        # Nur wenn mehrere Senken aktiv sind, sonst speist hp_power direkt
+        # die einzige Senke (siehe heat_supply).
+        if len(self._active_sinks) > 1:
+            split_vars = []
+            if "hp_power_floor" in variables:
+                split_vars.append(variables["hp_power_floor"])
+            if "hp_power_ww" in variables:
+                split_vars.append(variables["hp_power_ww"])
+            for t in range(num_steps):
+                model += (
+                    hp_power[t] == sum(v[t] for v in split_vars),
+                    f"hp_power_split_{t}",
                 )
 
-                model += sg3[t] <= hp_on[t], f"sg3_needs_on_{t}"
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege
+    # ------------------------------------------------------------------
 
-            # Mindesthaltezeiten
-            for t in range(1, num_steps):
-                for k in range(1, min_hold_steps):
-                    if t + k < num_steps:
-                        model += (
-                            sg1[t] - sg1[t - 1] <= sg1[t + k],
-                            f"sg1_hold_{t}_{k}",
-                        )
-                        model += (
-                            sg3[t] - sg3[t - 1] <= sg3[t + k],
-                            f"sg3_hold_{t}_{k}",
-                        )
+    def electrical_demand(self, variables: dict, t: int) -> Any:
+        """Gesamte WP-Wirkleistung als Last am AC-Knoten."""
+        return variables["hp_power"][t]
+
+    @property
+    def is_heat_supplier(self) -> bool:
+        return True
+
+    @property
+    def is_par14a_curtailable(self) -> bool:
+        return True
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """WP-Leistung und SG-Ready-Zustand ins Result schreiben."""
+        result.hp_power_kw = np.array(
+            [v.varValue or 0.0 for v in variables["hp_power"]]
+        )
+        if self.sg_ready and "hp_sg3" in variables:
+            sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
+            sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
+            result.sg_ready_state = np.where(
+                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
+            )
+
+    def heat_supply(self, variables: dict, t: int, sink: str) -> Any:
+        """Thermische Leistung an die jeweilige Senke (kW).
+
+        - Bei aktivem Split (mehrere Senken): hp_power_<sink> * COP_<sink>
+        - Bei nur einer Senke: hp_power * COP_<sink>
+        - Bei nicht-bedienter Senke: 0
+        """
+        if sink not in self._active_sinks:
+            return 0.0
+
+        cop_arr = self._cop_heating if sink == "floor" else self._cop_dhw
+        if cop_arr is None:
+            return 0.0
+        cop_t = float(cop_arr[t])
+
+        split_key = f"hp_power_{sink}"
+        if split_key in variables:
+            return variables[split_key][t] * cop_t
+        # Single-sink-Fall: hp_power speist direkt diese Senke
+        return variables["hp_power"][t] * cop_t

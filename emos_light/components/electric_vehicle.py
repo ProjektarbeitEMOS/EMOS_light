@@ -3,9 +3,8 @@
 Beschreibt das Elektrofahrzeug, das ueber eine Wallbox geladen wird.
 Das EV hat eigene Eigenschaften (Akkukapazitaet, aktueller SOC, Fahrprofil),
 die von der Wallbox genutzt werden, um den Ladebedarf zu berechnen.
+Reine Daten-/Konfigurations-Komponente — daher Component, nicht MILPComponent.
 """
-
-from typing import Any, Optional
 
 from emos_light.components.base import Component
 
@@ -97,17 +96,3 @@ class ElectricVehicle(Component):
             "max_power_kw": self.onboard_charger_kw,
         }
 
-    def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
-        """EV hat keine eigenen Optimierungsvariablen.
-
-        Die Ladung wird ueber die verknuepfte Wallbox optimiert.
-        V2H wuerde hier zusaetzliche Variablen erfordern.
-        """
-        return {}
-
-    def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
-        """EV fuegt keine eigenen Constraints hinzu.
-
-        Constraints werden ueber die verknuepfte Wallbox gesetzt.
-        """
-        pass

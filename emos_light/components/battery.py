@@ -6,12 +6,18 @@ Binaervariablen zur Vermeidung gleichzeitigen Ladens und Entladens.
 
 from typing import Any
 
-import pulp
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import (
+    add_mutual_exclusion,
+    add_on_off_power_link,
+    add_state_balance,
+    make_binary_array,
+    make_var_array,
+    step_hours,
+)
 
-from emos_light.components.base import Component
 
-
-class Battery(Component):
+class Battery(MILPComponent):
     """Batteriespeicher mit SOC-Tracking und Lade-/Entladebegrenzung.
 
     Config-Parameter:
@@ -88,6 +94,10 @@ class Battery(Component):
             return 0.0
         return depreciable / throughput_kwh * 100.0  # EUR/kWh -> ct/kWh
 
+    # ========================================================================
+    # MILP-Variablen und Constraints
+    # ========================================================================
+
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt Lade-, Entlade-, SOC- und Binaervariablen.
 
@@ -99,37 +109,24 @@ class Battery(Component):
             bat_b_discharge[t]: Binaer - Entladen aktiv
         """
         prefix = f"bat_{self.name}"
-
         soc_min_kwh = self.min_soc * self.capacity_kwh
         soc_max_kwh = self.max_soc * self.capacity_kwh
 
-        charge = [
-            pulp.LpVariable(f"{prefix}_charge_{t}", lowBound=0, upBound=self.max_charge_kw)
-            for t in range(num_steps)
-        ]
-        discharge = [
-            pulp.LpVariable(f"{prefix}_discharge_{t}", lowBound=0, upBound=self.max_discharge_kw)
-            for t in range(num_steps)
-        ]
-        soc = [
-            pulp.LpVariable(f"{prefix}_soc_{t}", lowBound=soc_min_kwh, upBound=soc_max_kwh)
-            for t in range(num_steps)
-        ]
-        b_charge = [
-            pulp.LpVariable(f"{prefix}_b_charge_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
-        b_discharge = [
-            pulp.LpVariable(f"{prefix}_b_discharge_{t}", cat=pulp.LpBinary)
-            for t in range(num_steps)
-        ]
-
         return {
-            "batt_charge": charge,
-            "batt_discharge": discharge,
-            "batt_soc": soc,
-            "batt_b_charge": b_charge,
-            "batt_b_discharge": b_discharge,
+            "bat_charge": make_var_array(
+                f"{prefix}_charge", num_steps,
+                low=0, high=self.max_charge_kw,
+            ),
+            "bat_discharge": make_var_array(
+                f"{prefix}_discharge", num_steps,
+                low=0, high=self.max_discharge_kw,
+            ),
+            "bat_soc": make_var_array(
+                f"{prefix}_soc", num_steps,
+                low=soc_min_kwh, high=soc_max_kwh,
+            ),
+            "bat_b_charge": make_binary_array(f"{prefix}_b_charge", num_steps),
+            "bat_b_discharge": make_binary_array(f"{prefix}_b_discharge", num_steps),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -140,53 +137,79 @@ class Battery(Component):
             2. Ladeleistung nur wenn Laden aktiv (charge <= max * b_charge)
             3. Entladeleistung nur wenn Entladen aktiv (discharge <= max * b_discharge)
             4. SOC-Bilanz: soc[t] = soc[t-1] + charge*eff*dt - discharge/eff*dt
-            5. Initialer SOC
         """
         prefix = f"bat_{self.name}"
-        dt_h = step_minutes / 60.0  # Zeitschritt in Stunden
+        dt_h = step_hours(step_minutes)
 
-        charge = variables["batt_charge"]
-        discharge = variables["batt_discharge"]
-        soc = variables["batt_soc"]
-        b_charge = variables["batt_b_charge"]
-        b_discharge = variables["batt_b_discharge"]
+        charge = variables["bat_charge"]
+        discharge = variables["bat_discharge"]
+        soc = variables["bat_soc"]
+        b_charge = variables["bat_b_charge"]
+        b_discharge = variables["bat_b_discharge"]
 
-        num_steps = len(charge)
+        # 1) Gegenseitiger Ausschluss Laden/Entladen
+        add_mutual_exclusion(model, b_charge, b_discharge, name=f"{prefix}_no_simul")
+
+        # 2+3) Leistung nur wenn Binaer-Variable aktiv
+        add_on_off_power_link(
+            model, charge, b_charge,
+            max_power=self.max_charge_kw,
+            name=f"{prefix}_charge_link",
+        )
+        add_on_off_power_link(
+            model, discharge, b_discharge,
+            max_power=self.max_discharge_kw,
+            name=f"{prefix}_discharge_link",
+        )
+
+        # 4) SOC-Bilanzgleichung
         initial_soc_kwh = self.initial_soc * self.capacity_kwh
+        add_state_balance(
+            model, soc,
+            initial=initial_soc_kwh,
+            rhs_fn=lambda prev, t: (
+                prev
+                + charge[t] * self.charge_eff * dt_h
+                - discharge[t] / self.discharge_eff * dt_h
+            ),
+            name=f"{prefix}_soc",
+        )
 
-        for t in range(num_steps):
-            # Constraint 1: Kein gleichzeitiges Laden und Entladen
-            model += (
-                b_charge[t] + b_discharge[t] <= 1,
-                f"{prefix}_no_simul_{t}",
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege
+    # ------------------------------------------------------------------
+
+    def electrical_supply(self, variables: dict, t: int) -> Any:
+        """Entladung speist den AC-Knoten."""
+        return variables["bat_discharge"][t]
+
+    def electrical_demand(self, variables: dict, t: int) -> Any:
+        """Laden zieht aus dem AC-Knoten."""
+        return variables["bat_charge"][t]
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Schreibt Lade-, Entlade-, SOC- und Alterungs-KPIs ins Result."""
+        import numpy as np
+
+        result.batt_charge_kw = np.array(
+            [v.varValue or 0.0 for v in variables["bat_charge"]]
+        )
+        result.batt_discharge_kw = np.array(
+            [v.varValue or 0.0 for v in variables["bat_discharge"]]
+        )
+        result.batt_soc_kwh = np.array(
+            [v.varValue or 0.0 for v in variables["bat_soc"]]
+        )
+        # Alterungskosten-KPIs (PDF Speichergruppe)
+        throughput_kwh = float(
+            (result.batt_charge_kw.sum() + result.batt_discharge_kw.sum()) * dt_h
+        )
+        result.battery_throughput_kwh = throughput_kwh
+        c_aging_ct = self.aging_cost_ct_per_kwh
+        result.battery_aging_cost_eur = throughput_kwh / 2.0 * c_aging_ct / 100.0
+        if self.usable_capacity_kwh > 0:
+            result.battery_equivalent_cycles = (
+                throughput_kwh / (2.0 * self.usable_capacity_kwh)
             )
-
-            # Constraint 2: Ladeleistung nur bei aktivem Laden
-            model += (
-                charge[t] <= self.max_charge_kw * b_charge[t],
-                f"{prefix}_charge_link_{t}",
-            )
-
-            # Constraint 3: Entladeleistung nur bei aktivem Entladen
-            model += (
-                discharge[t] <= self.max_discharge_kw * b_discharge[t],
-                f"{prefix}_discharge_link_{t}",
-            )
-
-            # Constraint 4/5: SOC-Bilanzgleichung
-            if t == 0:
-                model += (
-                    soc[t]
-                    == initial_soc_kwh
-                    + charge[t] * self.charge_eff * dt_h
-                    - discharge[t] / self.discharge_eff * dt_h,
-                    f"{prefix}_soc_balance_{t}",
-                )
-            else:
-                model += (
-                    soc[t]
-                    == soc[t - 1]
-                    + charge[t] * self.charge_eff * dt_h
-                    - discharge[t] / self.discharge_eff * dt_h,
-                    f"{prefix}_soc_balance_{t}",
-                )

@@ -61,9 +61,3 @@ class FreshWaterStation(Component):
             Minimale Speicherenergie in kWh.
         """
         return storage.temp_to_energy(self.min_storage_temp_c)
-
-    def get_optimization_variables(self, num_steps: int, model=None) -> dict:
-        return {}
-
-    def add_constraints(self, model=None, variables=None, step_minutes: int = 15) -> None:
-        pass

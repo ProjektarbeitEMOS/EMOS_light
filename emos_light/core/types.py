@@ -51,6 +51,13 @@ class OptimizationResult:
     floor_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
     floor_energy_kwh: np.ndarray = field(default_factory=lambda: np.array([]))
     q_floor_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Waermestrom Estrich -> Raum (kW). Positiv wenn Boden waermer als Raum.
+    q_floor_to_room_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    # Thermische Fahrplaene — Raum (Innentemperatur, MILP-Zustandsvariable)
+    indoor_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Waermeverlust des Raumes an die Aussenluft, UA*(T_innen-T_aus)/1000 [kW]
+    heat_loss_kw: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Thermische Fahrplaene — Warmwasserspeicher
     ww_storage_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))

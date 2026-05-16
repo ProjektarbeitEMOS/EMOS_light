@@ -45,10 +45,17 @@ DEFAULT_CONFIG = {
         "peak_power_kwp": 12.0,
         "azimuth_deg": 180,
         "tilt_deg": 30,
-        "efficiency": 0.18,
+        # System-Effizienz (Wechselrichter, Kabel, Verschmutzung, Mismatch)
+        # — typischerweise 80-90 %. NICHT zu verwechseln mit dem Modul-
+        # Wirkungsgrad (typ. 18-22 %), der bereits in peak_power_kwp steckt.
+        "efficiency": 0.85,
         "degradation_pct_per_year": 0.5,
         "age_years": 0,
         "surfaces": [],
+        # Transpositionsmodell GHI -> POA: "perez" (Default) oder
+        # "isotropic" (Liu & Jordan 1963, aus alter EMOS — Uebergangs-
+        # loesung, bis die finale Prognose feststeht).
+        "transposition_model": "perez",
     },
     "battery": {
         "enabled": True,
@@ -136,6 +143,24 @@ DEFAULT_CONFIG = {
         "wall_capacity_wh_per_m2_k": 50.0,
         "volume_factor": 3.1,
         "heat_loss_coefficient_w_per_k": None,
+        # ------------------------------------------------------------------
+        # Direkte Geometrie + U-Werte (Gebaeudegruppe, EMOS-Light Mai 2026)
+        # Wenn gesetzt, werden diese Werte benutzt — sonst fallback auf
+        # die Heuristik aus Heizlast / heated_area.
+        # ------------------------------------------------------------------
+        "length_m": 15.0,                  # l
+        "width_m": 10.0,                   # b
+        "height_m": 2.5,                   # h (Standardgeschoss)
+        "window_area_m2": None,            # A_F — None = ~15% Wandflaeche
+        "u_value_wall_w_m2_k": 0.2,        # Aussenwand
+        "u_value_window_w_m2_k": 0.9,      # Fenster
+        "u_value_roof_floor_w_m2_k": 0.4,  # Dach + Bodenplatte (kombiniert)
+        "ventilation_loss_w_m3_k": 0.17,   # spezifischer Lueftungsverlust
+        "screed_thickness_m": 0.06,        # d_Estrich
+        "screed_density_kg_m3": 2000.0,    # ϱ_Estrich
+        "screed_specific_heat_j_kg_k": 1070.0,  # c_Estrich
+        "reference_temp_c": 22.0,          # T_ref fuer Q_Gebaeude
+        "comfort_min_temp_c": 21.0,        # T_min fuer t_aus-Berechnung
     },
     "heat_demand": {
         "annual_heating_kwh": 5250,
@@ -184,6 +209,15 @@ EV_DEFAULT = {
     "v2h_capable": False,
     "v2h_min_soc": 0.30,
     "linked_wallbox": "Wallbox 1",
+    # Garantierte Mindestreichweite (Constraint: erreiche bis Abfahrt
+    # mindestens diese Reichweite). Setzt voraus, dass Auto und Wallbox
+    # den aktuellen SOC kommunizieren. Default an.
+    "min_range_enabled": True,
+    # Wenn das EV/die Wallbox kein bidirektionales Laden (V2H) unterstuetzt,
+    # kann stattdessen eine preisgesteuerte Ladestrategie genutzt werden:
+    # nur in den guenstigsten X % der Tagesstunden (Day-Ahead) laden.
+    # 100 % = keine Beschraenkung (Default = wie bisher).
+    "charge_only_below_percentile_pct": 100.0,
 }
 
 

@@ -25,7 +25,7 @@ from emos_light.core.scenario import (
 )
 from emos_light.data.profiles import parse_csv_load_profile, forecast_load_profile, get_csv_info
 from emos_light.data.prices import get_surcharges_summary
-from emos_light.optimization.baseline import calculate_baseline_cost
+from emos_light.optimization.baseline import calculate_baseline_cost, run_baseline
 from emos_light.optimization.mpc import MPCController
 
 
@@ -65,18 +65,47 @@ with st.sidebar:
     # Import
     config_file = st.file_uploader("YAML-Konfiguration importieren", type=["yaml", "yml"])
     if config_file is not None:
-        try:
-            user_yaml = yaml.safe_load(config_file)
-            base_config = load_config(None)
-            for key, val in user_yaml.items():
-                if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
-                    base_config[key].update(val)
-                else:
-                    base_config[key] = val
-            st.session_state.config = base_config
-            st.success("Konfiguration geladen!")
-        except Exception as e:
-            st.error(f"Fehler: {e}")
+        # Pro Upload eine eindeutige ID. Streamlit haengt diese an das
+        # UploadedFile-Objekt — sie ist nach einem st.rerun() identisch zum
+        # vorherigen Run, daher koennen wir damit erkennen, ob *dieser*
+        # konkrete Upload schon importiert wurde. Ohne diesen Marker
+        # entstand eine Endlosschleife (Import → rerun → Import → …),
+        # die als Dashboard-"Zittern" sichtbar war.
+        file_id = getattr(config_file, "file_id", None) or config_file.name
+        if st.session_state.get("_imported_config_id") != file_id:
+            try:
+                user_yaml = yaml.safe_load(config_file)
+                base_config = load_config(None)
+                for key, val in user_yaml.items():
+                    if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
+                        base_config[key].update(val)
+                    else:
+                        base_config[key] = val
+                st.session_state.config = base_config
+
+                # Alle Widget-Zustaende beseitigen, damit beim Re-Render
+                # jedes Widget seinen Initialwert frisch aus der neuen
+                # config liest. Vorher hatte ich nur bekannte Prefixe
+                # gefiltert (pv_s_, wb_, ev_, …) — das schloss die
+                # Sidebar-Widgets (Einspeiseverguetung, Standort, …)
+                # nicht ein. Folge: deren alte Streamlit-Werte ueberleben
+                # den Import und kollidieren mit dem neuen config-Wert,
+                # was zu falschen Anzeigen (z.B. doppelte Einspeisever-
+                # guetung) fuehren kann.
+                #
+                # Was bleibt:
+                # - "config"                  -> gerade frisch gemerged
+                # - "_imported_config_id"     -> Marker setzen wir gleich
+                KEEP_KEYS = {"config", "_imported_config_id"}
+                for key in list(st.session_state.keys()):
+                    if key not in KEEP_KEYS:
+                        del st.session_state[key]
+
+                st.session_state["_imported_config_id"] = file_id
+                st.success("Konfiguration geladen!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Fehler: {e}")
 
     # Export
     config_yaml = yaml.dump(
@@ -131,19 +160,26 @@ with st.sidebar:
     # Optimierungsmodus
     opt_mode = st.radio(
         "Optimierungsmodus",
-        ["Day-Ahead (MILP)", "MPC (rollierend)"],
+        ["Day-Ahead (MILP)", "MPC (rollierend)", "Baseline (regelbasiert)"],
     )
     mpc_execute_hours = 1
     total_horizon_h = general.get("optimization_horizon_hours", 24)
-    mpc_horizon_hours = total_horizon_h
+    # mpc_horizon_hours = None → MPCController nutzt dynamischen Day-Ahead-
+    # Horizont (vor 13 Uhr bis Tagesende heute, ab 13 Uhr bis Tagesende morgen).
+    mpc_horizon_hours = None
     if opt_mode == "MPC (rollierend)":
         mpc_execute_hours = st.slider("MPC Ausfuehrungsfenster (h)", 1, 6, 1)
-        mpc_horizon_hours = st.slider(
-            "MPC Vorhersagehorizont (h)", 2, int(total_horizon_h),
-            min(6, int(total_horizon_h)),
+        st.info(
+            "ℹ️ **Day-Ahead-Horizont:** Der MPC-Vorhersagehorizont wird "
+            "automatisch aus der aktuellen Ortszeit abgeleitet — analog "
+            "zur EPEX-SPOT-Preisveroeffentlichung:\n\n"
+            "- **Vor 13 Uhr** Ortszeit → Horizont bis Tagesende **heute** "
+            "(morgige Preise noch nicht verfuegbar)\n"
+            "- **Ab 13 Uhr** Ortszeit → Horizont bis Tagesende **morgen**\n\n"
+            "Das Fenster ist nie laenger als die hinterlegten Preisdaten."
         )
         n_windows = int(np.ceil(total_horizon_h / mpc_execute_hours))
-        st.caption(f"MPC: {n_windows} Fenster a {mpc_execute_hours}h")
+        st.caption(f"MPC: bis zu {n_windows} Fenster a {mpc_execute_hours}h Ausfuehrung")
 
     st.divider()
 
@@ -282,6 +318,37 @@ with tab_config:
 
                 config["pv"]["surfaces"] = surfaces
                 config["pv"]["peak_power_kwp"] = total_kwp
+
+                # -------- Ertragsprognose-Modell --------
+                st.info(
+                    "ℹ️ **Hinweis zur Ertragsprognose:** Beide hier waehlbaren "
+                    "Modelle sind **Uebergangsloesungen**, bis die endgueltige "
+                    "Prognose (inkl. Intraday-Messwertkorrektur) feststeht."
+                )
+                _models = {
+                    "perez": "Perez (1990) — anisotrop, Standard",
+                    "isotropic": "Liu & Jordan (1963) — isotrop, alte EMOS",
+                }
+                _current = config["pv"].get("transposition_model", "perez")
+                if _current not in _models:
+                    _current = "perez"
+                _model_keys = list(_models.keys())
+                config["pv"]["transposition_model"] = st.selectbox(
+                    "Transpositionsmodell GHI → POA",
+                    _model_keys,
+                    index=_model_keys.index(_current),
+                    format_func=lambda k: _models[k],
+                    key="pv_transposition_model",
+                    help=(
+                        "Wie wird die horizontale Globalstrahlung (GHI) auf "
+                        "die geneigte Modulflaeche umgerechnet?\n\n"
+                        "• **Perez** beruecksichtigt Zirkumsolar- und "
+                        "Horizont-Helligkeit, ist an klaren Tagen genauer.\n"
+                        "• **Liu & Jordan** rechnet die Diffusstrahlung als "
+                        "gleichmaessig aus der Himmelshalbkugel — robuster, "
+                        "unterschaetzt aber meist."
+                    ),
+                )
 
         with col_batt:
             st.markdown("**Batteriespeicher**")
@@ -460,20 +527,13 @@ with tab_config:
                 config["underfloor_heating"]["floor_temp_max_c"] = float(floor_temp[1])
 
                 from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH
-                from emos_light.components.building import Building as _BPrev
-                _bldg_prev = _BPrev("bldg_preview", config.get("building", {}))
-                _ufh_cfg_prev = dict(config["underfloor_heating"])
-                _ufh_cfg_prev["additional_capacity_kwh_per_k"] = _bldg_prev.shell_capacity_kwh_per_k
-                _ufh = _UFH("ufh_preview", _ufh_cfg_prev)
+                # Modell EMOS Light (Mai 2026): nur der Estrich als Speicher,
+                # Wand und Luft werden bewusst vernachlaessigt.
+                _ufh = _UFH("ufh_preview", config["underfloor_heating"])
                 st.caption(
-                    f"Therm. Kapazitaet (gesamt): **{_ufh.capacity_kwh_per_k:.1f} kWh/K** | "
+                    f"C_Estrich: **{_ufh.capacity_kwh_per_k:.2f} kWh/K** | "
                     f"Nutzbar: **{_ufh.total_capacity_kwh:.0f} kWh** | "
                     f"Verlustrate: **{_ufh.loss_rate_per_h:.3f}/h**"
-                )
-                st.caption(
-                    f"C_Estrich: **{_ufh.estrich_only_capacity_kwh_per_k:.2f} kWh/K** | "
-                    f"C_Wand: **{_bldg_prev.wall_capacity_kwh_per_k:.2f} kWh/K** | "
-                    f"C_Luft: **{_bldg_prev.air_capacity_kwh_per_k:.2f} kWh/K**"
                 )
 
         with col_bldg:
@@ -485,8 +545,68 @@ with tab_config:
                 index=list(building_types.keys()).index(config["building"].get("building_type", "kfw55")),
                 format_func=lambda x: building_types[x],
             )
-            config["building"]["heated_area_m2"] = st.number_input("Beheizte Flaeche (m2)", 30, 500, int(config["building"]["heated_area_m2"]), 10)
+            config["building"]["heated_area_m2"] = st.number_input(
+                "Beheizte Flaeche (m²)", 30, 500,
+                int(config["building"]["heated_area_m2"]), 10,
+            )
             config["building"]["num_occupants"] = st.number_input("Bewohner", 1, 10, int(config["building"]["num_occupants"]))
+
+            # Geometrie-Eingaben (Gebaeudegruppe Mai 2026)
+            geo_col1, geo_col2, geo_col3 = st.columns(3)
+            config["building"]["length_m"] = geo_col1.number_input(
+                "Laenge l (m)", 5.0, 50.0,
+                float(config["building"].get("length_m", 15.0)), 0.5,
+            )
+            config["building"]["width_m"] = geo_col2.number_input(
+                "Breite b (m)", 5.0, 50.0,
+                float(config["building"].get("width_m", 10.0)), 0.5,
+            )
+            config["building"]["height_m"] = geo_col3.number_input(
+                "Hoehe h (m)", 2.0, 15.0,
+                float(config["building"].get("height_m", 2.5)), 0.1,
+            )
+            # Fensterflaeche: optional manuell, sonst 15%-Heuristik
+            cur_window = config["building"].get("window_area_m2")
+            wall_gross_preview = (
+                2 * config["building"]["height_m"]
+                * (config["building"]["length_m"] + config["building"]["width_m"])
+            )
+            window_default = (
+                float(cur_window) if cur_window is not None else 0.15 * wall_gross_preview
+            )
+            config["building"]["window_area_m2"] = st.number_input(
+                "Fensterflaeche A_F (m²)", 0.0, 500.0,
+                window_default, 1.0,
+                help="Default: 15 % der Bruttowandflaeche (typisch fuer EFH).",
+            )
+
+            # U-Werte (Gebaeudegruppe-Defaults)
+            uw_col1, uw_col2, uw_col3 = st.columns(3)
+            config["building"]["u_value_wall_w_m2_k"] = uw_col1.number_input(
+                "U Wand W/(m²K)", 0.05, 2.0,
+                float(config["building"].get("u_value_wall_w_m2_k", 0.2)), 0.05,
+            )
+            config["building"]["u_value_window_w_m2_k"] = uw_col2.number_input(
+                "U Fenster W/(m²K)", 0.5, 5.0,
+                float(config["building"].get("u_value_window_w_m2_k", 0.9)), 0.1,
+            )
+            config["building"]["u_value_roof_floor_w_m2_k"] = uw_col3.number_input(
+                "U Dach+Boden W/(m²K)", 0.1, 2.0,
+                float(config["building"].get("u_value_roof_floor_w_m2_k", 0.4)), 0.05,
+            )
+
+            t_col1, t_col2 = st.columns(2)
+            config["building"]["reference_temp_c"] = t_col1.number_input(
+                "Referenztemperatur T_ref (°C)", 15.0, 25.0,
+                float(config["building"].get("reference_temp_c", 22.0)), 0.5,
+                help="Bezugstemperatur fuer die Speicherenergie Q_Gebaeude.",
+            )
+            config["building"]["comfort_min_temp_c"] = t_col2.number_input(
+                "Komfort-Untergrenze T_min (°C)", 14.0, 22.0,
+                float(config["building"].get("comfort_min_temp_c", 21.0)), 0.5,
+                help="Wenn das Gebaeude unter T_min faellt, wird die WP "
+                     "spaetestens hier wieder eingeschaltet.",
+            )
 
             from emos_light.components.building import Building as _B
             std = _B.BUILDING_STANDARDS.get(config["building"]["building_type"], 35)
@@ -501,19 +621,30 @@ with tab_config:
                 f"Warmwasser: **{config['heat_demand']['annual_hot_water_kwh']} kWh/a**"
             )
 
-            # Thermische Zeitkonstante tau = C_gesamt / P_Verlust
-            _bldg_tau = _B("bldg_tau", config["building"])
-            _ufh_cap_only = 0.0
-            if config["underfloor_heating"].get("enabled"):
-                from emos_light.components.underfloor_heating import UnderfloorHeating as _UFH2
-                _ufh_tmp = _UFH2("ufh_tau", config["underfloor_heating"])
-                _ufh_cap_only = _ufh_tmp.estrich_only_capacity_kwh_per_k
-            _tau_h = _bldg_tau.thermal_time_constant_h(_ufh_cap_only, 5.0)
-            _ua = _bldg_tau.ua_w_per_k
+            # Live-Vorschau: UA, C_Estrich, tau, t_aus
+            # (Wand wird im Modell als Speicher bewusst vernachlaessigt.)
+            _bldg = _B("bldg_preview", config["building"])
+            ua_trans = _bldg.transmission_ua_w_per_k
+            ua_lueft = _bldg.ventilation_ua_w_per_k
+            ua_total = _bldg.total_ua_w_per_k
+            c_estrich = _bldg.screed_capacity_kwh_per_k
+
             st.caption(
-                f"UA-Wert: **{_ua:.0f} W/K** | "
-                f"Therm. Zeitkonstante tau ~ **{_tau_h:.1f} h** (bei dT=5K)"
+                f"**UA**: Trans **{ua_trans:.0f}** + Lueft **{ua_lueft:.0f}** "
+                f"= **{ua_total:.0f} W/K**  |  "
+                f"**C_Estrich**: **{c_estrich:.2f} kWh/K**  "
+                f"_(Wand vernachlaessigt — siehe Modellannahme)_"
             )
+
+            # Beispielszenarien fuer tau und t_aus
+            t_in_ref = float(config["building"].get("reference_temp_c", 22.0))
+            t_out_examples = [-10.0, 0.0, 10.0]
+            tau_str = "  |  ".join(
+                f"T_a={ta:>4.0f}°C → τ={_bldg.time_constant_h(t_in_ref, ta):.1f} h, "
+                f"t_aus={_bldg.cooldown_time_h(t_in_ref, ta):.1f} h"
+                for ta in t_out_examples
+            )
+            st.caption(f"**Bei T_innen={t_in_ref}°C:**  {tau_str}")
 
     # Verbrauch
     with st.expander("Verbrauch", expanded=False):
@@ -638,20 +769,110 @@ with tab_config:
                         key=f"ev_{i}_cons",
                         help="Realer Fahrverbrauch inkl. Ladeverluste. Typ.: Kleinwagen ~14, Kompakt ~16, Mittelklasse ~18, SUV ~21 kWh/100km.",
                     )
-                    ev["min_range_km"] = st.number_input("Mindestreichweite (km)", 0.0, 500.0, float(ev.get("min_range_km", 150.0)), 10.0, key=f"ev_{i}_range")
-                    target_soc = min(1.0, ev["min_range_km"] * ev.get("consumption_kwh_per_100km", 16.0) / 100 / ev["battery_capacity_kwh"])
-                    ev["target_soc"] = max(ev["current_soc"], target_soc)
-                    st.caption(f"Ziel-SOC: **{ev['target_soc']*100:.0f}%**")
+
+                    # ---- Mindestreichweite (garantiertes Ladeziel) ----
+                    st.info(
+                        "ℹ️ **Hinweis zur Mindestreichweite:** "
+                        "Das garantierte Laden auf eine vorgegebene Reichweite "
+                        "setzt voraus, dass Fahrzeug und Wallbox den aktuellen "
+                        "Ladezustand (SOC) miteinander kommunizieren — "
+                        "ueblicherweise ueber ISO 15118 oder herstellerspezifische "
+                        "Protokolle. Steht diese Kommunikation nicht zur Verfuegung, "
+                        "deaktivieren Sie die Mindestreichweite. Das Fahrzeug wird "
+                        "dann ausschliesslich im konfigurierten unteren Strompreis-"
+                        "Perzentil mit voller Leistung geladen."
+                    )
+                    ev["min_range_enabled"] = st.checkbox(
+                        "Mindestreichweite garantieren",
+                        value=bool(ev.get("min_range_enabled", True)),
+                        key=f"ev_{i}_minrange_en",
+                        help=(
+                            "An: bis Abfahrt wird mindestens die unten "
+                            "konfigurierte Reichweite garantiert. "
+                            "Aus: keine Garantie — das Fahrzeug laedt nur "
+                            "im Strompreis-Perzentil unten."
+                        ),
+                    )
+                    ev["min_range_km"] = st.number_input(
+                        "Mindestreichweite (km)", 0.0, 500.0,
+                        float(ev.get("min_range_km", 150.0)), 10.0,
+                        key=f"ev_{i}_range",
+                        disabled=not ev["min_range_enabled"],
+                    )
+                    if ev["min_range_enabled"]:
+                        target_soc = min(
+                            1.0,
+                            ev["min_range_km"] * ev.get("consumption_kwh_per_100km", 16.0)
+                            / 100 / ev["battery_capacity_kwh"],
+                        )
+                        ev["target_soc"] = max(ev["current_soc"], target_soc)
+                        st.caption(f"Ziel-SOC: **{ev['target_soc']*100:.0f}%**")
+                    else:
+                        # Ohne Mindestreichweite: target_soc auf current_soc,
+                        # damit energy_needed_kwh = 0 — relevant fuer Logs/KPIs.
+                        ev["target_soc"] = ev["current_soc"]
+                        st.caption(
+                            "_Mindestreichweite ist deaktiviert — Ziel-SOC "
+                            "wird nicht erzwungen._"
+                        )
 
                     ev_col1, ev_col2 = st.columns(2)
-                    ev["arrival_hour"] = ev_col1.number_input("Ankunft (h)", 0, 23, int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr")
-                    ev["departure_hour"] = ev_col2.number_input("Abfahrt (h)", 0, 23, int(ev.get("departure_hour", 7)), key=f"ev_{i}_dep")
+                    # 0..24 erlaubt — 24 bedeutet "Mitternacht" und ist semantisch
+                    # gleichwertig zu 0 (z.B. Ankunft 18 / Abfahrt 24 = anwesend
+                    # 18:00..23:59).
+                    ev["arrival_hour"] = ev_col1.number_input(
+                        "Ankunft (h)", 0, 24,
+                        int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr",
+                    )
+                    ev["departure_hour"] = ev_col2.number_input(
+                        "Abfahrt (h)", 0, 24,
+                        int(ev.get("departure_hour", 7)), key=f"ev_{i}_dep",
+                    )
 
                     wb_names = [wb.get("name") for wb in config.get("wallboxes", []) if wb.get("enabled")]
                     if wb_names:
                         linked = ev.get("linked_wallbox", wb_names[0])
                         idx = wb_names.index(linked) if linked in wb_names else 0
                         ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=f"ev_{i}_wb")
+
+                    # ---- Preisgesteuerte Ladestrategie (Strompreis-Perzentil) ----
+                    st.info(
+                        "ℹ️ **Hinweis zur Bezugsgroesse:** Das Perzentil bezieht "
+                        "sich auf den Strompreis **innerhalb der Anwesenheits"
+                        "stunden Ihres Fahrzeugs** — nicht auf den ganzen Tag. "
+                        "Bei 25 % wird also in den guenstigsten 25 % der Stunden "
+                        "geladen, in denen das Auto an der Wallbox steht. "
+                        "Dadurch sind immer Lade-Slots verfuegbar, auch wenn die "
+                        "Anwesenheit zufaellig in eine teure Tageszeit faellt."
+                    )
+                    pct_default = float(ev.get("charge_only_below_percentile_pct", 100.0))
+                    ev["charge_only_below_percentile_pct"] = st.slider(
+                        "Strompreis-Perzentil zum Laden (%)",
+                        min_value=10, max_value=100,
+                        value=int(round(pct_default)),
+                        step=5,
+                        key=f"ev_{i}_pct",
+                        help=(
+                            "Erlaubt das Laden nur in den guenstigsten X %% der "
+                            "**Anwesenheitsstunden**. 100 %% = keine Beschraen"
+                            "kung. Niedrigere Werte = strikter (bei 25 %% darf "
+                            "nur in den guenstigsten 25 %% der Anwesenheits"
+                            "stunden geladen werden)."
+                        ),
+                    )
+                    if ev["charge_only_below_percentile_pct"] < 100:
+                        st.caption(
+                            f"→ Laden nur in den **guenstigsten "
+                            f"{ev['charge_only_below_percentile_pct']:.0f} %** "
+                            f"der Anwesenheitsstunden."
+                        )
+                    elif not ev["min_range_enabled"]:
+                        st.warning(
+                            "⚠️ Mindestreichweite aus und Perzentil = 100 %: "
+                            "das Fahrzeug wuerde in jedem Anwesenheits-Slot "
+                            "mit voller Leistung laden. Empfehlung: Perzentil "
+                            "auf < 100 % setzen."
+                        )
 
                 if st.button("E-Auto entfernen", key=f"ev_{i}_rm"):
                     st.session_state["_ev_rm_idx"] = i
@@ -670,8 +891,18 @@ with tab_config:
                         wb["ev_battery_capacity_kwh"] = ev.get("battery_capacity_kwh", 58.0)
                         wb["current_soc"] = ev.get("current_soc", 0.3)
                         wb["target_soc"] = ev.get("target_soc", 0.8)
+                        # Akku-Obergrenze (Akkuschutz / 100 % Default)
+                        wb["max_soc"] = ev.get("max_soc", 1.0)
                         wb["arrival_hour"] = ev.get("arrival_hour", 17)
                         wb["departure_hour"] = ev.get("departure_hour", 7)
+                        # Mindestreichweite-Garantie (Constraint an/aus)
+                        wb["min_range_enabled"] = bool(
+                            ev.get("min_range_enabled", True)
+                        )
+                        # Preissensitive Ladestrategie (Ersatz fuer V2H)
+                        wb["charge_only_below_percentile_pct"] = ev.get(
+                            "charge_only_below_percentile_pct", 100.0
+                        )
 
 
 # ================================================================
@@ -713,11 +944,35 @@ with tab_input:
 
         # Wetter & PV
         st.markdown("### Wetter & PV-Prognose")
-        fig_pv = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                               subplot_titles=("Temperatur & Einstrahlung", "PV-Erzeugung"))
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["temp"], name="Temperatur (C)", line=dict(color="orange")), row=1, col=1)
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["ghi"], name="GHI (W/m2)", line=dict(color="gold"), yaxis="y2"), row=1, col=1)
-        fig_pv.add_trace(go.Scatter(x=ts, y=data["pv_generation"], name="PV (kW)", fill="tozeroy", line=dict(color="goldenrod")), row=2, col=1)
+        # Temperatur und Einstrahlung haben sehr unterschiedliche Bereiche
+        # (typ. 0–30 °C vs. 0–1000 W/m²) — daher separate Y-Achsen im
+        # gleichen Subplot.
+        fig_pv = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+            subplot_titles=("Temperatur & Einstrahlung", "PV-Erzeugung"),
+            specs=[[{"secondary_y": True}], [{}]],
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["temp"], name="Temperatur (°C)",
+                       line=dict(color="orange")),
+            row=1, col=1, secondary_y=False,
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["ghi"], name="GHI (W/m²)",
+                       line=dict(color="gold")),
+            row=1, col=1, secondary_y=True,
+        )
+        fig_pv.add_trace(
+            go.Scatter(x=ts, y=data["pv_generation"], name="PV (kW)",
+                       fill="tozeroy", line=dict(color="goldenrod")),
+            row=2, col=1,
+        )
+        # Achsen-Titel und sinnvolle Bereiche pro Groesse
+        fig_pv.update_yaxes(title_text="Temperatur (°C)",
+                            row=1, col=1, secondary_y=False)
+        fig_pv.update_yaxes(title_text="GHI (W/m²)", rangemode="tozero",
+                            row=1, col=1, secondary_y=True)
+        fig_pv.update_yaxes(title_text="PV (kW)", row=2, col=1)
         fig_pv.update_layout(height=400, margin=dict(t=40))
         st.plotly_chart(fig_pv, use_container_width=True)
 
@@ -764,16 +1019,25 @@ with tab_optimize:
                 # Optimierung
                 if opt_mode == "Day-Ahead (MILP)":
                     result = optimizer.optimize(inp)
-                else:
+                elif opt_mode == "MPC (rollierend)":
                     mpc = MPCController(optimizer, mpc_horizon_hours, mpc_execute_hours)
                     result = mpc.run_mpc(inp)
+                else:  # Baseline
+                    result = run_baseline(inp, config)
 
-                # Baseline
-                baseline_cost = calculate_baseline_cost(inp, config)
-                result.baseline_cost_eur = baseline_cost
-                if baseline_cost > 0:
-                    result.savings_eur = baseline_cost - result.total_cost_eur
-                    result.savings_pct = (result.savings_eur / baseline_cost) * 100
+                # Baseline-Vergleich (entfaellt, wenn Baseline selbst ausgewaehlt)
+                if opt_mode == "Baseline (regelbasiert)":
+                    result.baseline_cost_eur = result.total_cost_eur
+                    result.savings_eur = 0.0
+                    result.savings_pct = 0.0
+                else:
+                    baseline_cost = calculate_baseline_cost(inp, config)
+                    result.baseline_cost_eur = baseline_cost
+                    if baseline_cost > 0:
+                        result.savings_eur = baseline_cost - result.total_cost_eur
+                        result.savings_pct = (
+                            result.savings_eur / baseline_cost
+                        ) * 100
 
                 st.session_state.result = result
                 st.session_state["opt_inp"] = inp
@@ -796,13 +1060,36 @@ with tab_optimize:
         ts = result.timestamps
 
         # KPI-Karten
-        st.markdown("### Ergebnisse")
+        st.markdown(f"### Ergebnisse — {opt_mode}")
+        if opt_mode == "Baseline (regelbasiert)":
+            st.info(
+                "Baseline ist ein **regelbasierter Vergleichsmodus** ohne "
+                "Preisoptimierung:\n\n"
+                "- **Waermepumpe**: schaltet sich erst ein, wenn eine "
+                "**Komfort-Untergrenze** unterschritten wird "
+                "(Estrich- oder WW-Speicher-Temperatur, in Komfortzeiten "
+                "auch die hoehere Soll-Temperatur). Laeuft dann mit voller "
+                "Leistung, bis die Obergrenze erreicht ist. WW-Speicher "
+                "hat Vorrang vor Estrich.\n"
+                "- **Wallbox**: laedt sofort bei Ankunft mit voller "
+                "Leistung, bis das EV abfaehrt — kein Preisfilter.\n"
+                "- **Batterie**: laedt PV-Ueberschuss, entlaedt bei "
+                "Restbedarf — keine Preisarbitrage.\n\n"
+                "Diese naive Strategie dient als Referenz, gegen die "
+                "MILP/MPC ihre Einsparung messen."
+            )
         kpi_row1 = st.columns(4)
         kpi_row1[0].metric("Gesamtkosten", f"{result.total_cost_eur:.2f} EUR")
         kpi_row1[1].metric("Eigenverbrauch", f"{result.eigenverbrauch_pct:.1f}%")
         kpi_row1[2].metric("Autarkie", f"{result.autarkie_pct:.1f}%")
-        if result.savings_eur is not None:
-            kpi_row1[3].metric("Einsparung", f"{result.savings_eur:.2f} EUR ({result.savings_pct:.0f}%)")
+        if (
+            opt_mode != "Baseline (regelbasiert)"
+            and result.savings_eur is not None
+        ):
+            kpi_row1[3].metric(
+                "Einsparung",
+                f"{result.savings_eur:.2f} EUR ({result.savings_pct:.0f}%)",
+            )
 
         kpi_row2 = st.columns(4)
         kpi_row2[0].metric("Netzbezugskosten", f"{result.grid_buy_cost_eur:.2f} EUR")
@@ -838,11 +1125,28 @@ with tab_optimize:
 
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")
-        fig_el = make_subplots(
-            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-            subplot_titles=("Leistung (kW)", "Batterie SOC (kWh)"),
-            row_heights=[0.7, 0.3],
-        )
+        # Drei Subplots:
+        #   Row 1: Leistung (kW)
+        #   Row 2: Batterie-SOC (% links, kWh rechts — synchron)
+        #   Row 3: EV-SOC pro Wallbox (nur sichtbar wenn mind. ein EV aktiv)
+        # Plot-Aufbau setzt das EV-SOC-Subplot immer mit auf, damit die
+        # Layout-Indizes stabil bleiben — wir blenden den Plot dynamisch ein.
+        wb_traces = list(result.wallbox_power_kw.items())
+        has_evs = len(wb_traces) > 0
+        if has_evs:
+            fig_el = make_subplots(
+                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                subplot_titles=("Leistung (kW)", "Batterie SOC", "E-Auto SOC"),
+                row_heights=[0.55, 0.225, 0.225],
+                specs=[[{}], [{"secondary_y": True}], [{"secondary_y": True}]],
+            )
+        else:
+            fig_el = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                subplot_titles=("Leistung (kW)", "Batterie SOC"),
+                row_heights=[0.7, 0.3],
+                specs=[[{}], [{"secondary_y": True}]],
+            )
 
         if inp is not None:
             fig_el.add_trace(go.Scatter(x=ts, y=inp.pv_generation_kw, name="PV", fill="tozeroy", line=dict(color="gold")), row=1, col=1)
@@ -856,9 +1160,124 @@ with tab_optimize:
             fig_el.add_trace(go.Scatter(x=ts, y=inp.household_load_kw, name="Haushalt", line=dict(color="blue", dash="dot")), row=1, col=1)
 
         if len(result.batt_soc_kwh) > 0:
-            fig_el.add_trace(go.Scatter(x=ts, y=result.batt_soc_kwh, name="Batterie SOC", fill="tozeroy", line=dict(color="purple")), row=2, col=1)
+            capacity_kwh = float(config["battery"]["capacity_kwh"])
+            # SOC in % zeichnen (primaere Achse links). Die sekundaere Achse
+            # rechts wird parallel auf [0, capacity_kwh] gesetzt, sodass die
+            # gleiche Kurve auch in kWh ablesbar ist.
+            soc_pct = (result.batt_soc_kwh / capacity_kwh) * 100.0 if capacity_kwh > 0 else result.batt_soc_kwh * 0
+            fig_el.add_trace(
+                go.Scatter(
+                    x=ts, y=soc_pct, name="Batterie SOC",
+                    fill="tozeroy", line=dict(color="purple"),
+                    hovertemplate=(
+                        "%{x|%H:%M}<br>"
+                        "SOC: %{y:.1f} %<br>"
+                        "= %{customdata:.2f} kWh<extra></extra>"
+                    ),
+                    customdata=result.batt_soc_kwh,
+                ),
+                row=2, col=1, secondary_y=False,
+            )
+            # Achsen: links %, rechts kWh — beide synchron auf [0, max]
+            fig_el.update_yaxes(
+                title_text="SOC (%)", range=[0, 100],
+                row=2, col=1, secondary_y=False,
+            )
+            fig_el.update_yaxes(
+                title_text="SOC (kWh)", range=[0, capacity_kwh],
+                row=2, col=1, secondary_y=True,
+            )
 
-        fig_el.update_layout(height=500, margin=dict(t=40))
+        # --- EV-SOC-Trajektorien (Row 3) ---
+        # Aus den Ladeleistungen pro Wallbox + EV-Daten den SOC-Verlauf
+        # integrieren. Ausserhalb der Anwesenheit: NaN, dann zeigt Plotly
+        # eine Luecke (sichtbar als "Auto ist weg").
+        if has_evs:
+            dt_h_plot = data["step_minutes"] / 60.0
+            steps_per_hour = max(1, 60 // data["step_minutes"])
+            n_steps = len(ts)
+            # Wallbox.__init__ normalisiert Namen (Leerzeichen/Bindestriche zu '_'),
+            # daher kann der Result-Key vom Originalnamen abweichen.
+            def _safe(n: str) -> str:
+                return n.replace(" ", "_").replace("-", "_")
+            # Mapping: linked_wallbox-Name (Original) → EV-Eintrag
+            ev_by_wb: dict = {}
+            for ev in config.get("electric_vehicles", []):
+                if ev.get("enabled"):
+                    ev_by_wb[ev.get("linked_wallbox")] = ev
+            # Pro Wallbox SOC integrieren
+            ev_palette = ["cyan", "deepskyblue", "lightskyblue", "steelblue"]
+            ref_capacity: float | None = None
+            for wi, (wb_result_name, wb_power) in enumerate(wb_traces):
+                # Originale Wallbox-Cfg ueber safe-Name finden
+                wb_cfg = next(
+                    (w for w in config.get("wallboxes", [])
+                     if _safe(w.get("name", "")) == wb_result_name),
+                    {},
+                )
+                ev_cfg = ev_by_wb.get(wb_cfg.get("name"), {})
+                cap = float(ev_cfg.get("battery_capacity_kwh",
+                                       wb_cfg.get("ev_battery_capacity_kwh", 60.0)))
+                eff = float(wb_cfg.get("charging_efficiency", 0.92))
+                soc0 = float(ev_cfg.get("current_soc",
+                                        wb_cfg.get("current_soc", 0.3)))
+                arrival = int(wb_cfg.get("arrival_hour", 17))
+                departure = int(wb_cfg.get("departure_hour", 7))
+                # Trajektorie aufbauen
+                soc_kwh = np.full(n_steps, np.nan)
+                e = soc0 * cap
+                for t in range(n_steps):
+                    hour = (t // steps_per_hour) % 24
+                    present = (
+                        arrival <= hour < departure
+                        if arrival <= departure
+                        else (hour >= arrival or hour < departure)
+                    )
+                    if present:
+                        e = min(cap, e + wb_power[t] * dt_h_plot * eff)
+                        soc_kwh[t] = e
+                soc_pct = (soc_kwh / cap) * 100.0 if cap > 0 else soc_kwh * 0
+                color = ev_palette[wi % len(ev_palette)]
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=soc_pct,
+                        name=f"EV SOC ({wb_name})",
+                        line=dict(color=color),
+                        connectgaps=False,
+                        hovertemplate=(
+                            "%{x|%H:%M}<br>"
+                            "SOC: %{y:.1f} %<br>"
+                            "= %{customdata:.2f} kWh<extra></extra>"
+                        ),
+                        customdata=soc_kwh,
+                    ),
+                    row=3, col=1, secondary_y=False,
+                )
+                if ref_capacity is None:
+                    ref_capacity = cap
+            fig_el.update_yaxes(
+                title_text="SOC (%)", range=[0, 100],
+                row=3, col=1, secondary_y=False,
+            )
+            if len(wb_traces) == 1:
+                # Nur 1 EV → kWh-Achse synchron sinnvoll
+                fig_el.update_yaxes(
+                    title_text="SOC (kWh)",
+                    range=[0, ref_capacity],
+                    row=3, col=1, secondary_y=True,
+                )
+            else:
+                # Mehrere EVs mit ggf. verschiedenen Kapazitaeten → kWh-Achse
+                # waere mehrdeutig; wir verstecken sie.
+                fig_el.update_yaxes(
+                    visible=False,
+                    row=3, col=1, secondary_y=True,
+                )
+
+        fig_el.update_layout(
+            height=600 if has_evs else 500,
+            margin=dict(t=40),
+        )
         st.plotly_chart(fig_el, use_container_width=True)
 
         # Thermische Uebersicht
@@ -945,5 +1364,11 @@ with tab_optimize:
                 fig_overlay.add_trace(go.Scatter(x=ts, y=result.hp_power_kw, name="WP", line=dict(color="orange")), secondary_y=False)
             fig_overlay.update_layout(height=300, margin=dict(t=30))
             fig_overlay.update_yaxes(title_text="kW", secondary_y=False)
-            fig_overlay.update_yaxes(title_text="ct/kWh", secondary_y=True)
+            # Preis-Achse: immer bei 0 ct beginnen, damit Lade-/Entlade-
+            # Entscheidungen relativ zum echten Nullpunkt lesbar sind.
+            # rangemode="tozero" laesst die Range bei negativen Preisen
+            # automatisch nach unten erweitern (also bis zum echten Minimum).
+            fig_overlay.update_yaxes(
+                title_text="ct/kWh", rangemode="tozero", secondary_y=True,
+            )
             st.plotly_chart(fig_overlay, use_container_width=True)

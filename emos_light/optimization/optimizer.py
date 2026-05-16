@@ -1,19 +1,30 @@
 """MILP-Optimierungsengine fuer EMOS Light.
 
-Thermische Topologie:
-    WP --+-- FBH --> Estrich (therm. Speicher) --> Raum
+Thermische Topologie (Mai 2026):
+    WP --+-- FBH --> Estrich (therm. Speicher) --> Raum (T_innen) --> Aussenluft
          +-- WW-Speicher --> Frischwasserstation --> Brauchwasser
 
+Senken-Bilanzknoten:
+    "floor": Estrich-Energiebilanz       (Komponente: UnderfloorHeating)
+    "room":  Raumluft-Energiebilanz      (Komponente: Building)
+    "ww":    WW-Speicher-Energiebilanz   (Komponente: ThermalStorage)
+
 Entscheidungsvariablen (thermisch):
-    hp_power_el[t]: Elektrische WP-Leistung gesamt
-    q_floor[t]: Thermische Leistung an FBH/Estrich
-    q_ww[t]: Thermische Leistung an WW-Speicher
-    floor_energy[t]: Thermische Energie im Estrich
-    ww_energy[t]: Thermische Energie im WW-Speicher
-    hp_power_floor[t]: Elektr. WP-Leistung fuer FBH (COP @ W35)
-    hp_power_ww[t]: Elektr. WP-Leistung fuer WW (COP @ W55)
-    sg_state_1[t]: SG-Ready Zustand 1 (Lastabwurf)
-    sg_state_3[t]: SG-Ready Zustand 3 (Verstaerkt)
+    hp_power[t]:            Elektrische WP-Leistung gesamt
+    hp_power_floor[t]:      Anteil fuer FBH-Pfad (nur bei Mehrfach-Senken)
+    hp_power_ww[t]:         Anteil fuer WW-Pfad  (nur bei Mehrfach-Senken)
+    ufh_floor_energy[t]:    Thermische Energie im Estrich
+    ufh_q_floor_in[t]:      Q_in der FBH (= Senkeneingang Estrich)
+    ufh_q_floor_to_room[t]: Waermestrom Estrich -> Raum (nur mit Building)
+    t_innen[t]:             Raumlufttemperatur (Building, MILP-Erweiterung Mai 2026)
+    ww_energy_kwh[t]:       Thermische Energie im WW-Speicher
+    ww_q_in[t]:             Q_in des WW-Speichers
+    ww_q_demand[t]:         Q_out des WW-Speichers (an Frischwasserstation)
+    hp_sg1[t]:              SG-Ready Zustand 1 (Lastabwurf)
+    hp_sg3[t]:              SG-Ready Zustand 3 (Verstaerkt)
+
+Bilanzgleichungen entstehen generisch ueber MILPComponent.heat_supply()
+und MILPComponent.heat_demand() pro aktiver Senke.
 """
 
 import time
@@ -24,6 +35,7 @@ import pulp
 
 from emos_light.components.pv import PVSystem
 from emos_light.components.battery import Battery
+from emos_light.components.building import Building
 from emos_light.components.heat_pump import HeatPump
 from emos_light.components.thermal_storage import ThermalStorage
 from emos_light.components.fresh_water_station import FreshWaterStation
@@ -46,6 +58,7 @@ class EMOSLightOptimizer:
         hot_water_storage: Optional[ThermalStorage] = None,
         fresh_water_station: Optional[FreshWaterStation] = None,
         underfloor_heating: Optional[UnderfloorHeating] = None,
+        building: Optional[Building] = None,
         wallboxes: Optional[list[Wallbox]] = None,
         **kwargs,
     ):
@@ -55,6 +68,7 @@ class EMOSLightOptimizer:
         self.hot_water_storage = hot_water_storage
         self.fresh_water_station = fresh_water_station
         self.underfloor_heating = underfloor_heating
+        self.building = building
         self.wallboxes = wallboxes or []
 
     def optimize(self, inp: TimeSeriesInput) -> OptimizationResult:
@@ -87,137 +101,118 @@ class EMOSLightOptimizer:
         variables: dict = {"grid_buy": grid_buy, "grid_sell": grid_sell}
 
         # ============================================================
-        # Batterie
+        # Phase A — Komponentenliste aufbauen (nur Referenzen sammeln)
         # ============================================================
+        # Heizsenken (UFH, WW-Speicher) sind nur sinnvoll, wenn ueberhaupt
+        # ein Waermeerzeuger existiert (siehe is_heat_supplier). Sonst
+        # waeren sie abgekoppelte Knoten.
+        has_fws = bool(self.fresh_water_station and self.fresh_water_station.enabled)
+
+        # Erst alle potenziellen MILP-Komponenten sammeln
+        candidates: list = []
         if self.battery and self.battery.enabled:
-            batt_vars = self.battery.get_optimization_variables(num_steps, model)
-            variables.update(batt_vars)
-            self.battery.add_constraints(model, variables, inp.step_minutes)
-
-        # ============================================================
-        # Waermepumpe
-        # ============================================================
-        hp_active = False
+            candidates.append(self.battery)
         if self.heat_pump and self.heat_pump.enabled:
-            hp_vars = self.heat_pump.get_optimization_variables(num_steps, model)
-            variables.update(hp_vars)
-            self.heat_pump.add_constraints(model, variables, inp.step_minutes)
-            hp_active = True
+            candidates.append(self.heat_pump)
+        if self.underfloor_heating and self.underfloor_heating.enabled:
+            candidates.append(self.underfloor_heating)
+        if self.hot_water_storage and self.hot_water_storage.enabled:
+            candidates.append(self.hot_water_storage)
+        # Building wirkt nur als Raum-Bilanzknoten (Senke "room"). Sein
+        # Versorger ist UFH (Estrich -> Raum). UFH wiederum braucht die WP
+        # als Erzeuger. Filter unten erledigt die Kette.
+        if self.building and self.building.enabled:
+            candidates.append(self.building)
+        for wb in self.wallboxes:
+            if wb.enabled:
+                candidates.append(wb)
 
+        # Wenn keine Waermeerzeuger existieren, Senken rausfiltern.
+        # Speziell die Raum-Senke "room" braucht zusaetzlich einen
+        # UFH-Versorger; ohne UFH bleibt der Raum-Knoten abgekoppelt.
+        has_supplier = any(c.is_heat_supplier for c in candidates)
+        has_ufh_active = any(
+            isinstance(c, UnderfloorHeating) for c in candidates
+        )
+
+        def _keep(c) -> bool:
+            if c.heat_sink_id is None:
+                return True
+            if c.heat_sink_id == "room":
+                return has_supplier and has_ufh_active
+            return has_supplier
+
+        milp_components: list = [c for c in candidates if _keep(c)]
+        active_wallboxes = [c for c in milp_components if isinstance(c, Wallbox)]
+        has_hp = any(c.is_heat_supplier for c in milp_components)
+
+        # ============================================================
+        # Phase B — Vorbereitung mit Eingangsdaten (z.B. WP berechnet COP)
+        # ============================================================
+        for c in milp_components:
+            c.prepare(inp)
+
+        # ============================================================
+        # Phase C — Aktive Waermesenken ermitteln und propagieren
+        # ============================================================
+        active_sinks = {
+            c.heat_sink_id for c in milp_components
+            if c.heat_sink_id is not None
+        }
+        for c in milp_components:
+            c.set_active_heat_sinks(active_sinks)
+
+        # ============================================================
+        # Phase D — Variablen + Constraints jeder Komponente
+        #
+        # Aufgesplittet in D1 (alle Variablen) und D2 (alle Constraints),
+        # damit cross-component-Referenzen unabhaengig von der
+        # Iterationsreihenfolge funktionieren (z.B. UFH-Constraint auf
+        # ``t_innen`` aus Building).
+        # ============================================================
+        for c in milp_components:
+            comp_vars = c.get_optimization_variables(num_steps, model)
+            variables.update(comp_vars)
+        for c in milp_components:
+            c.add_constraints(model, variables, inp.step_minutes)
+
+        # Fallback: hp_power-Variable existiert immer (auch ohne aktive WP),
+        # weil es an mehreren Stellen unten in der Auswertung gelesen wird.
         if "hp_power" not in variables:
             variables["hp_power"] = [
                 pulp.LpVariable(f"hp_power_{t}", 0, 0) for t in range(num_steps)
             ]
 
         # ============================================================
-        # Thermisches Modell: Estrich + WW-Speicher
-        # Getrennte COP-Berechnung fuer FBH (W35) und WW (W55)
-        # basierend auf Kennfeld aroTHERM plus
+        # Phase E — Generische Waermebilanz pro Senke
+        #     Fuer jede aktive Senke s gilt: Σ heat_supply(s) == Σ heat_demand(s)
         # ============================================================
-        has_ufh = self.underfloor_heating and self.underfloor_heating.enabled
-        has_ww = self.hot_water_storage and self.hot_water_storage.enabled
-        has_fws = self.fresh_water_station and self.fresh_water_station.enabled
-        has_hp = hp_active
-
-        if not has_hp:
-            has_ufh = False
-            has_ww = False
-
-        # COP-Zeitreihen fuer beide thermische Pfade
-        cop_heating = None
-        cop_dhw = None
-        if has_hp:
-            cop_heating = self.heat_pump.calculate_cop_heating(inp.outside_temp_c)
-            cop_dhw = self.heat_pump.calculate_cop_dhw(inp.outside_temp_c)
-
-        # WP-Waermesplit mit getrennten COPs
-        if has_hp and (has_ufh or has_ww):
-            max_cop = float(max(
-                np.max(cop_heating) if cop_heating is not None else 1,
-                np.max(cop_dhw) if cop_dhw is not None else 1,
-            ))
-            max_thermal = self.heat_pump.max_power_kw * max_cop
-
-            if has_ufh:
-                ufh_vars = self.underfloor_heating.get_optimization_variables(num_steps, model)
-                variables.update(ufh_vars)
-                self.underfloor_heating.add_constraints(model, variables, inp.step_minutes)
-
-            q_ww = None
-            if has_ww:
-                q_ww = [
-                    pulp.LpVariable(f"q_ww_{t}", 0, max_thermal)
-                    for t in range(num_steps)
-                ]
-                variables["q_ww"] = q_ww
-
-            # Beide Pfade aktiv → elektr. Leistung aufteilen
-            if has_ufh and has_ww:
-                hp_power_floor = [
-                    pulp.LpVariable(f"hp_power_floor_{t}", 0, self.heat_pump.max_power_kw)
-                    for t in range(num_steps)
-                ]
-                hp_power_ww = [
-                    pulp.LpVariable(f"hp_power_ww_{t}", 0, self.heat_pump.max_power_kw)
-                    for t in range(num_steps)
-                ]
-                variables["hp_power_floor"] = hp_power_floor
-                variables["hp_power_ww"] = hp_power_ww
-
-                for t in range(num_steps):
-                    # Elektr. Leistungsaufteilung
-                    model += (
-                        variables["hp_power"][t] == hp_power_floor[t] + hp_power_ww[t],
-                        f"hp_power_split_{t}",
-                    )
-                    # Thermische Leistung je Pfad mit eigenem COP
-                    model += (
-                        variables["q_floor_in"][t] == hp_power_floor[t] * float(cop_heating[t]),
-                        f"heat_to_floor_{t}",
-                    )
-                    model += (
-                        q_ww[t] == hp_power_ww[t] * float(cop_dhw[t]),
-                        f"heat_to_ww_{t}",
-                    )
-
-            elif has_ufh:
-                for t in range(num_steps):
-                    model += (
-                        variables["q_floor_in"][t]
-                        == variables["hp_power"][t] * float(cop_heating[t]),
-                        f"heat_to_floor_{t}",
-                    )
-
-            elif has_ww:
-                for t in range(num_steps):
-                    model += (
-                        q_ww[t]
-                        == variables["hp_power"][t] * float(cop_dhw[t]),
-                        f"heat_to_ww_{t}",
-                    )
+        for sink in active_sinks:
+            for t in range(num_steps):
+                supply = pulp.lpSum(
+                    c.heat_supply(variables, t, sink) for c in milp_components
+                )
+                demand = pulp.lpSum(
+                    c.heat_demand(variables, t, sink) for c in milp_components
+                )
+                model += supply == demand, f"heat_balance_{sink}_{t}"
 
         # ============================================================
-        # Warmwasserspeicher
+        # Phase F — Senken-spezifische Komfort-/SG-Constraints, Slacks
+        #     Diese koppeln die Senken an externe Bedarfe oder erlauben
+        #     dem Solver, Komfort weich zu verletzen.
         # ============================================================
         heating_slack = None
         ww_slack = None
+        has_ww = self.hot_water_storage and self.hot_water_storage.enabled and has_hp
+        has_ufh = self.underfloor_heating and self.underfloor_heating.enabled and has_hp
 
         if has_ww:
-            ww_vars = self.hot_water_storage.get_optimization_variables(num_steps, model)
-            variables.update(ww_vars)
-
             prefix = self.hot_water_storage.prefix
 
             ww_slack = [
                 pulp.LpVariable(f"ww_slack_{t}", 0) for t in range(num_steps)
             ]
-
-            # Waermezufuhr von WP
-            for t in range(num_steps):
-                model += (
-                    variables[f"{prefix}_q_in"][t] == variables["q_ww"][t],
-                    f"ww_q_in_link_{t}",
-                )
 
             # Brauchwasserbedarf als Entnahme aus WW-Speicher
             if has_fws:
@@ -234,8 +229,6 @@ class EMOSLightOptimizer:
                     f"ww_demand_fix_{t}",
                 )
 
-            self.hot_water_storage.add_constraints(model, variables, inp.step_minutes)
-
             # Zeit-abhaengige Mindesttemperatur (Komfort-Perioden)
             min_energy_schedule = self.hot_water_storage.get_min_energy_schedule(
                 inp.timestamps
@@ -247,21 +240,14 @@ class EMOSLightOptimizer:
                 )
 
             # SG-Ready: Dynamische WW-Speicher Obergrenze (BWP v1.1)
-            if (
-                has_hp
-                and self.heat_pump.sg_ready
-                and "sg_state_3" in variables
-            ):
-                sg3 = variables["sg_state_3"]
-
-                # Zusaetzliche Kapazitaet durch Temperaturerhoehung in State 3
+            if self.heat_pump.sg_ready and "hp_sg3" in variables:
+                sg3 = variables["hp_sg3"]
                 delta_cap_3 = (
                     self.hot_water_storage.volume_liters
                     * ThermalStorage.SPECIFIC_HEAT_WH_PER_L_K
                     * self.heat_pump.sg_temp_raise_3
                     / 1000.0
                 )
-
                 for t in range(num_steps):
                     model += (
                         variables[f"{prefix}_energy_kwh"][t]
@@ -270,38 +256,21 @@ class EMOSLightOptimizer:
                         f"ww_sg_ready_cap_{t}",
                     )
 
-        # Slack fuer Heizung (Estrich)
         if has_ufh:
             heating_slack = [
                 pulp.LpVariable(f"heating_slack_{t}", 0) for t in range(num_steps)
             ]
 
         # ============================================================
-        # Wallboxen
-        # ============================================================
-        wb_total_power: list = [0.0] * num_steps
-        for wb in self.wallboxes:
-            if wb.enabled:
-                wb_vars = wb.get_optimization_variables(num_steps, model)
-                variables.update(wb_vars)
-                wb.add_constraints(model, variables, inp.step_minutes)
-                wb_key = f"wb_{wb.name}_power"
-                for t in range(num_steps):
-                    wb_total_power[t] = wb_total_power[t] + variables[wb_key][t]
-
-        # ============================================================
-        # Elektrische Energiebilanz
+        # Elektrische Energiebilanz — generisch ueber milp_components
         # ============================================================
         for t in range(num_steps):
             supply = float(inp.pv_generation_kw[t]) + grid_buy[t]
             demand = float(inp.household_load_kw[t]) + grid_sell[t]
 
-            if self.battery and self.battery.enabled:
-                supply += variables["batt_discharge"][t]
-                demand += variables["batt_charge"][t]
-
-            demand += variables["hp_power"][t]
-            demand = demand + wb_total_power[t]
+            for c in milp_components:
+                supply = supply + c.electrical_supply(variables, t)
+                demand = demand + c.electrical_demand(variables, t)
 
             model += supply == demand, f"energy_balance_{t}"
 
@@ -312,11 +281,14 @@ class EMOSLightOptimizer:
                 f"feed_in_pv_limit_{t}",
             )
 
-        # Par14a Drosselung
+        # §14a Drosselung — Summe aller is_par14a_curtailable Lasten
         if inp.par14a_enabled and inp.par14a_curtailed_steps:
+            curtailable = [c for c in milp_components if c.is_par14a_curtailable]
             for t in inp.par14a_curtailed_steps:
                 if 0 <= t < num_steps:
-                    controllable = variables["hp_power"][t] + wb_total_power[t]
+                    controllable = pulp.lpSum(
+                        c.electrical_demand(variables, t) for c in curtailable
+                    )
                     model += (
                         controllable <= inp.par14a_curtailment_kw,
                         f"par14a_curtail_{t}",
@@ -342,6 +314,18 @@ class EMOSLightOptimizer:
                 for t in range(num_steps)
             )
 
+        # Komfort-Slacks fuer T_innen (Building MILP-Erweiterung Mai 2026)
+        if (
+            "t_innen_slack_low" in variables
+            and "t_innen_slack_high" in variables
+        ):
+            cost += pulp.lpSum(
+                (variables["t_innen_slack_low"][t]
+                 + variables["t_innen_slack_high"][t])
+                * UNMET_HEAT_PENALTY_CT * dt_h
+                for t in range(num_steps)
+            )
+
         # Batterie-Alterungskosten (PDF Speichergruppe, Kap. 3+4)
         # Durchsatz (charge + discharge) wird mit c_aging/2 gewichtet,
         # weil ein Aequivalent-Vollzyklus = 1x laden + 1x entladen.
@@ -353,7 +337,7 @@ class EMOSLightOptimizer:
             c_aging_half_ct = self.battery.aging_cost_ct_per_kwh / 2.0
             if c_aging_half_ct > 0:
                 cost += pulp.lpSum(
-                    (variables["batt_charge"][t] + variables["batt_discharge"][t])
+                    (variables["bat_charge"][t] + variables["bat_discharge"][t])
                     * c_aging_half_ct * dt_h
                     for t in range(num_steps)
                 )
@@ -361,14 +345,34 @@ class EMOSLightOptimizer:
         model += cost
 
         # ============================================================
-        # Loesen
+        # Loesen — Solver-Reihenfolge:
+        #   1. HiGHS (Python-API ueber highspy)  → schnell
+        #   2. HiGHS_CMD (CLI, falls highs.exe im PATH)
+        #   3. PULP_CBC_CMD (Coin-OR Branch-and-Cut, deutlich langsamer)
+        #
+        # MIP-Gap auf 0.5 % entspannt:
+        # Bei einer Optimierung um 1 EUR/Tag entspricht das 0.5 ct Toleranz
+        # — fuer Energieoptimierung absolut ausreichend, spart aber bei
+        # vielen binaeren Variablen (HP-Modulation, SG-Ready, Wallbox)
+        # erheblich Solver-Zeit. timeLimit=30 s als harte Obergrenze.
         # ============================================================
-        try:
-            solver = pulp.HiGHS_CMD(msg=0, timeLimit=120)
-            model.solve(solver)
-        except Exception:
-            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=120)
-            model.solve(solver)
+        solver = None
+        for solver_factory in (
+            lambda: pulp.HiGHS(msg=0, timeLimit=30, gapRel=0.005),
+            lambda: pulp.HiGHS_CMD(msg=0, timeLimit=30, gapRel=0.005),
+            lambda: pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005),
+        ):
+            try:
+                candidate = solver_factory()
+                if candidate.available():
+                    solver = candidate
+                    break
+            except Exception:
+                continue
+        if solver is None:
+            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005)
+
+        model.solve(solver)
         solve_time = time.time() - t_start
 
         status = pulp.LpStatus[model.status]
@@ -404,88 +408,20 @@ class EMOSLightOptimizer:
             grid_buy_kw=np.array([v.varValue or 0.0 for v in grid_buy]),
             grid_sell_kw=np.array([v.varValue or 0.0 for v in grid_sell]),
             timestamps=inp.timestamps,
+            # Default SG-Ready: Normalbetrieb, wird ggf. von HP.extract_result ueberschrieben
+            sg_ready_state=np.full(num_steps, 2),
         )
 
-        # Batterie
-        if self.battery and self.battery.enabled:
-            result.batt_charge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["batt_charge"]]
-            )
-            result.batt_discharge_kw = np.array(
-                [v.varValue or 0.0 for v in variables["batt_discharge"]]
-            )
-            result.batt_soc_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["batt_soc"]]
-            )
-            # Alterungskosten-KPIs (PDF Speichergruppe)
-            throughput_kwh = float(
-                (result.batt_charge_kw.sum() + result.batt_discharge_kw.sum()) * dt_h
-            )
-            result.battery_throughput_kwh = throughput_kwh
-            c_aging_ct = self.battery.aging_cost_ct_per_kwh
-            result.battery_aging_cost_eur = (
-                throughput_kwh / 2.0 * c_aging_ct / 100.0
-            )
-            usable = self.battery.usable_capacity_kwh
-            if usable > 0:
-                result.battery_equivalent_cycles = throughput_kwh / (2.0 * usable)
-            # total_cost_eur soll nur die reinen Netzkosten enthalten
-            # (fairer Vergleich mit Baseline, die keine Alterung beruecksichtigt).
-            # Alterungskosten werden separat als battery_aging_cost_eur ausgewiesen.
+        # Generischer Extraktions-Loop — jede Komponente schreibt ihre
+        # Felder selbst ins Result.
+        for c in milp_components:
+            c.extract_result(result, variables, num_steps, dt_h)
+
+        # Cross-cutting Anpassung: Alterungskosten werden separat als
+        # battery_aging_cost_eur gefuehrt; total_cost_eur enthaelt nur
+        # die reinen Netzkosten (fairer Vergleich mit der Baseline).
+        if result.battery_aging_cost_eur > 0:
             result.total_cost_eur -= result.battery_aging_cost_eur
-
-        # Waermepumpe
-        result.hp_power_kw = np.array(
-            [v.varValue or 0.0 for v in variables["hp_power"]]
-        )
-
-        # Estrich / Fussbodenheizung
-        if has_ufh and "floor_energy" in variables:
-            result.floor_energy_kwh = np.array(
-                [v.varValue or 0.0 for v in variables["floor_energy"]]
-            )
-            result.floor_temp_c = np.array([
-                self.underfloor_heating.energy_to_temp(e)
-                for e in result.floor_energy_kwh
-            ])
-            result.q_floor_kw = np.array(
-                [v.varValue or 0.0 for v in variables["q_floor_in"]]
-            )
-
-        # WW-Speicher
-        if has_ww:
-            prefix = self.hot_water_storage.prefix
-            key = f"{prefix}_energy_kwh"
-            if key in variables:
-                result.ww_storage_energy_kwh = np.array(
-                    [v.varValue or 0.0 for v in variables[key]]
-                )
-                result.ww_storage_temp_c = np.array([
-                    self.hot_water_storage.energy_to_temp(e)
-                    for e in result.ww_storage_energy_kwh
-                ])
-            if "q_ww" in variables:
-                result.q_ww_kw = np.array(
-                    [v.varValue or 0.0 for v in variables["q_ww"]]
-                )
-
-        # SG-Ready Zustand (BWP v1.1: 1=Lastabwurf, 2=Normal, 3=Verstaerkt)
-        if has_hp and self.heat_pump.sg_ready and "sg_state_3" in variables:
-            sg1_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_1"]])
-            sg3_vals = np.array([v.varValue or 0.0 for v in variables["sg_state_3"]])
-            result.sg_ready_state = np.where(
-                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
-            )
-        else:
-            result.sg_ready_state = np.full(num_steps, 2)
-
-        # Wallboxen
-        for wb in self.wallboxes:
-            if wb.enabled:
-                wb_key = f"wb_{wb.name}_power"
-                result.wallbox_power_kw[wb.name] = np.array(
-                    [v.varValue or 0.0 for v in variables[wb_key]]
-                )
 
         # KPIs
         from emos_light.utils.kpi import calculate_kpis

@@ -60,9 +60,13 @@ def build_components(config: dict) -> dict:
     )
     if config["underfloor_heating"].get("enabled"):
         ufh_config = dict(config["underfloor_heating"])
-        if building is not None:
-            # Wand+Luft-Kapazitaet als effektive Zusatzmasse des Thermospeichers
-            ufh_config["additional_capacity_kwh_per_k"] = building.shell_capacity_kwh_per_k
+        # Modell EMOS Light (Mai 2026): nur Estrich als Waermespeicher;
+        # Wand/Luft werden bewusst vernachlaessigt (vgl. Building-Doku).
+        # additional_capacity_kwh_per_k bleibt damit auf Default 0.
+        # Initialwert T_innen vom Building durchreichen, damit UFH bei t=0
+        # q_floor_to_room aus konsistenten Anfangsbedingungen rechnet.
+        if building is not None and "initial_indoor_temp_c" not in ufh_config:
+            ufh_config["initial_indoor_temp_c"] = building.indoor_temp
         underfloor_heating = UnderfloorHeating("ufh", ufh_config)
     else:
         underfloor_heating = None
@@ -166,6 +170,7 @@ def load_input_data(
                 "system_efficiency": pv_config.get("system_efficiency", pv_config.get("efficiency", 0.85)),
                 "age_years": pv_config.get("age_years", 0),
                 "degradation_pct_per_year": pv_config.get("degradation_pct_per_year", 0.5),
+                "transposition_model": pv_config.get("transposition_model", "perez"),
             }
             pv_surf = PVSystem(surf.get("name", "pv"), surf_config)
             pv_generation += pv_surf.estimate_generation(

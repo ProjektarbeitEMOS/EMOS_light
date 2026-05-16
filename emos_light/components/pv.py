@@ -2,11 +2,10 @@
 
 Berechnet die PV-Erzeugung standortbasiert mit Sonnenstandsberechnung,
 POA-Transposition und Temperaturkorrektur. Keine Optimierungsvariablen,
-da die Erzeugung ein gegebener Input ist.
+da die Erzeugung ein gegebener Input ist — daher Component, nicht MILPComponent.
 """
 
 import datetime
-from typing import Any
 
 import numpy as np
 
@@ -48,9 +47,24 @@ class PVSystem(Component):
         self.tilt_deg = config.get("tilt_deg", 35.0)
         # Azimut: 0=Nord, 90=Ost, 180=Sued, 270=West (Standardkonvention)
         self.azimuth_deg = config.get("azimuth_deg", 180.0)
-        self.system_efficiency = config.get(
-            "system_efficiency", config.get("efficiency", 0.85)
-        )
+        # System-Effizienz: alle AC-Verluste zusammen (Wechselrichter,
+        # Kabel, Verschmutzung). Typisch 0.80–0.90.
+        # NICHT der Modul-Wirkungsgrad (0.18–0.22) — der ist schon in
+        # peak_power_kwp enthalten.
+        raw_eff = config.get("system_efficiency", config.get("efficiency", 0.85))
+        if 0 < raw_eff < 0.5:
+            # Alte EMOS-Light-Configs (vor Nov 2026) hatten faelschlich
+            # 0.18 als "efficiency"-Default, was den Modul-Wirkungsgrad
+            # mit der System-Effizienz verwechselt hat. Defensiv hochziehen.
+            import warnings
+            warnings.warn(
+                f"pv.efficiency={raw_eff} sieht nach Modul-Wirkungsgrad aus; "
+                f"erwartet ist System-Effizienz (0.80-0.90). Wert wird auf "
+                f"0.85 hochgezogen.",
+                stacklevel=2,
+            )
+            raw_eff = 0.85
+        self.system_efficiency = raw_eff
         self.age_years = config.get("age_years", 0.0)
         self.degradation_rate = config.get(
             "degradation_rate_per_year",
@@ -59,6 +73,9 @@ class PVSystem(Component):
         self.temp_coefficient = config.get("temp_coefficient", -0.004)
         self.noct = config.get("noct", 45.0)
         self.albedo = config.get("albedo", 0.2)
+        # Transpositionsmodell GHI -> POA: "perez" (Default, anisotrop)
+        # oder "isotropic" (Liu & Jordan 1963, einfacher, aus alter EMOS).
+        self.transposition_model = config.get("transposition_model", "perez")
 
     def _degradation_factor(self) -> float:
         """Berechnet den Degradationsfaktor basierend auf dem Anlagenalter."""
@@ -122,12 +139,14 @@ class PVSystem(Component):
             timestamps, latitude, longitude, tz_offset
         )
 
-        # GHI -> POA-Einstrahlung (Perez-Modell mit optionalen API-DNI/DHI)
+        # GHI -> POA-Einstrahlung (Perez oder isotropic, mit optionalen
+        # API-DNI/DHI). Modell wird aus self.transposition_model gewaehlt.
         doy = timestamps[0].timetuple().tm_yday
         poa = ghi_to_poa(
             ghi_series, sun_elevation, sun_azimuth,
             self.tilt_deg, self.azimuth_deg, self.albedo, doy,
             dni_override=dni_series, dhi_override=dhi_series,
+            model=self.transposition_model,
         )
 
         # Zelltemperatur schaetzen
@@ -160,11 +179,3 @@ class PVSystem(Component):
         correction = self._degradation_factor() * self.system_efficiency
         generation_kw = self.peak_power_kwp * normalized_ghi * correction
         return np.maximum(generation_kw, 0.0)
-
-    def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
-        """PV hat keine Optimierungsvariablen (Erzeugung ist Input)."""
-        return {}
-
-    def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
-        """PV hat keine eigenen Constraints."""
-        pass

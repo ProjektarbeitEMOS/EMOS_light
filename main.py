@@ -5,6 +5,7 @@ Nutzung:
     python main.py --date 2026-04-15      # Bestimmtes Datum
     python main.py --api                  # Echte API-Daten
     python main.py --mpc                  # MPC-Modus
+    python main.py --baseline             # Baseline-Modus (regelbasiert)
     python main.py --config meine.yaml    # Eigene Konfiguration
     python main.py --dashboard            # Streamlit Dashboard starten
 """
@@ -20,7 +21,7 @@ from emos_light.core.scenario import (
     load_input_data,
     build_time_series_input,
 )
-from emos_light.optimization.baseline import calculate_baseline_cost
+from emos_light.optimization.baseline import calculate_baseline_cost, run_baseline
 from emos_light.optimization.mpc import MPCController
 
 
@@ -30,6 +31,7 @@ def main():
     parser.add_argument("--date", type=str, default=None, help="Optimierungsdatum (YYYY-MM-DD)")
     parser.add_argument("--api", action="store_true", help="Echte API-Daten verwenden")
     parser.add_argument("--mpc", action="store_true", help="MPC-Modus statt Day-Ahead")
+    parser.add_argument("--baseline", action="store_true", help="Baseline-Modus (regelbasiert)")
     parser.add_argument("--dashboard", action="store_true", help="Streamlit Dashboard starten")
     args = parser.parse_args()
 
@@ -47,8 +49,13 @@ def main():
     else:
         opt_date = datetime.date.today() + datetime.timedelta(days=1)
 
+    mode_text = (
+        "Baseline (regelbasiert)" if args.baseline
+        else "MPC" if args.mpc
+        else "Day-Ahead (MILP)"
+    )
     print(f"EMOS Light — Optimierung fuer {opt_date}")
-    print(f"Modus: {'MPC' if args.mpc else 'Day-Ahead (MILP)'}")
+    print(f"Modus: {mode_text}")
     print(f"Datenquelle: {'API' if args.api else 'Synthetisch'}")
     print()
 
@@ -68,7 +75,9 @@ def main():
     optimizer = build_optimizer(components)
 
     # Optimierung
-    if args.mpc:
+    if args.baseline:
+        result = run_baseline(inp, config)
+    elif args.mpc:
         mpc = MPCController(optimizer, horizon_hours=6, execute_hours=1)
         result = mpc.run_mpc(inp)
     else:
