@@ -21,13 +21,18 @@ from .conftest import (
 )
 
 
-# Erwartungswerte aus dem 8796ce6-Stand fuer das Datum 2026-04-15.
+# Erwartungswerte fuer das Datum 2026-04-15.
+# Letzter Refresh: 2026-05-16 auf dem main-Stand nach Merge von PR #1
+# (Raumluft als MILP-Variable). Drei Werte aus dem 8796ce6-Stand waren
+# durch zwischenzeitliche Modellerweiterungen (Day-Ahead-MPC-Horizont,
+# Wallbox-Refactor, Baseline-State-Machine) abgewandert und sind hier
+# auf die neuen, mathematisch konsistenten Optima nachgezogen.
 # Bei Modelaenderung: pro Szenario ggf. anpassen, aber nur bewusst.
 EXPECTED = {
     "battery": {
-        "cost_eur":  -0.1690,
-        "obj_eur":    0.6764,
-        "throughput": 14.6,   # ch + dis in kWh
+        "cost_eur":  -3.0841,
+        "obj_eur":   -2.5587,
+        "throughput": 9.10,   # ch + dis in kWh
     },
     "hp_ww": {
         "cost_eur":   4.5170,
@@ -42,13 +47,13 @@ EXPECTED = {
                               #   sinnvoll bei "nur Estrich"-Modell)
     },
     "wallbox": {
-        "cost_eur":  11.6324,
+        "cost_eur":   8.0392,
         "wb_kwh":    32.6,
     },
     "full": {
-        "cost_eur":   9.40,
-        "obj_eur":   10.36,
-        "hp_kwh":     2.82,
+        "cost_eur":   5.4613,
+        "obj_eur":    6.6139,
+        "hp_kwh":     2.78,
     },
 }
 
