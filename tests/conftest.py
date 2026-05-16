@@ -25,8 +25,17 @@ TEST_DATE = datetime.date(2026, 4, 15)
 
 
 def _base_cfg() -> dict:
-    """Liefert ein minimales DEFAULT_CONFIG-Derivat ohne Wallboxen/EVs."""
+    """Liefert ein minimales DEFAULT_CONFIG-Derivat ohne Wallboxen/EVs.
+
+    Der Horizont wird hier explizit auf 24 h gepinnt: die Regression-
+    Szenarien beschreiben einen einzelnen Stichtag (2026-04-15) und die
+    EXPECTED-Werte sind genau auf dieses 24h-Fenster geeicht. Der
+    Produkt-Default (48 h, fuer Day-Ahead-MPC nach 13 Uhr) wuerde mit
+    edge-gepaddeten Preisen/Wetter fuer Tag 2 laufen — fuer Regression
+    nicht aussagekraeftig.
+    """
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["general"]["optimization_horizon_hours"] = 24
     cfg["wallboxes"] = []
     cfg["electric_vehicles"] = []
     return cfg

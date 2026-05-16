@@ -109,7 +109,7 @@ def load_input_data(
     """Laedt alle Eingabedaten (Preise, Wetter, Profile)."""
     general = config.get("general", {})
     step_minutes = general.get("time_step_minutes", 15)
-    horizon_hours = general.get("optimization_horizon_hours", 24)
+    horizon_hours = general.get("optimization_horizon_hours", 48)
     num_steps = int(horizon_hours * 60 / step_minutes)
     lat = general.get("latitude", 49.33)
     lon = general.get("longitude", 12.11)

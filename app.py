@@ -163,7 +163,7 @@ with st.sidebar:
         ["Day-Ahead (MILP)", "MPC (rollierend)", "Baseline (regelbasiert)"],
     )
     mpc_execute_hours = 1
-    total_horizon_h = general.get("optimization_horizon_hours", 24)
+    total_horizon_h = general.get("optimization_horizon_hours", 48)
     # mpc_horizon_hours = None → MPCController nutzt dynamischen Day-Ahead-
     # Horizont (vor 13 Uhr bis Tagesende heute, ab 13 Uhr bis Tagesende morgen).
     mpc_horizon_hours = None
@@ -200,7 +200,7 @@ with st.sidebar:
         st.write(f"[{icon}] {name}")
 
     step_minutes = general.get("time_step_minutes", 15)
-    horizon_hours = general.get("optimization_horizon_hours", 24)
+    horizon_hours = general.get("optimization_horizon_hours", 48)
     num_steps = int(horizon_hours * 60 / step_minutes)
     st.caption(f"Zeitschritt: {step_minutes} min | Horizont: {horizon_hours}h ({num_steps} Schritte)")
 
