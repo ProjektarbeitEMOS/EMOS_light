@@ -1282,20 +1282,45 @@ with tab_optimize:
 
         # Thermische Uebersicht
         st.markdown("### Thermische Uebersicht")
+        # Raumtemperatur ist seit Mai 2026 eine MILP-Zustandsvariable
+        # (nur befuellt, wenn Building aktiviert ist).
+        has_room = len(result.indoor_temp_c) > 0
         has_floor = len(result.floor_temp_c) > 0
         has_ww = len(result.ww_storage_temp_c) > 0
-        n_thermal_rows = int(has_floor) + int(has_ww) + 1  # +1 fuer Leistung
+        n_thermal_rows = int(has_room) + int(has_floor) + int(has_ww) + 1
 
         fig_th = make_subplots(
             rows=n_thermal_rows, cols=1, shared_xaxes=True, vertical_spacing=0.08,
             subplot_titles=(
-                (["Estrich-Temperatur (C)"] if has_floor else [])
+                (["Raumtemperatur (C)"] if has_room else [])
+                + (["Estrich-Temperatur (C)"] if has_floor else [])
                 + (["WW-Speicher-Temperatur (C)"] if has_ww else [])
-                + ["WP-Leistungsaufteilung (kW)"]
+                + ["Waermestroeme (kW)"]
             ),
         )
 
         row_idx = 1
+        if has_room:
+            building_cfg = config.get("building", {})
+            indoor_init = building_cfg.get("indoor_temp_c", 21.0)
+            comfort_min = building_cfg.get("comfort_temp_min_c",
+                                           building_cfg.get("comfort_min_temp_c", 21.0))
+            comfort_max = building_cfg.get("comfort_temp_max_c", indoor_init + 3.0)
+            fig_th.add_trace(go.Scatter(
+                x=ts, y=result.indoor_temp_c, name="T_innen",
+                line=dict(color="tomato", width=2),
+            ), row=row_idx, col=1)
+            fig_th.add_hline(
+                y=comfort_min, line_dash="dash", line_color="gray",
+                annotation_text=f"Komfort min {comfort_min:.0f} C",
+                row=row_idx, col=1,
+            )
+            fig_th.add_hline(
+                y=comfort_max, line_dash="dash", line_color="gray",
+                annotation_text=f"Komfort max {comfort_max:.0f} C",
+                row=row_idx, col=1,
+            )
+            row_idx += 1
         if has_floor:
             ufh_cfg = config.get("underfloor_heating", {})
             fig_th.add_trace(go.Scatter(x=ts, y=result.floor_temp_c, name="Estrich", fill="tozeroy", line=dict(color="purple")), row=row_idx, col=1)
@@ -1332,9 +1357,21 @@ with tab_optimize:
             row_idx += 1
 
         if len(result.q_floor_kw) > 0:
-            fig_th.add_trace(go.Scatter(x=ts, y=result.q_floor_kw, name="Q FBH", fill="tozeroy", line=dict(color="orange")), row=row_idx, col=1)
+            fig_th.add_trace(go.Scatter(x=ts, y=result.q_floor_kw, name="Q FBH (WP -> Estrich)", fill="tozeroy", line=dict(color="orange")), row=row_idx, col=1)
         if len(result.q_ww_kw) > 0:
-            fig_th.add_trace(go.Scatter(x=ts, y=result.q_ww_kw, name="Q WW", fill="tonexty", line=dict(color="cyan")), row=row_idx, col=1)
+            fig_th.add_trace(go.Scatter(x=ts, y=result.q_ww_kw, name="Q WW (WP -> Speicher)", fill="tonexty", line=dict(color="cyan")), row=row_idx, col=1)
+        # q_floor_to_room und heat_loss (Mai 2026) ohne Fuellung, sonst
+        # ueberdecken sie die WP-Waermestroeme oben.
+        if len(result.q_floor_to_room_kw) > 0:
+            fig_th.add_trace(go.Scatter(
+                x=ts, y=result.q_floor_to_room_kw, name="Q Estrich -> Raum",
+                line=dict(color="tomato", width=1.5),
+            ), row=row_idx, col=1)
+        if len(result.heat_loss_kw) > 0:
+            fig_th.add_trace(go.Scatter(
+                x=ts, y=result.heat_loss_kw, name="Q Verlust (Raum -> Aussen)",
+                line=dict(color="dimgray", width=1.5, dash="dot"),
+            ), row=row_idx, col=1)
 
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))
         st.plotly_chart(fig_th, use_container_width=True)
