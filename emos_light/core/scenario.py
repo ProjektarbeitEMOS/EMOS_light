@@ -63,6 +63,10 @@ def build_components(config: dict) -> dict:
         # Modell EMOS Light (Mai 2026): nur Estrich als Waermespeicher;
         # Wand/Luft werden bewusst vernachlaessigt (vgl. Building-Doku).
         # additional_capacity_kwh_per_k bleibt damit auf Default 0.
+        # Initialwert T_innen vom Building durchreichen, damit UFH bei t=0
+        # q_floor_to_room aus konsistenten Anfangsbedingungen rechnet.
+        if building is not None and "initial_indoor_temp_c" not in ufh_config:
+            ufh_config["initial_indoor_temp_c"] = building.indoor_temp
         underfloor_heating = UnderfloorHeating("ufh", ufh_config)
     else:
         underfloor_heating = None

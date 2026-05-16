@@ -1,17 +1,59 @@
 """Gebaeude-Modell fuer EMOS Light — optimiert fuer Neubau (KfW55/KfW40).
 
-Berechnet temperaturabhaengigen Heizwaermebedarf und Warmwasserbedarf.
-Fuer Neubau: keine Nachtabsenkung (FBH mit hoher therm. Masse laeuft kontinuierlich).
+Berechnet temperaturabhaengigen Heizwaermebedarf und Warmwasserbedarf
+und stellt seit der MILP-Erweiterung Mai 2026 die Raumlufttemperatur
+T_innen als eigene Zustandsvariable im Solver bereit.
+
+MILP-Erweiterung Mai 2026 — Raum als Zustandsvariable
+=====================================================
+
+Bis April 2026 wurde die Innentemperatur nicht modelliert; der
+Heizwaermebedarf kam aus :meth:`calculate_heating_demand` als feste
+Zeitreihe in den Solver. Damit "sah" der Solver nur den Estrich, nicht
+aber das eigentliche Komfortziel (T_innen im Band) und nicht die
+Verluste an die Aussenluft.
+
+Mit der MILP-Erweiterung uebernimmt der Solver die Raum-Energiebilanz
+explizit:
+
+    C_room · (T_innen[t] − T_innen[t-1]) = (q_floor_to_room[t]
+        − q_loss_outside[t]) · dt
+
+mit:
+
+    q_floor_to_room[t] = h_surface · A_floor / 1000
+                         · (T_floor[t-1] − T_innen[t-1])       [kW]
+    q_loss_outside[t]  = UA · (T_innen[t-1] − T_aussen[t])
+                         / 1000                                 [kW]
+    C_room             = building.shell_capacity_kwh_per_k     [kWh/K]
+    UA                 = building.ua_w_per_k                   [W/K]
+
+Diskretisierung: **explizites Euler** — alle Fluesse zum Zeitpunkt t
+werden aus Zustaenden bei t-1 berechnet. Begruendung: bei dt=15 min
+und thermischen Zeitkonstanten τ ≈ 10–100 h (Gebaeudehuelle) gilt
+dt ≪ τ; das explizite Verfahren ist hier numerisch stabil und haelt
+alle Constraints rein affin in den Entscheidungsvariablen
+(LP-Kompatibilitaet). Der "prev"-Wert bei t=0 ist der Initialwert
+:attr:`indoor_temp` (Raumtemperatur *vor* dem ersten Step) — t_innen[0]
+wird **nicht** an indoor_temp festgeklammert, sondern aus der
+Bilanz bei t=0 dynamisch berechnet (vermeidet ueberbestimmten Solver).
+
+Komfort wird als Soft-Constraint mit Slack umgesetzt:
+    T_min_comfort ≤ T_innen[t] + slack_low[t]
+    T_innen[t] − slack_high[t] ≤ T_max_comfort
+Die Slacks werden mit UNMET_HEAT_PENALTY_CT bestraft (siehe Optimizer).
 """
 
 import datetime
+from typing import Any
 
 import numpy as np
 
-from emos_light.components.base import Component
+from emos_light.components.base import MILPComponent
+from emos_light.components._milp_helpers import make_var_array, step_hours
 
 
-class Building(Component):
+class Building(MILPComponent):
     """Gebaeude mit Waerme- und Warmwasserbedarf (Neubau)."""
 
     BUILDING_STANDARDS = {
@@ -79,6 +121,18 @@ class Building(Component):
         self.t_ref_c = config.get("reference_temp_c", 22.0)
         # Komfort-Untergrenze fuer die t_aus-Berechnung (z.B. 21 °C)
         self.t_min_c = config.get("comfort_min_temp_c", 21.0)
+
+        # MILP-Komfortband fuer T_innen (Slack-Bestraft, siehe add_constraints)
+        # Fallbacks: T_min = t_min_c, T_max = indoor_temp + 3 K
+        self.comfort_temp_min_c = config.get(
+            "comfort_temp_min_c", self.t_min_c
+        )
+        self.comfort_temp_max_c = config.get(
+            "comfort_temp_max_c", self.indoor_temp + 3.0
+        )
+
+        # Wird von prepare() vom Optimizer befuellt (Aussentemperatur-Reihe).
+        self._t_aus: np.ndarray | None = None
 
         self.annual_heating_kwh = config.get(
             "annual_heating_kwh",
@@ -340,6 +394,113 @@ class Building(Component):
 
         heating_kw[outside_temp_c >= self.heating_limit_temp] = 0.0
         return np.round(np.clip(heating_kw, 0, None), 3)
+
+    # ========================================================================
+    # MILP-Schnittstelle (Mai 2026): Raum als Zustandsvariable
+    # ========================================================================
+
+    @property
+    def heat_sink_id(self) -> str | None:
+        """Bezeichner als Waermesenke fuer den Raum-Bilanzknoten."""
+        return "room"
+
+    def prepare(self, inp: Any) -> None:
+        """Aussentemperatur-Zeitreihe fuer Verlustterm puffern."""
+        self._t_aus = np.asarray(inp.outside_temp_c, dtype=float)
+
+    def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
+        """Erstellt T_innen-Zustandsvariable plus Komfort-Slacks.
+
+        Variablen:
+            t_innen[t]: Raumlufttemperatur in °C. Generoes bebounded um den
+                Komfortbereich (Komfort kommt aus den Slacks, nicht aus
+                harten Bounds), damit Auskuehlen/Ueberhitzen darstellbar
+                bleibt.
+            t_innen_slack_low[t], t_innen_slack_high[t]:
+                Unterschreitung/Ueberschreitung des Komfortbands in K,
+                wird im Optimizer mit UNMET_HEAT_PENALTY_CT bestraft.
+        """
+        return {
+            "t_innen": make_var_array(
+                "t_innen", num_steps,
+                low=self.comfort_temp_min_c - 10.0,
+                high=self.comfort_temp_max_c + 10.0,
+            ),
+            "t_innen_slack_low": make_var_array(
+                "t_innen_slack_low", num_steps, low=0.0,
+            ),
+            "t_innen_slack_high": make_var_array(
+                "t_innen_slack_high", num_steps, low=0.0,
+            ),
+        }
+
+    def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
+        """Komfort-Soft-Constraints fuer T_innen.
+
+        Die eigentliche Raum-Energiebilanz (C_room·ΔT/dt = q_in − q_loss)
+        entsteht aus der generischen Phase-E-Heizbilanz des Optimizers:
+
+            heat_supply("room") == heat_demand("room")
+
+        wobei :meth:`heat_demand` den dynamischen Term liefert.
+        """
+        # step_minutes fuer heat_demand puffern (Phase E ruft heat_demand
+        # ohne step_minutes auf — wir brauchen es dort fuer dt_h).
+        self._step_minutes_cached = step_minutes
+        t_innen = variables["t_innen"]
+        slack_low = variables["t_innen_slack_low"]
+        slack_high = variables["t_innen_slack_high"]
+        for t in range(len(t_innen)):
+            model += (
+                t_innen[t] + slack_low[t] >= self.comfort_temp_min_c,
+                f"t_innen_comfort_min_{t}",
+            )
+            model += (
+                t_innen[t] - slack_high[t] <= self.comfort_temp_max_c,
+                f"t_innen_comfort_max_{t}",
+            )
+
+    # ------------------------------------------------------------------
+    # Bilanz-Beitraege fuer die Raum-Senke
+    # ------------------------------------------------------------------
+
+    def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
+        """Demand-Seite der Raum-Energiebilanz fuer Phase E.
+
+        Liefert C_room·(T_innen[t]−T_innen_prev)/dt + UA·(T_innen_prev−T_aus[t])/1000.
+        Zusammen mit ``heat_supply("room") = q_floor_to_room[t]`` (aus
+        UFH) entsteht die explizite-Euler-Raumbilanz.
+        """
+        if sink != "room" or self._t_aus is None:
+            return 0.0
+
+        t_innen = variables["t_innen"]
+        c_room = self.shell_capacity_kwh_per_k        # [kWh/K]
+        ua_kw_per_k = self.ua_w_per_k / 1000.0        # [kW/K]
+        dt_h = step_hours(self._step_minutes_cached)
+
+        prev = self.indoor_temp if t == 0 else t_innen[t - 1]
+        t_aus_t = float(self._t_aus[t])
+        return c_room * (t_innen[t] - prev) / dt_h + ua_kw_per_k * (prev - t_aus_t)
+
+    # add_constraints wird vom Optimizer aufgerufen — wir nutzen den
+    # Aufruf, um step_minutes zwischenzuspeichern (heat_demand braucht es).
+    _step_minutes_cached: int = 15
+
+    def extract_result(
+        self, result: Any, variables: dict, num_steps: int, dt_h: float,
+    ) -> None:
+        """Innentemperatur und Verlustleistung in das Ergebnis schreiben."""
+        t_innen_vals = np.array(
+            [v.varValue or 0.0 for v in variables["t_innen"]]
+        )
+        result.indoor_temp_c = t_innen_vals
+        if self._t_aus is not None:
+            # Verlust mit dem "prev"-Wert konsistent zum Modell: bei t=0
+            # ist prev = indoor_temp (initial), sonst t_innen[t-1].
+            prev = np.concatenate(([self.indoor_temp], t_innen_vals[:-1]))
+            ua_kw_per_k = self.ua_w_per_k / 1000.0
+            result.heat_loss_kw = ua_kw_per_k * (prev - self._t_aus[:num_steps])
 
     def calculate_hot_water_demand(
         self, date: datetime.date, num_steps: int = 96,

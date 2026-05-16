@@ -29,8 +29,10 @@ from emos_light.core.config import (
 )
 
 
-MILP_CLASSES = (Battery, HeatPump, ThermalStorage, UnderfloorHeating, Wallbox)
-PASSIVE_CLASSES = (PVSystem, Building, FreshWaterStation, ElectricVehicle)
+# Building ist seit Mai 2026 MILPComponent (Raum als Zustandsvariable).
+MILP_CLASSES = (Battery, Building, HeatPump, ThermalStorage,
+                UnderfloorHeating, Wallbox)
+PASSIVE_CLASSES = (PVSystem, FreshWaterStation, ElectricVehicle)
 
 
 # ---------------------------------------------------------------------------

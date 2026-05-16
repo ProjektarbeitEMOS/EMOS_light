@@ -1,20 +1,27 @@
 """MILP-Optimierungsengine fuer EMOS Light.
 
-Thermische Topologie:
-    WP --+-- FBH --> Estrich (therm. Speicher) --> Raum
+Thermische Topologie (Mai 2026):
+    WP --+-- FBH --> Estrich (therm. Speicher) --> Raum (T_innen) --> Aussenluft
          +-- WW-Speicher --> Frischwasserstation --> Brauchwasser
 
+Senken-Bilanzknoten:
+    "floor": Estrich-Energiebilanz       (Komponente: UnderfloorHeating)
+    "room":  Raumluft-Energiebilanz      (Komponente: Building)
+    "ww":    WW-Speicher-Energiebilanz   (Komponente: ThermalStorage)
+
 Entscheidungsvariablen (thermisch):
-    hp_power[t]:         Elektrische WP-Leistung gesamt
-    hp_power_floor[t]:   Anteil fuer FBH-Pfad (nur bei Mehrfach-Senken)
-    hp_power_ww[t]:      Anteil fuer WW-Pfad  (nur bei Mehrfach-Senken)
-    ufh_floor_energy[t]: Thermische Energie im Estrich
-    ufh_q_floor_in[t]:   Q_in der FBH (= Senkeneingang)
-    ww_energy_kwh[t]:    Thermische Energie im WW-Speicher
-    ww_q_in[t]:          Q_in des WW-Speichers
-    ww_q_demand[t]:      Q_out des WW-Speichers (an Frischwasserstation)
-    hp_sg1[t]:           SG-Ready Zustand 1 (Lastabwurf)
-    hp_sg3[t]:           SG-Ready Zustand 3 (Verstaerkt)
+    hp_power[t]:            Elektrische WP-Leistung gesamt
+    hp_power_floor[t]:      Anteil fuer FBH-Pfad (nur bei Mehrfach-Senken)
+    hp_power_ww[t]:         Anteil fuer WW-Pfad  (nur bei Mehrfach-Senken)
+    ufh_floor_energy[t]:    Thermische Energie im Estrich
+    ufh_q_floor_in[t]:      Q_in der FBH (= Senkeneingang Estrich)
+    ufh_q_floor_to_room[t]: Waermestrom Estrich -> Raum (nur mit Building)
+    t_innen[t]:             Raumlufttemperatur (Building, MILP-Erweiterung Mai 2026)
+    ww_energy_kwh[t]:       Thermische Energie im WW-Speicher
+    ww_q_in[t]:             Q_in des WW-Speichers
+    ww_q_demand[t]:         Q_out des WW-Speichers (an Frischwasserstation)
+    hp_sg1[t]:              SG-Ready Zustand 1 (Lastabwurf)
+    hp_sg3[t]:              SG-Ready Zustand 3 (Verstaerkt)
 
 Bilanzgleichungen entstehen generisch ueber MILPComponent.heat_supply()
 und MILPComponent.heat_demand() pro aktiver Senke.
@@ -28,6 +35,7 @@ import pulp
 
 from emos_light.components.pv import PVSystem
 from emos_light.components.battery import Battery
+from emos_light.components.building import Building
 from emos_light.components.heat_pump import HeatPump
 from emos_light.components.thermal_storage import ThermalStorage
 from emos_light.components.fresh_water_station import FreshWaterStation
@@ -50,6 +58,7 @@ class EMOSLightOptimizer:
         hot_water_storage: Optional[ThermalStorage] = None,
         fresh_water_station: Optional[FreshWaterStation] = None,
         underfloor_heating: Optional[UnderfloorHeating] = None,
+        building: Optional[Building] = None,
         wallboxes: Optional[list[Wallbox]] = None,
         **kwargs,
     ):
@@ -59,6 +68,7 @@ class EMOSLightOptimizer:
         self.hot_water_storage = hot_water_storage
         self.fresh_water_station = fresh_water_station
         self.underfloor_heating = underfloor_heating
+        self.building = building
         self.wallboxes = wallboxes or []
 
     def optimize(self, inp: TimeSeriesInput) -> OptimizationResult:
@@ -108,16 +118,31 @@ class EMOSLightOptimizer:
             candidates.append(self.underfloor_heating)
         if self.hot_water_storage and self.hot_water_storage.enabled:
             candidates.append(self.hot_water_storage)
+        # Building wirkt nur als Raum-Bilanzknoten (Senke "room"). Sein
+        # Versorger ist UFH (Estrich -> Raum). UFH wiederum braucht die WP
+        # als Erzeuger. Filter unten erledigt die Kette.
+        if self.building and self.building.enabled:
+            candidates.append(self.building)
         for wb in self.wallboxes:
             if wb.enabled:
                 candidates.append(wb)
 
-        # Wenn keine Waermeerzeuger existieren, Senken rausfiltern
+        # Wenn keine Waermeerzeuger existieren, Senken rausfiltern.
+        # Speziell die Raum-Senke "room" braucht zusaetzlich einen
+        # UFH-Versorger; ohne UFH bleibt der Raum-Knoten abgekoppelt.
         has_supplier = any(c.is_heat_supplier for c in candidates)
-        milp_components: list = [
-            c for c in candidates
-            if has_supplier or c.heat_sink_id is None
-        ]
+        has_ufh_active = any(
+            isinstance(c, UnderfloorHeating) for c in candidates
+        )
+
+        def _keep(c) -> bool:
+            if c.heat_sink_id is None:
+                return True
+            if c.heat_sink_id == "room":
+                return has_supplier and has_ufh_active
+            return has_supplier
+
+        milp_components: list = [c for c in candidates if _keep(c)]
         active_wallboxes = [c for c in milp_components if isinstance(c, Wallbox)]
         has_hp = any(c.is_heat_supplier for c in milp_components)
 
@@ -139,10 +164,16 @@ class EMOSLightOptimizer:
 
         # ============================================================
         # Phase D — Variablen + Constraints jeder Komponente
+        #
+        # Aufgesplittet in D1 (alle Variablen) und D2 (alle Constraints),
+        # damit cross-component-Referenzen unabhaengig von der
+        # Iterationsreihenfolge funktionieren (z.B. UFH-Constraint auf
+        # ``t_innen`` aus Building).
         # ============================================================
         for c in milp_components:
             comp_vars = c.get_optimization_variables(num_steps, model)
             variables.update(comp_vars)
+        for c in milp_components:
             c.add_constraints(model, variables, inp.step_minutes)
 
         # Fallback: hp_power-Variable existiert immer (auch ohne aktive WP),
@@ -280,6 +311,18 @@ class EMOSLightOptimizer:
         if ww_slack is not None:
             cost += pulp.lpSum(
                 ww_slack[t] * UNMET_HEAT_PENALTY_CT * dt_h
+                for t in range(num_steps)
+            )
+
+        # Komfort-Slacks fuer T_innen (Building MILP-Erweiterung Mai 2026)
+        if (
+            "t_innen_slack_low" in variables
+            and "t_innen_slack_high" in variables
+        ):
+            cost += pulp.lpSum(
+                (variables["t_innen_slack_low"][t]
+                 + variables["t_innen_slack_high"][t])
+                * UNMET_HEAT_PENALTY_CT * dt_h
                 for t in range(num_steps)
             )
 

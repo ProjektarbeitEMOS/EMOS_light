@@ -33,9 +33,15 @@ def _base_cfg() -> dict:
 
 
 def _enable_only(cfg: dict, *names: str) -> dict:
-    """Schaltet alle Komponenten aus und nur die genannten ein."""
+    """Schaltet alle Komponenten aus und nur die genannten ein.
+
+    ``building`` ist seit Mai 2026 MILPComponent und kann das
+    Solververhalten der UFH-Szenarien deutlich aendern (Raum-Knoten
+    wird zur Senke). Default in den Regression-Szenarien: aus —
+    UFH faellt auf das alte Verlustraten-Modell zurueck.
+    """
     for key in ("battery", "heat_pump", "pv", "hot_water_storage",
-                "fresh_water_station", "underfloor_heating"):
+                "fresh_water_station", "underfloor_heating", "building"):
         cfg.setdefault(key, {})["enabled"] = key in names
     return cfg
 
