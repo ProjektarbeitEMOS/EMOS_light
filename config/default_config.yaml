@@ -2,7 +2,9 @@
 
 general:
   time_step_minutes: 15
-  optimization_horizon_hours: 24
+  # 48 h, damit der Day-Ahead-MPC nach 13 Uhr Ortszeit den Horizont
+  # bis Tagesende morgen wirklich nutzen kann.
+  optimization_horizon_hours: 48
   latitude: 49.33
   longitude: 12.11
   feed_in_tariff_ct_kwh: 8.2

@@ -34,6 +34,9 @@ TEST_DATE = datetime.date(2026, 1, 15)
 
 def _winter_cfg() -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    # Test-Doku spricht von 24 h: Horizont explizit pinnen, unabhaengig
+    # vom Produkt-Default (48 h fuer Day-Ahead-MPC nach 13 Uhr).
+    cfg["general"]["optimization_horizon_hours"] = 24
     # Nur WP+FBH+Building aktiv — andere Komponenten ausschalten.
     for key in ("battery", "pv", "hot_water_storage",
                 "fresh_water_station"):
