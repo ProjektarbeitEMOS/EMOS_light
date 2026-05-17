@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yaml
 from plotly.subplots import make_subplots
 
@@ -132,8 +133,40 @@ def _wkey(name: str) -> str:
 with st.sidebar:
     st.header("Konfiguration")
 
+    # Debug-Inspector (temporaer; bitte zeigen, wenn Bugs beim Import
+    # auftreten): macht den abgeleiteten State sichtbar. Wenn z.B.
+    # nach Import die importierten Werte nicht in der UI auftauchen,
+    # zeigt dieser Block, ob das Problem auf Python-Seite (Config
+    # falsch geladen) oder Frontend-Seite (Streamlit-Widget-Cache)
+    # liegt.
+    with st.expander("Debug-Info (State-Inspector)", expanded=False):
+        cfg_pv = st.session_state.get("config", {}).get("pv", {})
+        surfaces_in_cfg = cfg_pv.get("surfaces", [])
+        st.write({
+            "_widget_gen": st.session_state.get("_widget_gen"),
+            "_remount_step": st.session_state.get("_remount_step"),
+            "_imported_config_id": st.session_state.get("_imported_config_id"),
+            "pv.enabled (config)": cfg_pv.get("enabled"),
+            "pv.surfaces (config)": [
+                {"name": s.get("name"), "kwp": s.get("kwp"),
+                 "az": s.get("azimuth_deg"), "tilt": s.get("tilt_deg")}
+                for s in surfaces_in_cfg
+            ],
+            "pv_surfaces (session_state)": st.session_state.get("pv_surfaces"),
+        })
+
     # Import
-    config_file = st.file_uploader("YAML-Konfiguration importieren", type=["yaml", "yml"])
+    # Der File-Uploader bekommt ebenfalls einen versionierten Key.
+    # Konsequenz: nach Inkrement von `_widget_gen` (im Import-Block)
+    # erscheint im Browser ein FRISCHER File-Uploader ohne hochgeladene
+    # Datei. Damit verhindern wir, dass dieselbe Datei in der naechsten
+    # Render-Runde erneut den Import-Block triggert und wir koennen
+    # gleich nach dem Import den anderen Widgets sauber neu rendern.
+    config_file = st.file_uploader(
+        "YAML-Konfiguration importieren",
+        type=["yaml", "yml"],
+        key=_wkey("config_uploader"),
+    )
     if config_file is not None:
         # Datei-ID: stabil ueber rerun, eindeutig pro Upload. Damit
         # erkennen wir, dass derselbe Upload nach einem rerun schon
@@ -183,7 +216,34 @@ with st.sidebar:
                 st.session_state["_imported_config_id"] = file_id
                 # Skip-Render-Cycle starten.
                 st.session_state["_remount_step"] = 1
-                st.success("Konfiguration geladen.")
+                st.success("Konfiguration geladen — wende an ...")
+
+                # Zusaetzlich versuchen wir einen vollstaendigen
+                # Browser-Reload via JS. Streamlits Komponenten-Iframe
+                # hat zwar standardmaessig kein `allow-top-navigation`
+                # und blockiert reines `window.parent.location.reload()`,
+                # aber `same-origin` ist erlaubt — manche Browser/
+                # Streamlit-Versionen lassen den Reload damit doch durch.
+                # Wenn er greift, laedt die App die Pending-Datei sauber
+                # neu. Wenn nicht, faellt der Skip-Render-Mechanismus an.
+                components.html(
+                    """
+                    <script>
+                    (function() {
+                        var attempts = [
+                            function() { window.parent.location.reload(); },
+                            function() { window.top.location.reload(); },
+                            function() { window.parent.location.href = window.parent.location.href; },
+                        ];
+                        for (var i = 0; i < attempts.length; i++) {
+                            try { attempts[i](); return; } catch(e) { /* try next */ }
+                        }
+                        console.warn("Streamlit reload failed — Sandbox blockt window.parent.");
+                    })();
+                    </script>
+                    """,
+                    height=0,
+                )
                 st.rerun()
             except Exception as e:
                 st.error(f"Fehler: {e}")
@@ -354,7 +414,13 @@ with tab_config:
         st.caption(f"Summe Aufschlaege (netto): {surcharges:.2f} ct/kWh | Brutto (inkl. {tariff.get('vat_pct', 19)}% MwSt.): {surcharges * (1 + tariff.get('vat_pct', 19)/100):.2f} ct/kWh")
 
     # PV & Batterie
-    with st.expander("PV-Anlage & Batterie", expanded=False):
+    # Versionierter Container: bei Inkrement von `_widget_gen` aendert
+    # sich der Container-Key -> Streamlits Frontend unmountet den
+    # gesamten DOM-Subtree (inkl. aller PV/Batterie-Widgets) und mountet
+    # ihn neu. Das ist ein staerkerer Hebel als nur Widget-Keys zu
+    # tauschen, weil React den ganzen Subtree als neu sieht.
+    _pv_batt_container = st.container(key=_wkey("pv_batt_section"))
+    with _pv_batt_container, st.expander("PV-Anlage & Batterie", expanded=False):
         col_pv, col_batt = st.columns(2)
 
         with col_pv:
