@@ -55,6 +55,30 @@ if "config" not in st.session_state:
 if "result" not in st.session_state:
     st.session_state.result = None
 
+# Widget-Generation: jeder Widget-Key bekommt ein "_g{N}"-Suffix.
+# Beim Config-Import inkrementieren wir N -> alle Keys sind neu ->
+# Streamlit instanziiert alle Widgets frisch und liest ihren
+# Default-Wert aus der gerade importierten Config. Standard-Streamlit-
+# Pattern zum erzwungenen Reset des Widget-State, weil
+# `del st.session_state[key]` allein nicht zuverlaessig die intern
+# gecachten Widget-Werte loescht.
+if "_widget_gen" not in st.session_state:
+    st.session_state["_widget_gen"] = 0
+
+
+def _wkey(name: str) -> str:
+    """Suffix einen Widget-Key mit der aktuellen Generation.
+
+    Verwendung an JEDER `key=`-Stelle in Eingabe-Widgets im Sidebar-
+    Konfigurationsbereich. Buttons (z.B. "Optimierung starten") brauchen
+    es nicht zwingend, sind aber konsistent suffixiert.
+
+    Eigener Session-State (Flags wie `_wb_add`, Listen wie
+    `pv_surfaces`) NICHT suffixieren — die werden manuell verwaltet
+    und beim Import durch den KEEP_KEYS-Reset abgeraeumt.
+    """
+    return f"{name}_g{st.session_state.get('_widget_gen', 0)}"
+
 
 # ================================================================
 # Sidebar
@@ -96,52 +120,26 @@ with st.sidebar:
                 # Was bleibt:
                 # - "config"                  -> gerade frisch gemerged
                 # - "_imported_config_id"     -> Marker setzen wir gleich
-                KEEP_KEYS = {"config", "_imported_config_id"}
+                # Alle Nicht-Config-Keys abraeumen (abgeleiteter State
+                # wie `pv_surfaces`, transiente Flags, gecachte Solver-
+                # Ergebnisse). Den Config-Dict selbst und den Import-
+                # Marker behalten wir.
+                KEEP_KEYS = {"config", "_imported_config_id", "_widget_gen"}
                 for key in list(st.session_state.keys()):
                     if key not in KEEP_KEYS:
                         del st.session_state[key]
 
-                # PV-Surfaces sind ein abgeleiteter Zwischenstate fuer
-                # die UI (Liste von Dachflaechen, jeweils mit eigenen
-                # Slidern fuer Azimut/Neigung/Leistung). Ohne Force-
-                # Initialisierung ist Streamlits Widget-Cache nach einem
-                # rerun gelegentlich hartnaeckig und ignoriert den
-                # `value=...`-Default; der Slider zeigt dann den vor
-                # dem Import gesetzten Wert. Konkret beobachtet bei der
-                # PV-Ausrichtung: erst Ausschalten + Wiedereinschalten
-                # der PV hat das Widget zwangs-remountet.
-                # Deshalb: pv_surfaces sofort aus der frischen Config
-                # rekonstruieren UND die einzelnen Widget-Keys explizit
-                # vorbelegen, damit der erste Render nach Import den
-                # neuen Wert garantiert anzeigt.
-                pv_cfg = base_config.get("pv", {})
-                existing_surfaces = pv_cfg.get("surfaces") or []
-                if existing_surfaces:
-                    new_surfaces = [
-                        s.copy() if isinstance(s, dict) else s
-                        for s in existing_surfaces
-                    ]
-                else:
-                    new_surfaces = [{
-                        "name": "Dachflaeche 1",
-                        "kwp": pv_cfg.get("peak_power_kwp", 12.0),
-                        "azimuth_deg": pv_cfg.get("azimuth_deg", 180),
-                        "tilt_deg": pv_cfg.get("tilt_deg", 30),
-                    }]
-                st.session_state.pv_surfaces = new_surfaces
-                for si, surf in enumerate(new_surfaces):
-                    st.session_state[f"pv_s_{si}_name"] = str(
-                        surf.get("name", f"Dachflaeche {si+1}")
-                    )
-                    st.session_state[f"pv_s_{si}_kwp"] = float(
-                        surf.get("kwp", 5.0)
-                    )
-                    st.session_state[f"pv_s_{si}_az"] = int(
-                        surf.get("azimuth_deg", 180)
-                    )
-                    st.session_state[f"pv_s_{si}_tilt"] = int(
-                        surf.get("tilt_deg", 30)
-                    )
+                # Widget-Generation hochzaehlen: alle Eingabe-Widgets
+                # in der Sidebar bekommen damit neue Keys und werden
+                # von Streamlit als frische Widgets instanziiert. Ihr
+                # `value=...`-Default greift dann garantiert und liest
+                # aus dem soeben importierten Config — auch
+                # `enabled`-Checkboxen und PV-Slider, die ohne dieses
+                # Hochzaehlen aus dem Streamlit-internen Widget-Cache
+                # die Werte vor dem Import zurueckliefern wuerden.
+                st.session_state["_widget_gen"] = (
+                    st.session_state.get("_widget_gen", 0) + 1
+                )
 
                 st.session_state["_imported_config_id"] = file_id
                 st.success("Konfiguration geladen!")
@@ -320,7 +318,7 @@ with tab_config:
 
         with col_pv:
             st.markdown("**PV-Anlage**")
-            config["pv"]["enabled"] = st.checkbox("PV aktiviert", value=config["pv"].get("enabled", True), key="pv_en")
+            config["pv"]["enabled"] = st.checkbox("PV aktiviert", value=config["pv"].get("enabled", True), key=_wkey("pv_en"))
             if config["pv"]["enabled"]:
                 if "pv_surfaces" not in st.session_state:
                     existing = config["pv"].get("surfaces", [])
@@ -338,13 +336,13 @@ with tab_config:
                 total_kwp = 0.0
                 for si, surf in enumerate(surfaces):
                     st.markdown(f"**{surf.get('name', f'Flaeche {si+1}')}**")
-                    surf["name"] = st.text_input("Name", surf.get("name", f"Dachflaeche {si+1}"), key=f"pv_s_{si}_name")
-                    surf["kwp"] = st.number_input("Leistung (kWp)", 0.1, 100.0, float(surf.get("kwp", 5.0)), 0.5, key=f"pv_s_{si}_kwp")
-                    surf["azimuth_deg"] = st.slider("Azimut", 0, 360, int(surf.get("azimuth_deg", 180)), key=f"pv_s_{si}_az")
-                    surf["tilt_deg"] = st.slider("Neigung", 0, 90, int(surf.get("tilt_deg", 30)), key=f"pv_s_{si}_tilt")
+                    surf["name"] = st.text_input("Name", surf.get("name", f"Dachflaeche {si+1}"), key=_wkey(f"pv_s_{si}_name"))
+                    surf["kwp"] = st.number_input("Leistung (kWp)", 0.1, 100.0, float(surf.get("kwp", 5.0)), 0.5, key=_wkey(f"pv_s_{si}_kwp"))
+                    surf["azimuth_deg"] = st.slider("Azimut", 0, 360, int(surf.get("azimuth_deg", 180)), key=_wkey(f"pv_s_{si}_az"))
+                    surf["tilt_deg"] = st.slider("Neigung", 0, 90, int(surf.get("tilt_deg", 30)), key=_wkey(f"pv_s_{si}_tilt"))
                     total_kwp += surf["kwp"]
                     if len(surfaces) > 1:
-                        if st.button("Flaeche entfernen", key=f"pv_s_{si}_rm"):
+                        if st.button("Flaeche entfernen", key=_wkey(f"pv_s_{si}_rm")):
                             surfaces.pop(si)
                             for k in [kk for kk in st.session_state if kk.startswith("pv_s_")]:
                                 del st.session_state[k]
@@ -352,7 +350,7 @@ with tab_config:
                     st.divider()
 
                 st.caption(f"Gesamt: **{total_kwp:.1f} kWp** ({len(surfaces)} Flaeche(n))")
-                if st.button("+ PV-Flaeche hinzufuegen", key="add_pv_surface"):
+                if st.button("+ PV-Flaeche hinzufuegen", key=_wkey("add_pv_surface")):
                     new_surface = PV_SURFACE_DEFAULT.copy()
                     new_surface["name"] = f"Dachflaeche {len(surfaces) + 1}"
                     surfaces.append(new_surface)
@@ -380,7 +378,7 @@ with tab_config:
                     _model_keys,
                     index=_model_keys.index(_current),
                     format_func=lambda k: _models[k],
-                    key="pv_transposition_model",
+                    key=_wkey("pv_transposition_model"),
                     help=(
                         "Wie wird die horizontale Globalstrahlung (GHI) auf "
                         "die geneigte Modulflaeche umgerechnet?\n\n"
@@ -394,7 +392,7 @@ with tab_config:
 
         with col_batt:
             st.markdown("**Batteriespeicher**")
-            config["battery"]["enabled"] = st.checkbox("Batterie aktiviert", value=config["battery"].get("enabled", True), key="batt_en")
+            config["battery"]["enabled"] = st.checkbox("Batterie aktiviert", value=config["battery"].get("enabled", True), key=_wkey("batt_en"))
             if config["battery"]["enabled"]:
                 config["battery"]["capacity_kwh"] = st.number_input("Kapazitaet (kWh)", 1.0, 200.0, float(config["battery"]["capacity_kwh"]), 1.0)
                 config["battery"]["max_charge_power_kw"] = st.number_input("Max. Ladeleistung (kW)", 0.5, 50.0, float(config["battery"]["max_charge_power_kw"]), 0.5)
@@ -409,28 +407,28 @@ with tab_config:
                 config["battery"]["aging_cost_enabled"] = st.checkbox(
                     "Alterungskosten beruecksichtigen",
                     value=config["battery"].get("aging_cost_enabled", True),
-                    key="bat_aging_en",
+                    key=_wkey("bat_aging_en"),
                 )
                 config["battery"]["replacement_cost_eur_per_kwh"] = st.number_input(
                     "Wiederbeschaffungswert (EUR/kWh)",
                     100.0, 1500.0,
                     float(config["battery"].get("replacement_cost_eur_per_kwh", 500.0)),
                     50.0,
-                    key="bat_repl_cost",
+                    key=_wkey("bat_repl_cost"),
                 )
                 config["battery"]["equivalent_full_cycles"] = int(st.number_input(
                     "Aequivalent-Vollzyklen bis EOL",
                     1000, 15000,
                     int(config["battery"].get("equivalent_full_cycles", 6000)),
                     500,
-                    key="bat_efc",
+                    key=_wkey("bat_efc"),
                 ))
                 config["battery"]["residual_value_pct"] = st.number_input(
                     "Restwert am Lebensende (0-1)",
                     0.0, 0.5,
                     float(config["battery"].get("residual_value_pct", 0.0)),
                     0.05,
-                    key="bat_residual",
+                    key=_wkey("bat_residual"),
                 )
 
                 from emos_light.components.battery import Battery as _Bat
@@ -444,7 +442,7 @@ with tab_config:
     # Waermepumpe & SG-Ready
     with st.expander("Waermepumpe & SG-Ready", expanded=False):
         st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/8.1 A')}")
-        config["heat_pump"]["enabled"] = st.checkbox("WP aktiviert", value=config["heat_pump"].get("enabled", True), key="hp_en")
+        config["heat_pump"]["enabled"] = st.checkbox("WP aktiviert", value=config["heat_pump"].get("enabled", True), key=_wkey("hp_en"))
         if config["heat_pump"]["enabled"]:
             hp_col1, hp_col2 = st.columns(2)
             config["heat_pump"]["max_electrical_power_kw"] = hp_col1.number_input("Max. el. Leistung (kW)", 1.0, 30.0, float(config["heat_pump"]["max_electrical_power_kw"]), 0.5)
@@ -461,7 +459,7 @@ with tab_config:
                 help="Vorlauftemperatur WW-Bereitung — bestimmt COP WW",
             )
 
-            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key="sg_en")
+            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key=_wkey("sg_en"))
             if config["heat_pump"]["sg_ready"]:
                 sg_col1, sg_col2 = st.columns(2)
                 config["heat_pump"]["sg_ready_state1_power_limit_kw"] = sg_col1.number_input(
@@ -488,14 +486,14 @@ with tab_config:
         col_ww, col_fws = st.columns(2)
         with col_ww:
             st.markdown("**Warmwasserspeicher**")
-            config["hot_water_storage"]["enabled"] = st.checkbox("WW-Speicher aktiviert", value=config["hot_water_storage"].get("enabled", True), key="ww_en")
+            config["hot_water_storage"]["enabled"] = st.checkbox("WW-Speicher aktiviert", value=config["hot_water_storage"].get("enabled", True), key=_wkey("ww_en"))
             if config["hot_water_storage"]["enabled"]:
                 config["hot_water_storage"]["volume_liters"] = st.number_input("Volumen (L)", 50, 2000, int(config["hot_water_storage"]["volume_liters"]), 50)
                 ww_temp = st.slider(
                     "Temp.-Bereich (C)", 30, 90,
                     (int(config["hot_water_storage"]["min_temperature_c"]),
                      int(config["hot_water_storage"]["max_temperature_c"])),
-                    key="ww_temp",
+                    key=_wkey("ww_temp"),
                 )
                 config["hot_water_storage"]["min_temperature_c"] = float(ww_temp[0])
                 config["hot_water_storage"]["max_temperature_c"] = float(ww_temp[1])
@@ -517,12 +515,12 @@ with tab_config:
                 new_periods = []
                 for i, period in enumerate(comfort_periods):
                     cp_col1, cp_col2, cp_col3 = st.columns([2, 2, 1])
-                    start_h = cp_col1.number_input(f"Von (Uhr)", 0, 23, int(period.get("start_hour", 6)), key=f"cp_start_{i}")
-                    end_h = cp_col2.number_input(f"Bis (Uhr)", 0, 24, int(period.get("end_hour", 22)), key=f"cp_end_{i}")
-                    remove = cp_col3.checkbox("X", key=f"cp_rm_{i}", help="Zeitraum entfernen")
+                    start_h = cp_col1.number_input(f"Von (Uhr)", 0, 23, int(period.get("start_hour", 6)), key=_wkey(f"cp_start_{i}"))
+                    end_h = cp_col2.number_input(f"Bis (Uhr)", 0, 24, int(period.get("end_hour", 22)), key=_wkey(f"cp_end_{i}"))
+                    remove = cp_col3.checkbox("X", key=_wkey(f"cp_rm_{i}"), help="Zeitraum entfernen")
                     if not remove:
                         new_periods.append({"start_hour": start_h, "end_hour": end_h})
-                if st.button("+ Zeitraum hinzufuegen", key="add_cp"):
+                if st.button("+ Zeitraum hinzufuegen", key=_wkey("add_cp")):
                     new_periods.append({"start_hour": 12, "end_hour": 14})
                 config["hot_water_storage"]["comfort_periods"] = new_periods
 
@@ -532,7 +530,7 @@ with tab_config:
 
         with col_fws:
             st.markdown("**Frischwasserstation**")
-            config["fresh_water_station"]["enabled"] = st.checkbox("FWS aktiviert", value=config["fresh_water_station"].get("enabled", True), key="fws_en")
+            config["fresh_water_station"]["enabled"] = st.checkbox("FWS aktiviert", value=config["fresh_water_station"].get("enabled", True), key=_wkey("fws_en"))
             if config["fresh_water_station"]["enabled"]:
                 config["fresh_water_station"]["target_hot_water_temp_c"] = st.number_input(
                     "Ziel-Warmwassertemp. (C)", 40.0, 60.0,
@@ -552,7 +550,7 @@ with tab_config:
         col_ufh, col_bldg = st.columns(2)
         with col_ufh:
             st.markdown("**Fussbodenheizung**")
-            config["underfloor_heating"]["enabled"] = st.checkbox("FBH aktiviert", value=config["underfloor_heating"].get("enabled", True), key="ufh_en")
+            config["underfloor_heating"]["enabled"] = st.checkbox("FBH aktiviert", value=config["underfloor_heating"].get("enabled", True), key=_wkey("ufh_en"))
             if config["underfloor_heating"]["enabled"]:
                 config["underfloor_heating"]["heated_area_m2"] = st.number_input("Beheizte Flaeche (m2)", 30.0, 500.0, float(config["underfloor_heating"]["heated_area_m2"]), 10.0)
                 config["underfloor_heating"]["screed_thickness_m"] = st.number_input(
@@ -563,7 +561,7 @@ with tab_config:
                     "Komfort-Temperaturband (C)", 18, 30,
                     (int(config["underfloor_heating"]["floor_temp_min_c"]),
                      int(config["underfloor_heating"]["floor_temp_max_c"])),
-                    key="floor_temp",
+                    key=_wkey("floor_temp"),
                 )
                 config["underfloor_heating"]["floor_temp_min_c"] = float(floor_temp[0])
                 config["underfloor_heating"]["floor_temp_max_c"] = float(floor_temp[1])
@@ -766,16 +764,16 @@ with tab_config:
                 st.rerun()
 
             for i, wb in enumerate(wallboxes):
-                wb["enabled"] = st.checkbox(f"{wb.get('name', f'Wallbox {i+1}')} aktiviert", value=wb.get("enabled", False), key=f"wb_{i}_en")
+                wb["enabled"] = st.checkbox(f"{wb.get('name', f'Wallbox {i+1}')} aktiviert", value=wb.get("enabled", False), key=_wkey(f"wb_{i}_en"))
                 if wb["enabled"]:
-                    wb["name"] = st.text_input("Name", wb.get("name", f"Wallbox {i+1}"), key=f"wb_{i}_name")
-                    wb["max_power_kw"] = st.number_input("Max. Ladeleistung (kW)", 1.4, 22.0, float(wb["max_power_kw"]), 0.5, key=f"wb_{i}_power")
-                if st.button("Wallbox entfernen", key=f"wb_{i}_rm"):
+                    wb["name"] = st.text_input("Name", wb.get("name", f"Wallbox {i+1}"), key=_wkey(f"wb_{i}_name"))
+                    wb["max_power_kw"] = st.number_input("Max. Ladeleistung (kW)", 1.4, 22.0, float(wb["max_power_kw"]), 0.5, key=_wkey(f"wb_{i}_power"))
+                if st.button("Wallbox entfernen", key=_wkey(f"wb_{i}_rm")):
                     st.session_state["_wb_rm_idx"] = i
                     st.rerun()
                 st.divider()
 
-            if st.button("+ Wallbox hinzufuegen", key="add_wb"):
+            if st.button("+ Wallbox hinzufuegen", key=_wkey("add_wb")):
                 st.session_state["_wb_add"] = True
                 st.rerun()
 
@@ -800,15 +798,15 @@ with tab_config:
                 st.rerun()
 
             for i, ev in enumerate(evs):
-                ev["enabled"] = st.checkbox(f"{ev.get('name', f'E-Auto {i+1}')} aktiviert", value=ev.get("enabled", False), key=f"ev_{i}_en")
+                ev["enabled"] = st.checkbox(f"{ev.get('name', f'E-Auto {i+1}')} aktiviert", value=ev.get("enabled", False), key=_wkey(f"ev_{i}_en"))
                 if ev["enabled"]:
-                    ev["name"] = st.text_input("Name", ev.get("name", f"E-Auto {i+1}"), key=f"ev_{i}_name")
-                    ev["battery_capacity_kwh"] = st.number_input("Akkukapazitaet (kWh)", 10.0, 200.0, float(ev.get("battery_capacity_kwh", 58.0)), 5.0, key=f"ev_{i}_cap")
-                    ev["current_soc"] = st.slider("Aktueller SOC (%)", 0, 100, int(ev.get("current_soc", 0.3)*100), key=f"ev_{i}_soc") / 100
+                    ev["name"] = st.text_input("Name", ev.get("name", f"E-Auto {i+1}"), key=_wkey(f"ev_{i}_name"))
+                    ev["battery_capacity_kwh"] = st.number_input("Akkukapazitaet (kWh)", 10.0, 200.0, float(ev.get("battery_capacity_kwh", 58.0)), 5.0, key=_wkey(f"ev_{i}_cap"))
+                    ev["current_soc"] = st.slider("Aktueller SOC (%)", 0, 100, int(ev.get("current_soc", 0.3)*100), key=_wkey(f"ev_{i}_soc")) / 100
                     ev["consumption_kwh_per_100km"] = st.number_input(
                         "Verbrauch (kWh/100km)", 5.0, 40.0,
                         float(ev.get("consumption_kwh_per_100km", 16.0)), 0.5,
-                        key=f"ev_{i}_cons",
+                        key=_wkey(f"ev_{i}_cons"),
                         help="Realer Fahrverbrauch inkl. Ladeverluste. Typ.: Kleinwagen ~14, Kompakt ~16, Mittelklasse ~18, SUV ~21 kWh/100km.",
                     )
 
@@ -827,7 +825,7 @@ with tab_config:
                     ev["min_range_enabled"] = st.checkbox(
                         "Mindestreichweite garantieren",
                         value=bool(ev.get("min_range_enabled", True)),
-                        key=f"ev_{i}_minrange_en",
+                        key=_wkey(f"ev_{i}_minrange_en"),
                         help=(
                             "An: bis Abfahrt wird mindestens die unten "
                             "konfigurierte Reichweite garantiert. "
@@ -838,7 +836,7 @@ with tab_config:
                     ev["min_range_km"] = st.number_input(
                         "Mindestreichweite (km)", 0.0, 500.0,
                         float(ev.get("min_range_km", 150.0)), 10.0,
-                        key=f"ev_{i}_range",
+                        key=_wkey(f"ev_{i}_range"),
                         disabled=not ev["min_range_enabled"],
                     )
                     if ev["min_range_enabled"]:
@@ -864,18 +862,18 @@ with tab_config:
                     # 18:00..23:59).
                     ev["arrival_hour"] = ev_col1.number_input(
                         "Ankunft (h)", 0, 24,
-                        int(ev.get("arrival_hour", 17)), key=f"ev_{i}_arr",
+                        int(ev.get("arrival_hour", 17)), key=_wkey(f"ev_{i}_arr"),
                     )
                     ev["departure_hour"] = ev_col2.number_input(
                         "Abfahrt (h)", 0, 24,
-                        int(ev.get("departure_hour", 7)), key=f"ev_{i}_dep",
+                        int(ev.get("departure_hour", 7)), key=_wkey(f"ev_{i}_dep"),
                     )
 
                     wb_names = [wb.get("name") for wb in config.get("wallboxes", []) if wb.get("enabled")]
                     if wb_names:
                         linked = ev.get("linked_wallbox", wb_names[0])
                         idx = wb_names.index(linked) if linked in wb_names else 0
-                        ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=f"ev_{i}_wb")
+                        ev["linked_wallbox"] = st.selectbox("Wallbox", wb_names, index=idx, key=_wkey(f"ev_{i}_wb"))
 
                     # ---- Preisgesteuerte Ladestrategie (Strompreis-Perzentil) ----
                     st.info(
@@ -893,7 +891,7 @@ with tab_config:
                         min_value=10, max_value=100,
                         value=int(round(pct_default)),
                         step=5,
-                        key=f"ev_{i}_pct",
+                        key=_wkey(f"ev_{i}_pct"),
                         help=(
                             "Erlaubt das Laden nur in den guenstigsten X %% der "
                             "**Anwesenheitsstunden**. 100 %% = keine Beschraen"
@@ -916,12 +914,12 @@ with tab_config:
                             "auf < 100 % setzen."
                         )
 
-                if st.button("E-Auto entfernen", key=f"ev_{i}_rm"):
+                if st.button("E-Auto entfernen", key=_wkey(f"ev_{i}_rm")):
                     st.session_state["_ev_rm_idx"] = i
                     st.rerun()
                 st.divider()
 
-            if st.button("+ E-Auto hinzufuegen", key="add_ev"):
+            if st.button("+ E-Auto hinzufuegen", key=_wkey("add_ev")):
                 st.session_state["_ev_add"] = True
                 st.rerun()
 
@@ -953,7 +951,7 @@ with tab_config:
 with tab_input:
     st.subheader("Eingabedaten laden und visualisieren")
 
-    if st.button("Daten laden", type="primary", key="load_data"):
+    if st.button("Daten laden", type="primary", key=_wkey("load_data")):
         with st.spinner("Lade Daten..."):
             try:
                 data = load_input_data(
@@ -1042,7 +1040,7 @@ with tab_input:
 with tab_optimize:
     st.subheader("Optimierung starten")
 
-    if st.button("Optimierung starten", type="primary", key="run_opt"):
+    if st.button("Optimierung starten", type="primary", key=_wkey("run_opt")):
         with st.spinner("Optimiere..."):
             try:
                 # Daten laden (falls nicht bereits geladen)
