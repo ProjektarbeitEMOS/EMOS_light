@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 import yaml
 from plotly.subplots import make_subplots
 
@@ -78,6 +77,27 @@ if "config" not in st.session_state:
     else:
         st.session_state.config = load_config(None)
 
+# Skip-Render-Zwischenrunde nach Config-Import.
+#
+# Hintergrund: Streamlits Widget-State-Cache ist nach einem Import
+# hartnaeckig — selbst nach `del st.session_state[key]` plus Rerun
+# zeigen Slider und Checkboxen gelegentlich noch die Werte von vor
+# dem Import. Der Trick "PV-Toggle aus + ein" funktioniert, weil die
+# Widgets dabei fuer einen Render-Cycle aus dem DOM verschwinden und
+# Streamlit ihren State erst dann wirklich verwirft.
+#
+# Wir mimen dieses Verhalten: nach Import setzen wir
+# `_remount_step = 1` und rerun. Im naechsten Run greift dieser
+# Block sofort am Anfang, setzt `_remount_step = 2` und ruft
+# `st.rerun()` auf — die Sidebar wird in diesem Run nie betreten,
+# Streamlit raeumt den Widget-State der nicht-gerenderten Widgets
+# auf. Der dritte Run rendert dann normal, alle Widgets initialisieren
+# sich aus der frischen Config.
+_remount_step = st.session_state.pop("_remount_step", 0)
+if _remount_step == 1:
+    st.session_state["_remount_step"] = 2
+    st.rerun()
+
 if "result" not in st.session_state:
     st.session_state.result = None
 
@@ -129,42 +149,42 @@ with st.sidebar:
                     else:
                         base_config[key] = val
 
-                # Strategie: die importierte Config in eine Pending-
-                # Datei schreiben und einen vollstaendigen Browser-
-                # Reload ausloesen. Damit wird die Streamlit-Session
-                # komplett neu aufgebaut — Session-State, Widget-Cache
-                # und alle abgeleiteten Listen (pv_surfaces, wallboxes,
-                # ...) starten frisch. Beim naechsten Start wird die
-                # Pending-Datei geladen und geloescht.
+                # Drei-Phasen-Import:
                 #
-                # Frueher hatten wir nur `del st.session_state[key]`
-                # + `st.rerun()` + Widget-Key-Generation-Suffix
-                # versucht. Beides allein reichte nicht: Streamlits
-                # interner Widget-Cache lieferte gelegentlich trotzdem
-                # die Werte vor dem Import zurueck, sodass z.B. die
-                # PV-Ausrichtung erst nach Aus-/Einschalten der PV
-                # aktualisiert wurde. Ein voller Reload umgeht das
-                # Problem strukturell.
+                # Phase 1 (jetzt): Config in Session-State schreiben,
+                #   in eine Pending-Datei spiegeln (Safety-Net, falls
+                #   der User die Seite manuell refresht), alle anderen
+                #   Session-Keys abraeumen, und einen Skip-Render-
+                #   Cycle anstossen.
+                # Phase 2 (naechster Run): der `_remount_step`-Handler
+                #   am Skript-Anfang fuehrt einen Rerun aus, OHNE die
+                #   Sidebar zu rendern. Streamlit verwirft dabei den
+                #   Widget-State der Slider/Checkboxen, weil sie
+                #   nicht im Render-Baum auftauchen.
+                # Phase 3 (uebernaechster Run): alle Widgets werden
+                #   frisch aus der neuen Config initialisiert.
+                st.session_state.config = base_config
                 with _PENDING_IMPORT_PATH.open("w", encoding="utf-8") as f:
                     yaml.safe_dump(
                         base_config, f, allow_unicode=True, sort_keys=False,
                     )
+                # Alle Non-Config-Keys abraeumen (abgeleiteter State
+                # wie pv_surfaces, transiente Flags, gecachte Solver-
+                # Ergebnisse).
+                KEEP_KEYS = {"config", "_imported_config_id", "_widget_gen"}
+                for key in list(st.session_state.keys()):
+                    if key not in KEEP_KEYS:
+                        del st.session_state[key]
+                # Widget-Generation hochzaehlen (Defense-in-Depth:
+                # Schluessel sind im naechsten Render-Lauf neu).
+                st.session_state["_widget_gen"] = (
+                    st.session_state.get("_widget_gen", 0) + 1
+                )
                 st.session_state["_imported_config_id"] = file_id
-
-                st.success(
-                    "Konfiguration geladen — Dashboard wird neu geladen ..."
-                )
-                # `window.parent.location.reload()` aus einem Streamlit-
-                # Komponenten-iframe heraus laedt die uebergeordnete
-                # App-Seite neu (Streamlit-Komponenten sind same-origin,
-                # der Frame-Zugriff ist erlaubt). Anschliessend
-                # `st.stop()`, damit der laufende Run keine veralteten
-                # Widgets mehr rendert.
-                components.html(
-                    "<script>window.parent.location.reload();</script>",
-                    height=0,
-                )
-                st.stop()
+                # Skip-Render-Cycle starten.
+                st.session_state["_remount_step"] = 1
+                st.success("Konfiguration geladen.")
+                st.rerun()
             except Exception as e:
                 st.error(f"Fehler: {e}")
 
