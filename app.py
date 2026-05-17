@@ -363,7 +363,8 @@ with tab_config:
     st.subheader("Anlagenkonfiguration bearbeiten")
 
     # Standort & Netz
-    with st.expander("Standort & Netz", expanded=True):
+    _loc_container = st.container(key=_wkey("location_section"))
+    with _loc_container, st.expander("Standort & Netz", expanded=True):
         loc_col1, loc_col2 = st.columns(2)
         general["latitude"] = loc_col1.number_input(
             "Breitengrad", -90.0, 90.0, float(general.get("latitude", 49.33)), 0.01,
@@ -380,7 +381,8 @@ with tab_config:
         )
 
     # Stromtarif
-    with st.expander("Dynamischer Stromtarif", expanded=False):
+    _tariff_container = st.container(key=_wkey("tariff_section"))
+    with _tariff_container, st.expander("Dynamischer Stromtarif", expanded=False):
         tariff = config.get("tariff", {})
         tariff_preset = st.selectbox(
             "Anbieter-Vorlage",
@@ -547,7 +549,8 @@ with tab_config:
                 )
 
     # Waermepumpe & SG-Ready
-    with st.expander("Waermepumpe & SG-Ready", expanded=False):
+    _hp_container = st.container(key=_wkey("hp_section"))
+    with _hp_container, st.expander("Waermepumpe & SG-Ready", expanded=False):
         st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/8.1 A')}")
         config["heat_pump"]["enabled"] = st.checkbox("WP aktiviert", value=config["heat_pump"].get("enabled", True), key=_wkey("hp_en"))
         if config["heat_pump"]["enabled"]:
@@ -589,7 +592,8 @@ with tab_config:
                 ))
 
     # WW-Speicher & Frischwasserstation
-    with st.expander("WW-Speicher & Frischwasserstation", expanded=False):
+    _ww_container = st.container(key=_wkey("ww_section"))
+    with _ww_container, st.expander("WW-Speicher & Frischwasserstation", expanded=False):
         col_ww, col_fws = st.columns(2)
         with col_ww:
             st.markdown("**Warmwasserspeicher**")
@@ -653,7 +657,8 @@ with tab_config:
                 )
 
     # Fussbodenheizung & Gebaeude
-    with st.expander("Fussbodenheizung & Gebaeude", expanded=False):
+    _bldg_container = st.container(key=_wkey("building_section"))
+    with _bldg_container, st.expander("Fussbodenheizung & Gebaeude", expanded=False):
         col_ufh, col_bldg = st.columns(2)
         with col_ufh:
             st.markdown("**Fussbodenheizung**")
@@ -794,7 +799,8 @@ with tab_config:
             st.caption(f"**Bei T_innen={t_in_ref}°C:**  {tau_str}")
 
     # Verbrauch
-    with st.expander("Verbrauch", expanded=False):
+    _cons_container = st.container(key=_wkey("consumption_section"))
+    with _cons_container, st.expander("Verbrauch", expanded=False):
         from emos_light.data.household_profiles import list_profiles, get_profile_label
 
         # Personenanzahl + Jahresverbrauch
@@ -847,7 +853,10 @@ with tab_config:
         h_col2.metric("Warmwasser (kWh/a)", config["heat_demand"]["annual_hot_water_kwh"])
 
     # E-Mobilitaet
-    with st.expander("E-Mobilitaet", expanded=False):
+    # Versionierter Container (siehe PV-Sektion): forciert das frische
+    # Mounten aller Wallbox/EV-Widgets nach Config-Import.
+    _em_container = st.container(key=_wkey("emobility_section"))
+    with _em_container, st.expander("E-Mobilitaet", expanded=False):
         col_wb, col_ev = st.columns(2)
 
         with col_wb:
