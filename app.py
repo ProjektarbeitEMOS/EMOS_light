@@ -7,14 +7,28 @@ Starten mit: streamlit run app.py
 """
 
 import datetime
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yaml
 from plotly.subplots import make_subplots
+
+
+# Datei, in der wir importierte Configs zwischenparken, damit sie einen
+# vollstaendigen Browser-Reload ueberleben (Session-State und Widget-
+# State werden dabei verworfen). Beim naechsten Start liest die App
+# diese Datei, uebernimmt sie als Config und loescht sie wieder. So
+# starten alle Widgets nach dem Import garantiert mit den neuen
+# Werten — Streamlits interner Widget-Cache hat keine Chance,
+# alte Slider-Positionen "durchzureichen".
+_PENDING_IMPORT_PATH = (
+    Path(tempfile.gettempdir()) / "emos_light_pending_import.yaml"
+)
 
 from emos_light.core.config import load_config, DEFAULT_CONFIG, WALLBOX_DEFAULT, EV_DEFAULT, PV_SURFACE_DEFAULT
 from emos_light.core.scenario import (
@@ -47,7 +61,19 @@ st.caption("Waermepumpe | Fussbodenheizung | Frischwassersystem | Dynamischer St
 # ================================================================
 if "config" not in st.session_state:
     config_path = Path("config/default_config.yaml")
-    if config_path.exists():
+    # Hat der letzte Session-Run einen Import angestossen, der dann
+    # einen Browser-Reload getriggert hat? Dann liegt die importierte
+    # Config in der Pending-Datei — uebernehmen, danach loeschen.
+    if _PENDING_IMPORT_PATH.exists():
+        try:
+            with _PENDING_IMPORT_PATH.open("r", encoding="utf-8") as f:
+                st.session_state.config = yaml.safe_load(f)
+        finally:
+            try:
+                _PENDING_IMPORT_PATH.unlink()
+            except OSError:
+                pass
+    elif config_path.exists():
         st.session_state.config = load_config(config_path)
     else:
         st.session_state.config = load_config(None)
@@ -89,12 +115,9 @@ with st.sidebar:
     # Import
     config_file = st.file_uploader("YAML-Konfiguration importieren", type=["yaml", "yml"])
     if config_file is not None:
-        # Pro Upload eine eindeutige ID. Streamlit haengt diese an das
-        # UploadedFile-Objekt — sie ist nach einem st.rerun() identisch zum
-        # vorherigen Run, daher koennen wir damit erkennen, ob *dieser*
-        # konkrete Upload schon importiert wurde. Ohne diesen Marker
-        # entstand eine Endlosschleife (Import → rerun → Import → …),
-        # die als Dashboard-"Zittern" sichtbar war.
+        # Datei-ID: stabil ueber rerun, eindeutig pro Upload. Damit
+        # erkennen wir, dass derselbe Upload nach einem rerun schon
+        # importiert wurde, und vermeiden eine Endlosschleife.
         file_id = getattr(config_file, "file_id", None) or config_file.name
         if st.session_state.get("_imported_config_id") != file_id:
             try:
@@ -105,45 +128,43 @@ with st.sidebar:
                         base_config[key].update(val)
                     else:
                         base_config[key] = val
-                st.session_state.config = base_config
 
-                # Alle Widget-Zustaende beseitigen, damit beim Re-Render
-                # jedes Widget seinen Initialwert frisch aus der neuen
-                # config liest. Vorher hatte ich nur bekannte Prefixe
-                # gefiltert (pv_s_, wb_, ev_, …) — das schloss die
-                # Sidebar-Widgets (Einspeiseverguetung, Standort, …)
-                # nicht ein. Folge: deren alte Streamlit-Werte ueberleben
-                # den Import und kollidieren mit dem neuen config-Wert,
-                # was zu falschen Anzeigen (z.B. doppelte Einspeisever-
-                # guetung) fuehren kann.
+                # Strategie: die importierte Config in eine Pending-
+                # Datei schreiben und einen vollstaendigen Browser-
+                # Reload ausloesen. Damit wird die Streamlit-Session
+                # komplett neu aufgebaut — Session-State, Widget-Cache
+                # und alle abgeleiteten Listen (pv_surfaces, wallboxes,
+                # ...) starten frisch. Beim naechsten Start wird die
+                # Pending-Datei geladen und geloescht.
                 #
-                # Was bleibt:
-                # - "config"                  -> gerade frisch gemerged
-                # - "_imported_config_id"     -> Marker setzen wir gleich
-                # Alle Nicht-Config-Keys abraeumen (abgeleiteter State
-                # wie `pv_surfaces`, transiente Flags, gecachte Solver-
-                # Ergebnisse). Den Config-Dict selbst und den Import-
-                # Marker behalten wir.
-                KEEP_KEYS = {"config", "_imported_config_id", "_widget_gen"}
-                for key in list(st.session_state.keys()):
-                    if key not in KEEP_KEYS:
-                        del st.session_state[key]
-
-                # Widget-Generation hochzaehlen: alle Eingabe-Widgets
-                # in der Sidebar bekommen damit neue Keys und werden
-                # von Streamlit als frische Widgets instanziiert. Ihr
-                # `value=...`-Default greift dann garantiert und liest
-                # aus dem soeben importierten Config — auch
-                # `enabled`-Checkboxen und PV-Slider, die ohne dieses
-                # Hochzaehlen aus dem Streamlit-internen Widget-Cache
-                # die Werte vor dem Import zurueckliefern wuerden.
-                st.session_state["_widget_gen"] = (
-                    st.session_state.get("_widget_gen", 0) + 1
-                )
-
+                # Frueher hatten wir nur `del st.session_state[key]`
+                # + `st.rerun()` + Widget-Key-Generation-Suffix
+                # versucht. Beides allein reichte nicht: Streamlits
+                # interner Widget-Cache lieferte gelegentlich trotzdem
+                # die Werte vor dem Import zurueck, sodass z.B. die
+                # PV-Ausrichtung erst nach Aus-/Einschalten der PV
+                # aktualisiert wurde. Ein voller Reload umgeht das
+                # Problem strukturell.
+                with _PENDING_IMPORT_PATH.open("w", encoding="utf-8") as f:
+                    yaml.safe_dump(
+                        base_config, f, allow_unicode=True, sort_keys=False,
+                    )
                 st.session_state["_imported_config_id"] = file_id
-                st.success("Konfiguration geladen!")
-                st.rerun()
+
+                st.success(
+                    "Konfiguration geladen — Dashboard wird neu geladen ..."
+                )
+                # `window.parent.location.reload()` aus einem Streamlit-
+                # Komponenten-iframe heraus laedt die uebergeordnete
+                # App-Seite neu (Streamlit-Komponenten sind same-origin,
+                # der Frame-Zugriff ist erlaubt). Anschliessend
+                # `st.stop()`, damit der laufende Run keine veralteten
+                # Widgets mehr rendert.
+                components.html(
+                    "<script>window.parent.location.reload();</script>",
+                    height=0,
+                )
+                st.stop()
             except Exception as e:
                 st.error(f"Fehler: {e}")
 
