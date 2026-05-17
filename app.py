@@ -101,6 +101,48 @@ with st.sidebar:
                     if key not in KEEP_KEYS:
                         del st.session_state[key]
 
+                # PV-Surfaces sind ein abgeleiteter Zwischenstate fuer
+                # die UI (Liste von Dachflaechen, jeweils mit eigenen
+                # Slidern fuer Azimut/Neigung/Leistung). Ohne Force-
+                # Initialisierung ist Streamlits Widget-Cache nach einem
+                # rerun gelegentlich hartnaeckig und ignoriert den
+                # `value=...`-Default; der Slider zeigt dann den vor
+                # dem Import gesetzten Wert. Konkret beobachtet bei der
+                # PV-Ausrichtung: erst Ausschalten + Wiedereinschalten
+                # der PV hat das Widget zwangs-remountet.
+                # Deshalb: pv_surfaces sofort aus der frischen Config
+                # rekonstruieren UND die einzelnen Widget-Keys explizit
+                # vorbelegen, damit der erste Render nach Import den
+                # neuen Wert garantiert anzeigt.
+                pv_cfg = base_config.get("pv", {})
+                existing_surfaces = pv_cfg.get("surfaces") or []
+                if existing_surfaces:
+                    new_surfaces = [
+                        s.copy() if isinstance(s, dict) else s
+                        for s in existing_surfaces
+                    ]
+                else:
+                    new_surfaces = [{
+                        "name": "Dachflaeche 1",
+                        "kwp": pv_cfg.get("peak_power_kwp", 12.0),
+                        "azimuth_deg": pv_cfg.get("azimuth_deg", 180),
+                        "tilt_deg": pv_cfg.get("tilt_deg", 30),
+                    }]
+                st.session_state.pv_surfaces = new_surfaces
+                for si, surf in enumerate(new_surfaces):
+                    st.session_state[f"pv_s_{si}_name"] = str(
+                        surf.get("name", f"Dachflaeche {si+1}")
+                    )
+                    st.session_state[f"pv_s_{si}_kwp"] = float(
+                        surf.get("kwp", 5.0)
+                    )
+                    st.session_state[f"pv_s_{si}_az"] = int(
+                        surf.get("azimuth_deg", 180)
+                    )
+                    st.session_state[f"pv_s_{si}_tilt"] = int(
+                        surf.get("tilt_deg", 30)
+                    )
+
                 st.session_state["_imported_config_id"] = file_id
                 st.success("Konfiguration geladen!")
                 st.rerun()
