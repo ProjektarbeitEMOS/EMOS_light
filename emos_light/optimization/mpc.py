@@ -110,6 +110,11 @@ class MPCController:
 
         total_solve_time = 0.0
         current_step = 0
+        # Planungsfenster fuer die Dashboard-Visualisierung.
+        # Pro Iteration: Start, Ende des Ausfuehrungsteils, Ende des Planungs-
+        # horizonts. Bei dynamischem Day-Ahead-Horizont schiebt sich das Ende
+        # zum Tagesende heute/morgen — die UI macht das so sichtbar.
+        planning_windows: list[dict] = []
 
         while current_step < total_steps:
             window_end = self._horizon_end_step(full_input, current_step)
@@ -117,6 +122,11 @@ class MPCController:
 
             window_input = self._slice_input(full_input, current_step, window_end)
             window_result = self.optimizer.optimize(window_input)
+            planning_windows.append({
+                "start_step": current_step,
+                "exec_end_step": exec_end,
+                "horizon_end_step": window_end,
+            })
 
             if not window_result.success:
                 return OptimizationResult(
@@ -177,6 +187,7 @@ class MPCController:
             sg_ready_state=sg_ready_all,
             wallbox_power_kw=wallbox_power_all,
             timestamps=full_input.timestamps,
+            planning_windows=planning_windows,
         )
 
         from emos_light.utils.kpi import calculate_kpis

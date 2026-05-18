@@ -87,3 +87,14 @@ class OptimizationResult:
     baseline_cost_eur: Optional[float] = None
     savings_eur: Optional[float] = None
     savings_pct: Optional[float] = None
+
+    # Planungsfenster fuer die Dashboard-Visualisierung:
+    # Pro MPC-Iteration (oder einmalig bei Day-Ahead/Baseline) drei Step-
+    # Indizes — Anfang des Fensters, Ende des Ausfuehrungsteils, Ende des
+    # gesamten Planungshorizonts. Damit kann das Dashboard zeigen, wie weit
+    # die Optimierung in die Zukunft schaut und welcher Teil tatsaechlich
+    # umgesetzt wird.
+    #   start_step      : Index, ab dem die Iteration plant (umgesetzt)
+    #   exec_end_step   : Index (exklusiv), bis zu dem umgesetzt wird
+    #   horizon_end_step: Index (exklusiv), bis zu dem geplant wird
+    planning_windows: list = field(default_factory=list)

@@ -423,6 +423,16 @@ class EMOSLightOptimizer:
         if result.battery_aging_cost_eur > 0:
             result.total_cost_eur -= result.battery_aging_cost_eur
 
+        # Day-Ahead-Optimizer plant einmalig ueber den gesamten Horizont —
+        # ein einziges Planungsfenster, das den ganzen Eingang abdeckt.
+        # Damit kann das Dashboard fuer alle Optimierungsmodi (MILP, MPC,
+        # Baseline) dieselbe Visualisierung verwenden.
+        result.planning_windows = [{
+            "start_step": 0,
+            "exec_end_step": num_steps,
+            "horizon_end_step": num_steps,
+        }]
+
         # KPIs
         from emos_light.utils.kpi import calculate_kpis
         result = calculate_kpis(result, inp)

@@ -480,6 +480,16 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         result.heat_loss_kw = heat_loss_all
         result.q_floor_to_room_kw = q_floor_to_room_all
 
+    # Baseline plant nicht in die Zukunft — der gesamte simulierte Bereich
+    # wird ohne Lookahead Schritt fuer Schritt abgefahren. Damit das
+    # Dashboard fuer alle Modi dasselbe Planungs-Layout zeichnen kann,
+    # geben wir ein einziges, deckungsgleiches Fenster zurueck.
+    result.planning_windows = [{
+        "start_step": 0,
+        "exec_end_step": num_steps,
+        "horizon_end_step": num_steps,
+    }]
+
     # KPIs anwenden (Eigenverbrauch, Autarkie etc.)
     from emos_light.utils.kpi import calculate_kpis
     result = calculate_kpis(result, inp)

@@ -1279,6 +1279,136 @@ with tab_optimize:
             else:
                 kpi_row3[3].metric("Gesch. Lebensdauer", "-")
 
+        # ---- Planungshorizont ----
+        # Visualisiert, wie weit die Optimierung in die Zukunft schaut und
+        # welcher Teil tatsaechlich umgesetzt wird:
+        #   - Day-Ahead/Baseline: ein einziges Fenster ueber den gesamten
+        #     Eingangshorizont (z.B. 24 h oder 48 h).
+        #   - MPC: pro Iteration ein Balken; dunkler Teil = Ausfuehrung,
+        #     hellerer Teil = Planungs-Lookahead. Der dynamische Day-Ahead-
+        #     Horizont (vor 13 Uhr Tagesende heute, ab 13 Uhr Tagesende
+        #     morgen) ist hier direkt ablesbar.
+        if result.planning_windows:
+            st.markdown("### Planungshorizont")
+            windows = result.planning_windows
+            ts_list = list(ts)
+            n_steps = len(ts_list)
+            step_min_horizon = (
+                inp.step_minutes if inp is not None
+                else data.get("step_minutes", 15)
+            )
+
+            fig_horizon = go.Figure()
+
+            def _ts_at(idx: int):
+                """Step-Index in datetime — auch fuer den exklusiven Endindex
+                am Datenende (per Schritt-Offset extrapoliert)."""
+                if idx < n_steps:
+                    return ts_list[idx]
+                # Endindex == n_steps: einen Schritt ueber das letzte ts hinaus
+                return ts_list[-1] + datetime.timedelta(
+                    minutes=step_min_horizon
+                )
+
+            for i, w in enumerate(windows):
+                start_ts = _ts_at(w["start_step"])
+                exec_end_ts = _ts_at(w["exec_end_step"])
+                horizon_end_ts = _ts_at(w["horizon_end_step"])
+                horizon_h = (
+                    horizon_end_ts - start_ts
+                ).total_seconds() / 3600.0
+
+                # Ausfuehrungs-Anteil (dunkler Balken)
+                fig_horizon.add_trace(go.Scatter(
+                    x=[start_ts, exec_end_ts], y=[i, i],
+                    mode="lines",
+                    line=dict(color="royalblue", width=14),
+                    name="Ausfuehrungsfenster",
+                    showlegend=(i == 0),
+                    hovertemplate=(
+                        f"Iter {i + 1}<br>"
+                        "Ausfuehrung: %{x|%d.%m %H:%M}<extra></extra>"
+                    ),
+                ))
+                # Planungs-Lookahead (heller Balken, falls vorhanden)
+                if w["horizon_end_step"] > w["exec_end_step"]:
+                    fig_horizon.add_trace(go.Scatter(
+                        x=[exec_end_ts, horizon_end_ts], y=[i, i],
+                        mode="lines",
+                        line=dict(color="lightblue", width=14),
+                        name="Planungs-Lookahead",
+                        showlegend=(i == 0),
+                        hovertemplate=(
+                            f"Iter {i + 1}<br>"
+                            f"Horizont: {horizon_h:.1f} h<br>"
+                            "Ende: %{x|%d.%m %H:%M}<extra></extra>"
+                        ),
+                    ))
+
+            # 13:00-Marker (Day-Ahead-Publikation) — pro Tag im Zeitraum.
+            tmin_plot, tmax_plot = ts_list[0], _ts_at(
+                max(w["horizon_end_step"] for w in windows)
+            )
+            day = tmin_plot.date()
+            while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
+                marker = datetime.datetime.combine(day, datetime.time(13, 0))
+                if tmin_plot <= marker <= tmax_plot:
+                    fig_horizon.add_vline(
+                        x=marker, line=dict(color="orange", dash="dash"),
+                        annotation_text="13:00",
+                        annotation_position="top",
+                        annotation_font=dict(color="orange", size=10),
+                    )
+                day += datetime.timedelta(days=1)
+
+            # Mitternacht-Marker, zur visuellen Tagesgrenze
+            day = tmin_plot.date() + datetime.timedelta(days=1)
+            while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
+                midnight = datetime.datetime.combine(day, datetime.time(0))
+                fig_horizon.add_vline(
+                    x=midnight, line=dict(color="gray", dash="dot"),
+                )
+                day += datetime.timedelta(days=1)
+
+            n_win = len(windows)
+            fig_horizon.update_layout(
+                height=max(160, 80 + 22 * n_win),
+                yaxis=dict(
+                    title="Iteration",
+                    tickmode="array",
+                    tickvals=list(range(n_win)),
+                    ticktext=[f"#{i + 1}" for i in range(n_win)],
+                    autorange="reversed",
+                ),
+                xaxis=dict(title=""),
+                margin=dict(t=30, b=30),
+                hovermode="closest",
+                showlegend=(n_win <= 1 or opt_mode == "MPC (rollierend)"),
+            )
+            st.plotly_chart(fig_horizon, use_container_width=True)
+
+            # Caption mit Kennzahlen
+            max_horizon_h = max(
+                (
+                    _ts_at(w["horizon_end_step"]) - _ts_at(w["start_step"])
+                ).total_seconds() / 3600.0
+                for w in windows
+            )
+            mode_hint = (
+                "Day-Ahead-MILP: ein Fenster ueber den gesamten Horizont."
+                if opt_mode == "Day-Ahead (MILP)"
+                else (
+                    "Baseline: kein Lookahead — die Regel reagiert "
+                    "schrittweise auf den Zustand."
+                    if opt_mode == "Baseline (regelbasiert)"
+                    else f"MPC: {n_win} Iterationen, "
+                    f"max. Lookahead {max_horizon_h:.1f} h. "
+                    "13:00 = Day-Ahead-Publikation (EPEX SPOT), ab dann "
+                    "reicht der MPC-Horizont bis Tagesende **morgen**."
+                )
+            )
+            st.caption(mode_hint)
+
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")
         # Drei Subplots:
