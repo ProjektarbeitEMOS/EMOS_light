@@ -1672,6 +1672,17 @@ with tab_optimize:
                 arrival = int(wb_cfg.get("arrival_hour", 17))
                 departure = int(wb_cfg.get("departure_hour", 7))
 
+                # Anwesenheitsmaske (gleiche Konvention wie Wallbox._is_ev_present)
+                presence = np.array([
+                    (arrival <= ((t // steps_per_hour) % 24) < departure)
+                    if arrival <= departure
+                    else (
+                        ((t // steps_per_hour) % 24) >= arrival
+                        or ((t // steps_per_hour) % 24) < departure
+                    )
+                    for t in range(n_steps)
+                ])
+
                 if wb_result_name in soc_trajectories:
                     # Explizite Trajektorie aus dem Optimizer/Baseline —
                     # zeigt Lade- UND Verlustphasen (5 %/h waehrend
@@ -1684,28 +1695,56 @@ with tab_optimize:
                     soc_kwh = np.full(n_steps, np.nan)
                     e = soc0 * cap
                     for t in range(n_steps):
-                        hour = (t // steps_per_hour) % 24
-                        present = (
-                            arrival <= hour < departure
-                            if arrival <= departure
-                            else (hour >= arrival or hour < departure)
-                        )
-                        if present:
+                        if presence[t]:
                             e = min(cap, e + wb_power[t] * dt_h_plot * eff)
                             soc_kwh[t] = e
                 soc_pct = (soc_kwh / cap) * 100.0 if cap > 0 else soc_kwh * 0
                 color = ev_palette[wi % len(ev_palette)]
+
+                # Linien-Split: durchgezogen wenn EV anwesend, gestrichelt
+                # wenn unterwegs. Transition-Punkte landen in BEIDEN
+                # Arrays, sodass die Linien nahtlos ineinandergreifen
+                # (sonst klafft eine Luecke zwischen letztem present-Punkt
+                # und erstem absent-Punkt).
+                solid_y = np.where(presence, soc_pct, np.nan)
+                dashed_y = np.where(~presence, soc_pct, np.nan)
+                # boundary stitching: an jeder Mask-Aenderung beide Arrays
+                # an genau diesem Index sichtbar machen
+                for t in range(1, n_steps):
+                    if presence[t] != presence[t - 1]:
+                        solid_y[t] = soc_pct[t]
+                        dashed_y[t] = soc_pct[t]
+
+                hovertpl = (
+                    "%{x|%H:%M}<br>"
+                    "SOC: %{y:.1f} %<br>"
+                    "= %{customdata:.2f} kWh<extra></extra>"
+                )
+
+                # Anwesend (solid)
                 fig_el.add_trace(
                     go.Scatter(
-                        x=ts, y=soc_pct,
+                        x=ts, y=solid_y,
                         name=f"EV SOC ({wb_name})",
                         line=dict(color=color),
                         connectgaps=False,
-                        hovertemplate=(
-                            "%{x|%H:%M}<br>"
-                            "SOC: %{y:.1f} %<br>"
-                            "= %{customdata:.2f} kWh<extra></extra>"
-                        ),
+                        hovertemplate=hovertpl,
+                        customdata=soc_kwh,
+                    ),
+                    row=3, col=1, secondary_y=False,
+                )
+                # Unterwegs (dashed) — gleiche Farbe, gleiche Legend-Group
+                # damit der User per Legend-Klick beide gemeinsam ein-/
+                # ausblenden kann; Trace selbst nicht in der Legende.
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=dashed_y,
+                        name=f"EV SOC ({wb_name}) — Fahrt",
+                        line=dict(color=color, dash="dash"),
+                        legendgroup=f"ev_soc_{wb_name}",
+                        showlegend=False,
+                        connectgaps=False,
+                        hovertemplate=hovertpl,
                         customdata=soc_kwh,
                     ),
                     row=3, col=1, secondary_y=False,
