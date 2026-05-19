@@ -260,11 +260,11 @@ def build_overview():
         ["Komponente", "Variablentypen", "Charakter"],
         ["Netz", "kontinuierlich + binaer", "Bezug/Einspeisung getrennt"],
         ["Batterie", "kontinuierlich + 2 binaer", "Lade-/Entladeentkopplung"],
-        ["Waermepumpe", "kontinuierlich + 1-3 binaer", "EIN/AUS, SG-Ready 1/3"],
+        ["Waermepumpe", "kontinuierlich + 6 binaer", "SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, max 8 Starts/Tag"],
         ["Estrich (FBH)", "kontinuierlich", "Energie + Q_in + Q Estrich->Raum"],
         ["Gebäude (Raum)", "kontinuierlich", "T_innen-Zustandsvar. + Komfortband-Slacks (seit Mai 2026)"],
-        ["Pufferspeicher (WW)", "kontinuierlich", "Zwei-Zonen-Verlustmodell"],
-        ["Wallbox", "kontinuierlich + 1 binaer", "EV-Anwesenheit, Min-Leistung"],
+        ["Pufferspeicher (WW)", "kontinuierlich + 1 binaer", "Zwei-Zonen-Verlustmodell + Legionellen-Tag"],
+        ["Wallbox", "kontinuierlich + 1 binaer", "EV-SOC-Zustandsvar., Ziel-SOC zur Abfahrt, 5%/h Verbrauch waehrend Abwesenheit"],
     ]
     t = Table(data, colWidths=[4.0 * cm, 5.5 * cm, 6.0 * cm])
     t.setStyle(TableStyle([
@@ -507,15 +507,24 @@ def build_heatpump():
     out.append(H2("5.1 Variablen"))
     out.append(eq_image(
         r"P^{\text{HP}}_t \in [0, \bar{P}^{\text{HP}}], \quad"
-        r"y^{\text{HP}}_t \in \{0,1\}"
-    ))
-    out.append(P("Bei aktivierter SG-Ready-Schnittstelle zusaetzlich:"))
-    out.append(eq_image(
-        r"y^{\text{SG1}}_t,\ y^{\text{SG3}}_t \in \{0,1\}"
+        r"y^{\text{HP}}_t \in \{0,1\}, \quad"
+        r"y^{\text{HP,start}}_t \in \{0,1\}"
     ))
     out.append(P(
-        "Zustand 1 = Lastabwurf (EVU-Sperre), Zustand 2 = Normal, "
-        "Zustand 3 = Verstaerkter Betrieb (Soll-Erhoehung WW-Speicher)."
+        "SG-Ready ist seit Mai 2026 der <b>einzige</b> Steuerkanal der WP "
+        "(BWP v1.1, vier Zustaende). Pro Schritt ist genau ein Zustand "
+        "aktiv, y<sup>HP</sup> ist davon abgeleitet:"
+    ))
+    out.append(eq_image(
+        r"y^{\text{SG1}}_t,\ y^{\text{SG2}}_t,\ y^{\text{SG3}}_t,\ y^{\text{SG4}}_t \in \{0,1\}"
+    ))
+    out.append(P(
+        "Zustand 1 = Zwangsabschaltung (EVU-Sperre, WP zwingend AUS), "
+        "Zustand 2 = Normalbetrieb, "
+        "Zustand 3 = Einschaltempfehlung (WW-Sollwert um sg3-Offset angehoben), "
+        "Zustand 4 = Zwangseinschaltung (WW + Estrich-Pufferspeicher angehoben). "
+        "Die Einschalt-Variable y<sup>HP,start</sup> markiert OFF&#8594;ON-Vorgaenge "
+        "und wird vom Tageslimit (siehe 5.5) beschraenkt."
     ))
 
     out.append(H2("5.2 Modulationsbereich"))
@@ -594,7 +603,7 @@ def build_heatpump():
         "WW-Speichers (COP ≈ 2,8) auf waermere Stunden zu legen."
     ))
 
-    out.append(H2("5.5 Mindestlauf- und Mindestpausenzeiten"))
+    out.append(H2("5.5 Mindestlauf- und Mindestpausenzeiten und Cycling-Limit"))
     out.append(P(
         "Hardwareschutz: ein Verdichter darf nicht beliebig oft starten. "
         "Mit n<sub>run</sub> = ⌈t<sub>min,run</sub>/Δt<sub>min</sub>⌉ "
@@ -615,29 +624,74 @@ def build_heatpump():
         r"y^{\text{HP}}_{t-1} - y^{\text{HP}}_t \leq 1 - y^{\text{HP}}_{t+k}"
     ))
 
-    out.append(H2("5.6 SG-Ready (BWP v1.1)"))
     out.append(P(
-        "Drei Constraints regeln die SG-Ready-Logik:"
-    ))
-    out.append(P(
-        "<b>(a) Exklusivitaet:</b> SG1 und SG3 schliessen sich aus."
-    ))
-    out.append(eq_image(r"y^{\text{SG1}}_t + y^{\text{SG3}}_t \leq 1"))
-    out.append(P(
-        "<b>(b) Leistungsbegrenzung in SG1</b> (Lastabwurf — Bezug 'verbieten' "
-        "oder hart deckeln). Mit p<sup>SG1</sup> dem konfigurierten Limit (z. B. 0):"
+        "<b>Tageslimit der Einschaltvorgaenge</b> (Mai 2026, "
+        "<font face='Courier'>max_starts_per_day</font>, Default 8): "
+        "Jedes OFF→ON belastet den Verdichter. Umschalten zwischen "
+        "Heizkreis und WW <i>zaehlt nicht</i>, weil y<sup>HP</sup> dabei "
+        "an bleibt. Linking-Constraint + Tagessumme:"
     ))
     out.append(eq_image(
-        r"P^{\text{HP}}_t \leq \bar{P}^{\text{HP}} \cdot (1 - y^{\text{SG1}}_t) "
-        r"+ p^{\text{SG1}} \cdot y^{\text{SG1}}_t"
+        r"y^{\text{HP,start}}_t \geq y^{\text{HP}}_t - y^{\text{HP}}_{t-1}, \quad"
+        r"\sum_{t \in d} y^{\text{HP,start}}_t \leq N^{\text{max,start}}"
     ))
     out.append(P(
-        "<b>(c) Verstaerkter Betrieb (SG3) erfordert WP an:</b>"
+        "Tagesgruppierung kommt aus den Zeitstempeln; bei t=0 wird "
+        "y<sup>HP</sup><sub>−1</sub> = 0 angenommen (im MPC-Folgewindow "
+        "ueberzaehlt das maximal um +1 pro Window-Wechsel). "
+        "<font face='Courier'>max_starts_per_day = 0</font> deaktiviert die "
+        "Restriktion."
     ))
-    out.append(eq_image(r"y^{\text{SG3}}_t \leq y^{\text{HP}}_t"))
+
+    out.append(H2("5.6 SG-Ready (BWP v1.1) als einziger Steuerkanal"))
     out.append(P(
-        "Zusaetzlich gibt es Mindesthaltezeiten fuer SG1 und SG3 nach "
-        "demselben Schema wie die Mindestlaufzeit der WP."
+        "Seit Mai 2026 ist SG-Ready nicht mehr ein optionaler Boost-Hebel "
+        "<i>neben</i> einem freien y<sup>HP</sup>-Entscheid des Solvers, "
+        "sondern die <b>einzige</b> Schaltlogik der WP. Zwei kompakte "
+        "Constraints decken alle vier Zustaende ab:"
+    ))
+    out.append(P(
+        "<b>(a) Genau ein Zustand pro Schritt:</b>"
+    ))
+    out.append(eq_image(
+        r"y^{\text{SG1}}_t + y^{\text{SG2}}_t + y^{\text{SG3}}_t + y^{\text{SG4}}_t = 1"
+    ))
+    out.append(P(
+        "<b>(b) WP nur per SG1 abschaltbar — y<sup>HP</sup> direkt aus SG1 abgeleitet:</b>"
+    ))
+    out.append(eq_image(
+        r"y^{\text{HP}}_t + y^{\text{SG1}}_t = 1"
+    ))
+    out.append(P(
+        "Daraus folgt automatisch: SG1=1 erzwingt y<sup>HP</sup>=0 "
+        "(Zwangsabschaltung), und SG2/SG3/SG4=1 erzwingen y<sup>HP</sup>=1. "
+        "Die alten Einzelconstraints (SG-Exklusivitaet, SG1-Leistungslimit, "
+        "SG3-needs-on) sind in diesem Schema implizit enthalten und entfallen."
+    ))
+    out.append(P(
+        "<b>Speicherwirkung der Zustaende 3 und 4:</b>"
+    ))
+    out.append(eq_image(
+        r"E^{\text{WW,max}}_t = C^{\text{WW}} \cdot (T^{\text{WW,max}} "
+        r"+ \Delta T^{\text{SG3}} \cdot y^{\text{SG3}}_t + \Delta T^{\text{SG4}} \cdot y^{\text{SG4}}_t)"
+    ))
+    out.append(eq_image(
+        r"E^{\text{Floor,max}}_t = C^{\text{Floor}} \cdot (T^{\text{Floor,max}} "
+        r"+ \Delta T^{\text{SG4}} \cdot y^{\text{SG4}}_t)"
+    ))
+    out.append(P(
+        "SG3 (Einschaltempfehlung) hebt nur den WW-Sollwert "
+        "(<font face='Courier'>sg_temp_raise_state3_c</font>, Default 5 K). "
+        "SG4 (Zwangseinschaltung) hebt zusaetzlich auch die Estrich-Komfort-"
+        "Obergrenze "
+        "(<font face='Courier'>sg_temp_raise_state4_c</font>, Default 10 K). "
+        "Damit kann der Solver in Niedrigpreisstunden gezielt 'mehr "
+        "speichern' — physikalisch genau das, was die SG-Ready-Norm "
+        "BWP v1.1 vom EVU vorsieht."
+    ))
+    out.append(P(
+        "Zusaetzlich gilt eine Mindesthaltezeit fuer SG3 und SG4 nach demselben "
+        "Schema wie die Mindestlaufzeit der WP."
     ))
     out.append(PageBreak())
     return out
@@ -817,21 +871,26 @@ def build_thermal_storages():
         r"\ \text{in Komfortperioden, sonst}\ E^{\text{WW}}(T^{\min})"
     ))
 
-    out.append(H2("6.6 SG-Ready dynamische Obergrenze"))
+    out.append(H2("6.6 SG-Ready dynamische Obergrenzen (Zustaende 3 und 4)"))
     out.append(P(
-        "Bei aktiviertem SG-Ready-Zustand 3 darf der WW-Speicher ueber den "
-        "regulaeren Maximalwert hinaus erwaermt werden. Mit "
-        "ΔT<sup>SG3</sup> der konfigurierten Soll-Erhoehung:"
+        "Bei SG-Ready-Zustand 3 (Einschaltempfehlung) wird die WW-Obergrenze "
+        "angehoben; bei Zustand 4 (Zwangseinschaltung) zusaetzlich auch die "
+        "Estrich-Pufferspeicher-Obergrenze (BWP v1.1, Mai 2026):"
     ))
     out.append(eq_image(
-        r"\Delta E^{\text{SG3}} = \frac{V \cdot c_{p,W} \cdot \Delta T^{\text{SG3}}}{1000}"
+        r"\Delta E^{\text{SG3}} = \frac{V \cdot c_{p,W} \cdot \Delta T^{\text{SG3}}}{1000}, \quad"
+        r"\Delta E^{\text{SG4}}_{\text{WW}} = \frac{V \cdot c_{p,W} \cdot \Delta T^{\text{SG4}}}{1000}"
     ))
     out.append(eq_image(
-        r"E^{\text{WW}}_t \leq E^{\text{WW,kap}} + \Delta E^{\text{SG3}} \cdot y^{\text{SG3}}_t"
+        r"E^{\text{WW}}_t \leq E^{\text{WW,kap}} + \Delta E^{\text{SG3}} \cdot y^{\text{SG3}}_t + \Delta E^{\text{SG4}}_{\text{WW}} \cdot y^{\text{SG4}}_t"
+    ))
+    out.append(eq_image(
+        r"E^{\text{Floor}}_t \leq E^{\text{Floor,kap}} + C^{\text{Floor}} \cdot \Delta T^{\text{SG4}} \cdot y^{\text{SG4}}_t"
     ))
     out.append(P(
-        "Damit kann der Optimierer bei billigem Strom 'Energie-Vorrat' im "
-        "WW-Speicher anlegen, der ueber die Standard-Auslegung hinausgeht."
+        "Damit kann der Optimierer bei billigem Strom oder PV-Ueberschuss "
+        "gezielt 'Energie-Vorrat' anlegen — physikalisch genau das Verhalten, "
+        "das die SG-Ready-Norm vom EVU einfordert."
     ))
     out.append(PageBreak())
     return out
@@ -841,15 +900,22 @@ def build_wallbox():
     out = []
     out.append(H1("7. Wallbox und E-Fahrzeug"))
     out.append(P(
-        "Pro Wallbox w wird modelliert: variable Ladeleistung mit Mindest- und "
-        "Maximalwert, EV-Anwesenheitsfenster, geforderte Mindestlademenge bis "
-        "zur Abfahrt."
+        "Pro Wallbox w wird modelliert: variable Ladeleistung, EV-SOC als "
+        "Zustandsvariable, Anwesenheitsfenster, Ziel-SOC zur Abfahrt und "
+        "Fahrverbrauch waehrend Abwesenheit (Mai 2026)."
     ))
 
     out.append(H2("7.1 Variablen"))
     out.append(eq_image(
         r"P^{\text{WB},w}_t \in [0, \bar{P}^{\text{WB},w}], \quad"
-        r"y^{\text{WB},w}_t \in \{0,1\}"
+        r"y^{\text{WB},w}_t \in \{0,1\}, \quad"
+        r"\text{SOC}^{\text{EV},w}_t \in [0,\ \text{SOC}^{\max} \cdot E^{\text{EV,kap}}]"
+    ))
+    out.append(P(
+        "Die explizite SOC-Zustandsvariable ist neu seit Mai 2026 und loest "
+        "die alte 'min_energy ueber Horizont'-Logik ab — damit kann das "
+        "Ziel-SOC-Constraint exakt zur Abfahrtszeit greifen statt nur "
+        "global im Mittel."
     ))
 
     out.append(H2("7.2 Modulationsbereich der Wallbox"))
@@ -874,19 +940,31 @@ def build_wallbox():
         r"\mathcal{T}^{\text{anwesend},w}"
     ))
 
-    out.append(H2("7.4 Mindestlademenge bis Abfahrt"))
+    out.append(H2("7.4 SOC-Bilanz mit Fahrverbrauch"))
     out.append(P(
-        "Damit das Fahrzeug die geforderte Reichweite erreicht, gilt eine "
-        "globale Energiemengenbedingung. Mit ΔSOC = SOC<sub>ziel</sub> − "
-        "SOC<sub>akt</sub> und Ladewirkungsgrad η<sub>WB</sub>:"
+        "Anwesend wird mit Wirkungsgrad geladen, abwesend faellt der SOC "
+        "um den konstanten Fahrverbrauch (Default 5%/h)."
     ))
     out.append(eq_image(
-        r"E^{\text{WB,bedarf},w} = \frac{\Delta\text{SOC} \cdot E^{\text{EV,kap}}}"
-        r"{\eta_{\text{WB}}}"
+        r"\text{SOC}^{\text{EV},w}_{t+1} = \text{SOC}^{\text{EV},w}_t + "
+        r"\eta^{\text{WB}} \cdot P^{\text{WB},w}_t \cdot \Delta t \cdot "
+        r"\mathbb{1}_{t \in \mathcal{T}^{\text{anwesend}}} - "
+        r"\ell^{\text{drive}} \cdot \mathbb{1}_{t \notin \mathcal{T}^{\text{anwesend}}}"
+    ))
+    out.append(P(
+        "mit ℓ<sup>drive</sup> = "
+        r"<font face='Courier'>driving_loss_pct_per_hour</font>"
+        " / 100 · E<sup>EV,kap</sup> · Δt. Bei 60 kWh, 5%/h und 15-min-"
+        "Schritt sind das 0,75 kWh pro Schritt."
+    ))
+
+    out.append(H2("7.5 Ziel-SOC zur Abfahrt"))
+    out.append(P(
+        "Statt einer globalen Mindestlademenge wird der Ziel-SOC exakt zur "
+        "Abfahrtszeit erzwungen (jede Praesenz→Absenz-Kante):"
     ))
     out.append(eq_image(
-        r"\sum_{t \in \mathcal{T}} P^{\text{WB},w}_t \cdot \Delta t "
-        r"\geq E^{\text{WB,bedarf},w}"
+        r"\text{SOC}^{\text{EV},w}_{t_{\text{Abfahrt}}} \geq \text{SOC}^{\text{ziel}} \cdot E^{\text{EV,kap}}"
     ))
     out.append(P(
         "Der Ziel-SOC wiederum ergibt sich im Dashboard direkt aus der "
@@ -1025,6 +1103,17 @@ def build_solving():
         "Hard-Cap durch <font face='Courier'>optimization_horizon_hours</font> "
         "(Default 48 h). Damit nutzt der MPC stets so viel Preis-Information "
         "wie verfügbar, ohne über die Datengrenze hinaus zu schauen."
+    ))
+    out.append(P(
+        "<b>Dynamische Horizont-Anpassung (Mai 2026):</b> Bei aktivierten "
+        "Echtdaten prueft "
+        "<font face='Courier'>is_day_ahead_published()</font>, ob die EPEX-"
+        "Preise fuer den Folgetag schon vorliegen. Falls nicht, schrumpft "
+        "<font face='Courier'>load_input_data</font> den Horizont automatisch "
+        "von 48 h auf 24 h — es wird nie ueber einen Zeitraum optimiert, "
+        "fuer den keine echten Marktpreise vorliegen. Das Dashboard "
+        "visualisiert das im Panel <i>Planungshorizont</i> (Gantt-Balken "
+        "pro MPC-Iteration mit 13:00-Markern als Day-Ahead-Publikationsgrenze)."
     ))
     out.append(PageBreak())
     return out
