@@ -198,6 +198,21 @@ with st.sidebar:
         type=["yaml", "yml"],
         key=_wkey("config_uploader"),
     )
+    # Persistenter UX-Anker: nach dem Import wird der File-Uploader
+    # absichtlich remountet (neuer Widget-Key) und ist daher leer.
+    # Damit der User trotzdem sieht, welche YAML aktuell aktiv ist,
+    # zeigen wir den Dateinamen als kleine Caption unter dem Widget.
+    _imported_name = st.session_state.get("_imported_config_name")
+    if _imported_name:
+        col_info, col_clear = st.columns([4, 1])
+        col_info.caption(f"📄 Importiert: **{_imported_name}**")
+        if col_clear.button(
+            "✕", key=_wkey("clear_import_marker"),
+            help="Anzeige loeschen (aendert die geladene Konfiguration nicht)",
+        ):
+            del st.session_state["_imported_config_name"]
+            st.session_state.pop("_imported_config_id", None)
+            st.rerun()
     if config_file is not None:
         # Datei-ID: stabil ueber rerun, eindeutig pro Upload. Damit
         # erkennen wir, dass derselbe Upload nach einem rerun schon
@@ -234,8 +249,15 @@ with st.sidebar:
                     )
                 # Alle Non-Config-Keys abraeumen (abgeleiteter State
                 # wie pv_surfaces, transiente Flags, gecachte Solver-
-                # Ergebnisse).
-                KEEP_KEYS = {"config", "_imported_config_id", "_widget_gen"}
+                # Ergebnisse). ``_imported_config_name`` ist eine reine
+                # Anzeige-Variable und ueberlebt die Cleanup-Runde, damit
+                # die UI weiter sehen kann, welche Datei aktiv ist
+                # (der File-Uploader selbst wird ja absichtlich
+                # remountet und ist nach dem Import leer).
+                KEEP_KEYS = {
+                    "config", "_imported_config_id",
+                    "_imported_config_name", "_widget_gen",
+                }
                 for key in list(st.session_state.keys()):
                     if key not in KEEP_KEYS:
                         del st.session_state[key]
@@ -245,6 +267,7 @@ with st.sidebar:
                     st.session_state.get("_widget_gen", 0) + 1
                 )
                 st.session_state["_imported_config_id"] = file_id
+                st.session_state["_imported_config_name"] = config_file.name
                 # Skip-Render-Cycle starten.
                 st.session_state["_remount_step"] = 1
                 st.success("Konfiguration geladen — wende an ...")
