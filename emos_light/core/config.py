@@ -197,6 +197,12 @@ WALLBOX_DEFAULT = {
     "departure_hour": 7,
     "arrival_hour": 18,
     "charging_efficiency": 0.92,
+    # SOC-Verlust pro Stunde Abwesenheit (Pendelverbrauch), in Prozent
+    # der EV-Kapazitaet. Bei Default 5 %/h und 60 kWh ergibt das 3 kWh/h,
+    # was einem moderaten Verbrauch von ~15 kWh/100km bei 60 km/h
+    # entspricht — eine pragmatische Naeherung fuer den taeglichen
+    # Pendeleinsatz.
+    "driving_loss_pct_per_hour": 5.0,
 }
 
 EV_DEFAULT = {

@@ -238,6 +238,11 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     # Wallbox auf zu laden.
     ev_soc_kwh: dict = {}   # safe_name -> aktueller SOC (kWh, DC-seitig)
     ev_max_kwh: dict = {}   # safe_name -> max_soc * capacity (Obergrenze)
+    # SOC-Trajektorie pro Wallbox aufzeichnen — wird ans Result gehaengt,
+    # damit das Dashboard genau wie beim MILP-Pfad den realen Verlauf
+    # (Laden waehrend Anwesenheit, Verlust waehrend Abwesenheit) zeigen
+    # kann.
+    ev_soc_trajectory: dict = {}
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
             name = _safe_wb_name(
@@ -249,6 +254,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             max_soc = float(wb_cfg.get("max_soc", 1.0))
             ev_soc_kwh[name] = current * cap
             ev_max_kwh[name] = max_soc * cap
+            ev_soc_trajectory[name] = np.zeros(num_steps)
 
     total_cost_ct = 0.0
     feed_in_tariff = inp.feed_in_tariff_ct_kwh
@@ -379,7 +385,9 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         q_ww_all[t] = q_to_ww
 
         # Wallboxen — sofort laden, wenn EV anwesend UND der Akku noch
-        # nicht voll ist (kein Preisfilter in der Baseline).
+        # nicht voll ist (kein Preisfilter in der Baseline). Waehrend
+        # Abwesenheit faellt der SOC linear mit ``driving_loss_pct_per_hour``
+        # (Default 5 % / h), gleiches Modell wie der MILP-Optimizer.
         wb_total = 0.0
         for wb_cfg in wallboxes_cfg:
             if not wb_cfg.get("enabled", False):
@@ -397,6 +405,13 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             )
             eff = float(wb_cfg.get("charging_efficiency", 0.92))
             max_kw = float(wb_cfg.get("max_power_kw", 0.0))
+            cap_kwh = float(wb_cfg.get("ev_battery_capacity_kwh", 60.0))
+            loss_pct_per_h = float(
+                wb_cfg.get("driving_loss_pct_per_hour", 5.0)
+            )
+
+            # Trajektorie: SOC am Anfang des Schritts (vor dem Update)
+            ev_soc_trajectory[name][t] = ev_soc_kwh[name]
 
             wb_power = 0.0
             if ev_present:
@@ -410,6 +425,12 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                     wb_power = min(max_kw, max_ac_kw)
                     # SOC nachfuehren (DC-seitig)
                     ev_soc_kwh[name] += wb_power * dt_h * eff
+            else:
+                # Auto faehrt: SOC sinkt um loss_pct/h * Kapazitaet
+                # (auf 0 geclampt, falls die Strecke laenger ist als
+                # die Reichweite).
+                loss_kwh = loss_pct_per_h / 100.0 * cap_kwh * dt_h
+                ev_soc_kwh[name] = max(0.0, ev_soc_kwh[name] - loss_kwh)
             wallbox_power_all[name][t] = wb_power
             wb_total += wb_power
 
@@ -503,6 +524,9 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     # vergleichen kann.
     result.hp_starts_per_day = hp_starts_per_day
     result.hp_starts_count = int(sum(hp_starts_per_day.values()))
+    # EV-SOC-Trajektorie pro Wallbox (analog zum MILP-Pfad). Macht den
+    # Verlust waehrend Abwesenheit (5 %/h Default) im Dashboard sichtbar.
+    result.ev_soc_kwh = ev_soc_trajectory
 
     # KPIs anwenden (Eigenverbrauch, Autarkie etc.)
     from emos_light.utils.kpi import calculate_kpis

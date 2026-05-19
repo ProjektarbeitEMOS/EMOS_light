@@ -45,6 +45,10 @@ class OptimizationResult:
     hp_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_on: np.ndarray = field(default_factory=lambda: np.array([]))
     wallbox_power_kw: dict = field(default_factory=dict)
+    # EV-SOC-Trajektorie pro Wallbox in kWh. Wird vom MILP-Optimizer als
+    # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-
+    # heit beruecksichtigt) und im Dashboard direkt geplottet.
+    ev_soc_kwh: dict = field(default_factory=dict)
     timestamps: list = field(default_factory=list)
 
     # Thermische Fahrplaene — Estrich (Fussbodenheizung)

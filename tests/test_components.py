@@ -293,21 +293,30 @@ def test_wallbox_min_range_disabled():
     assert wb.min_range_enabled is False
 
 
-def test_wallbox_always_has_max_energy_cap():
-    """Egal welcher Modus: das Max-Energy-Constraint (bis max_soc) muss existieren."""
+def test_wallbox_always_has_soc_variable_with_bounds():
+    """SOC-Variable mit Akku-Obergrenze (max_soc * Kapazitaet) ersetzt
+    seit Mai 2026 das alte ``_max_energy``-Constraint. Untere Grenze
+    ist 0 (Akku kann nicht negativ werden), obere haengt am ``upBound``
+    der LpVariable und ergibt sich aus max_soc."""
     wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "min_range_enabled": True})
     model = pulp.LpProblem("test")
     vars_ = wb.get_optimization_variables(num_steps=96, model=model)
     wb.add_constraints(model, vars_, step_minutes=15)
-    names = list(model.constraints.keys())
-    assert any(n.endswith("_max_energy") for n in names), (
-        "Es muss IMMER ein _max_energy-Constraint geben (Akku-Obergrenze)"
-    )
+    soc_vars = vars_["wb_wb1_soc"]
+    assert len(soc_vars) == 96
+    for v in soc_vars:
+        assert v.lowBound == 0.0
+        # max_soc ist nicht in WALLBOX_DEFAULT (Default 1.0 in der
+        # Wallbox-__init__); upBound = 1.0 * 60 kWh = 60.
+        assert v.upBound == pytest.approx(
+            WALLBOX_DEFAULT["ev_battery_capacity_kwh"]
+        )
 
 
-def test_wallbox_constraints_use_min_energy_when_enabled():
-    """Mit min_range_enabled=True existiert ein Min-Energy-Constraint
-    UND das Max-Energy-Constraint."""
+def test_wallbox_constraints_use_target_at_departure_when_enabled():
+    """Mit ``min_range_enabled=True`` erzeugt das Modell pro Abfahrt
+    ein ``_target_at_departure_<step>``-Constraint — der Solver muss
+    den Ziel-SOC bis dahin erreicht haben (statt erst am Horizont-Ende)."""
     wb = Wallbox("wb1", {
         **WALLBOX_DEFAULT,
         "min_range_enabled": True,
@@ -321,34 +330,35 @@ def test_wallbox_constraints_use_min_energy_when_enabled():
     vars_ = wb.get_optimization_variables(num_steps=96, model=model)
     wb.add_constraints(model, vars_, step_minutes=15)
     names = list(model.constraints.keys())
-    assert any(n.endswith("_min_energy") for n in names)
-    assert any(n.endswith("_max_energy") for n in names)
+    # Es muss mindestens ein Departure-Constraint geben (24h Horizont
+    # mit Abfahrt 7:00 ergibt genau eine Abfahrt).
+    assert any("_target_at_departure_" in n for n in names), (
+        f"Kein Departure-Constraint gefunden in: {names[:20]}"
+    )
+    # Alte Mai-2026-Constraints sind ersetzt — duerfen nicht mehr existieren.
+    assert not any(n.endswith("_min_energy") for n in names)
+    assert not any(n.endswith("_max_energy") for n in names)
     assert not any("_opportunistic_charge" in n for n in names)
 
 
-def test_wallbox_uses_opportunistic_when_disabled():
-    """Mit min_range_enabled=False gibt es ein opportunistic_charge-Min
-    (= lade bis voll oder bis Slots aus) plus das Max-Energy-Cap."""
-    import types
-    import numpy as np
+def test_wallbox_without_min_range_has_no_departure_constraint():
+    """Ohne aktive Mindestreichweite wird KEIN Ziel-SOC erzwungen —
+    der Solver entscheidet rein nach Kosten."""
     wb = Wallbox("wb1", {
         **WALLBOX_DEFAULT,
         "min_range_enabled": False,
         "arrival_hour": 17,
         "departure_hour": 7,
-        "charge_only_below_percentile_pct": 25.0,
     })
-    n = 96
-    wb.prepare(types.SimpleNamespace(
-        prices_ct_kwh=np.linspace(20, 40, n), step_minutes=15,
-    ))
     model = pulp.LpProblem("test")
-    vars_ = wb.get_optimization_variables(num_steps=n, model=model)
+    vars_ = wb.get_optimization_variables(num_steps=96, model=model)
     wb.add_constraints(model, vars_, step_minutes=15)
     names = list(model.constraints.keys())
-    assert not any(n.endswith("_min_energy") for n in names)
-    assert any(n.endswith("_max_energy") for n in names)
-    assert any("_opportunistic_charge" in n for n in names)
+    assert not any("_target_at_departure_" in n for n in names)
+    # SOC-Bilanz-Constraints muessen aber trotzdem da sein, damit der
+    # SOC-Verlauf weiterhin mitgefuehrt wird.
+    assert any("_soc_init" in n for n in names)
+    assert any("_soc_step_" in n for n in names)
 
 
 def test_wallbox_max_charge_kwh_property():

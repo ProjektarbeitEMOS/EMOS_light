@@ -1051,6 +1051,20 @@ with tab_config:
                         "Abfahrt (h)", 0, 24,
                         int(ev.get("departure_hour", 7)), key=_wkey(f"ev_{i}_dep"),
                     )
+                    ev["driving_loss_pct_per_hour"] = st.number_input(
+                        "Fahrverbrauch (% SOC / h Abwesenheit)",
+                        min_value=0.0, max_value=50.0,
+                        value=float(ev.get("driving_loss_pct_per_hour", 5.0)),
+                        step=0.5,
+                        key=_wkey(f"ev_{i}_drv_loss"),
+                        help=(
+                            "Pro Stunde Abwesenheit verliert der Akku diesen "
+                            "Anteil der Kapazitaet (Pendelverbrauch). Bei 60 "
+                            "kWh und 5 %/h entspricht das 3 kWh/h ≈ 15 kWh/"
+                            "100km bei 60 km/h. Der Wert wird auch an die "
+                            "verlinkte Wallbox weitergereicht."
+                        ),
+                    )
 
                     wb_names = [wb.get("name") for wb in config.get("wallboxes", []) if wb.get("enabled")]
                     if wb_names:
@@ -1125,6 +1139,10 @@ with tab_config:
                         # Preissensitive Ladestrategie (Ersatz fuer V2H)
                         wb["charge_only_below_percentile_pct"] = ev.get(
                             "charge_only_below_percentile_pct", 100.0
+                        )
+                        # Fahrverbrauch (SOC-Verlust pro Abwesenheitsstunde)
+                        wb["driving_loss_pct_per_hour"] = float(
+                            ev.get("driving_loss_pct_per_hour", 5.0)
                         )
 
 
@@ -1615,9 +1633,12 @@ with tab_optimize:
             )
 
         # --- EV-SOC-Trajektorien (Row 3) ---
-        # Aus den Ladeleistungen pro Wallbox + EV-Daten den SOC-Verlauf
-        # integrieren. Ausserhalb der Anwesenheit: NaN, dann zeigt Plotly
-        # eine Luecke (sichtbar als "Auto ist weg").
+        # Bevorzugt nutzen wir die explizite SOC-Trajektorie aus dem
+        # Result (``result.ev_soc_kwh[name]``) — sowohl MILP als auch
+        # Baseline fuehren den SOC inzwischen als Zustandsvariable bzw.
+        # Tracker mit (inkl. 5 %/h Verlust waehrend Abwesenheit). Ohne
+        # diese Trajektorie (alte Ergebnisse, externe Quellen) fallen
+        # wir auf Power-Integration zurueck.
         if has_evs:
             dt_h_plot = data["step_minutes"] / 60.0
             steps_per_hour = max(1, 60 // data["step_minutes"])
@@ -1634,6 +1655,7 @@ with tab_optimize:
             # Pro Wallbox SOC integrieren
             ev_palette = ["cyan", "deepskyblue", "lightskyblue", "steelblue"]
             ref_capacity: float | None = None
+            soc_trajectories = getattr(result, "ev_soc_kwh", {}) or {}
             for wi, (wb_result_name, wb_power) in enumerate(wb_traces):
                 # Originale Wallbox-Cfg ueber safe-Name finden
                 wb_cfg = next(
@@ -1649,19 +1671,28 @@ with tab_optimize:
                                         wb_cfg.get("current_soc", 0.3)))
                 arrival = int(wb_cfg.get("arrival_hour", 17))
                 departure = int(wb_cfg.get("departure_hour", 7))
-                # Trajektorie aufbauen
-                soc_kwh = np.full(n_steps, np.nan)
-                e = soc0 * cap
-                for t in range(n_steps):
-                    hour = (t // steps_per_hour) % 24
-                    present = (
-                        arrival <= hour < departure
-                        if arrival <= departure
-                        else (hour >= arrival or hour < departure)
+
+                if wb_result_name in soc_trajectories:
+                    # Explizite Trajektorie aus dem Optimizer/Baseline —
+                    # zeigt Lade- UND Verlustphasen (5 %/h waehrend
+                    # Abwesenheit) durchgehend.
+                    soc_kwh = np.asarray(
+                        soc_trajectories[wb_result_name], dtype=float,
                     )
-                    if present:
-                        e = min(cap, e + wb_power[t] * dt_h_plot * eff)
-                        soc_kwh[t] = e
+                else:
+                    # Fallback: Power-Integration, nur waehrend Anwesenheit
+                    soc_kwh = np.full(n_steps, np.nan)
+                    e = soc0 * cap
+                    for t in range(n_steps):
+                        hour = (t // steps_per_hour) % 24
+                        present = (
+                            arrival <= hour < departure
+                            if arrival <= departure
+                            else (hour >= arrival or hour < departure)
+                        )
+                        if present:
+                            e = min(cap, e + wb_power[t] * dt_h_plot * eff)
+                            soc_kwh[t] = e
                 soc_pct = (soc_kwh / cap) * 100.0 if cap > 0 else soc_kwh * 0
                 color = ev_palette[wi % len(ev_palette)]
                 fig_el.add_trace(
