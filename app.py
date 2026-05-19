@@ -1902,16 +1902,64 @@ with tab_optimize:
         sg_enabled = config.get("heat_pump", {}).get("sg_ready", False)
         if sg_enabled and len(result.sg_ready_state) > 0:
             st.markdown("### SG-Ready Zustand (BWP v1.1)")
-            states_arr = result.sg_ready_state
+            states_arr = np.asarray(result.sg_ready_state, dtype=int)
+            # Plot mit Step-Shape "hv" — diskrete Zustaende, Stufen halten
+            # bis zum naechsten Wechsel. Farben pro Zustand: rot Abschaltung,
+            # neutral Normal, hellblau Einschaltempfehlung, dunkelblau
+            # Zwangseinschaltung. Damit fallen einzelne Spikes selbst bei
+            # kurzer Dauer sofort ins Auge.
+            state_color = {
+                1: "#d62728",   # rot
+                2: "#7f7f7f",   # grau
+                3: "#1f77b4",   # blau
+                4: "#08306b",   # dunkelblau
+            }
+            state_name = {
+                1: "Abschaltung",
+                2: "Normal",
+                3: "Einschaltempf.",
+                4: "Zwangseinsch.",
+            }
             fig_sg = go.Figure()
+            # Eine durchgehende Step-Linie als Hintergrund
             fig_sg.add_trace(go.Scatter(
-                x=ts, y=states_arr, name="SG-Ready",
-                mode="lines", line=dict(color="darkblue", width=2),
-                fill="tozeroy",
-                hovertemplate=(
-                    "%{x|%H:%M}<br>Zustand %{y}<extra></extra>"
-                ),
+                x=ts, y=states_arr,
+                mode="lines",
+                line=dict(color="#cccccc", width=1, shape="hv"),
+                showlegend=False,
+                hoverinfo="skip",
             ))
+            # Pro Zustand 1/3/4 eine farbige Marker-Serie nur an den
+            # Punkten, an denen dieser Zustand aktiv ist. Macht auch
+            # einzelne Schritte deutlich sichtbar.
+            for s in (1, 3, 4):
+                mask = states_arr == s
+                if mask.sum() == 0:
+                    continue
+                fig_sg.add_trace(go.Scatter(
+                    x=[ts[i] for i, m in enumerate(mask) if m],
+                    y=[s] * int(mask.sum()),
+                    mode="markers",
+                    marker=dict(
+                        color=state_color[s], size=10, symbol="square",
+                    ),
+                    name=f"{s} {state_name[s]}",
+                    hovertemplate=(
+                        f"Zustand {s} — {state_name[s]}<br>"
+                        "%{x|%d.%m %H:%M}<extra></extra>"
+                    ),
+                ))
+            # Optionale "Normal"-Marker fuer Komplettheit, klein und grau
+            mask2 = states_arr == 2
+            if mask2.sum() > 0:
+                fig_sg.add_trace(go.Scatter(
+                    x=[ts[i] for i, m in enumerate(mask2) if m],
+                    y=[2] * int(mask2.sum()),
+                    mode="markers",
+                    marker=dict(color=state_color[2], size=4, symbol="circle"),
+                    name="2 Normal", showlegend=True,
+                    hovertemplate="Zustand 2 — Normal<br>%{x|%d.%m %H:%M}<extra></extra>",
+                ))
             fig_sg.update_layout(
                 yaxis=dict(
                     tickvals=[1, 2, 3, 4],
@@ -1923,7 +1971,9 @@ with tab_optimize:
                     ],
                     range=[0.5, 4.5],
                 ),
-                height=220, margin=dict(t=30),
+                height=260,
+                margin=dict(t=30),
+                hovermode="closest",
             )
             st.plotly_chart(fig_sg, use_container_width=True)
 
