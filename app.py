@@ -1894,11 +1894,18 @@ with tab_optimize:
         #  2 = Normalbetrieb       (K1:K2 = 0:0)
         #  3 = Einschaltempfehlung (K1:K2 = 0:1, WW-Boost)
         #  4 = Zwangseinschaltung  (K1:K2 = 1:1, WW + Pufferspeicher-Boost)
-        if len(result.sg_ready_state) > 0 and np.any(result.sg_ready_state != 2):
+        # Panel wird immer gerendert, wenn SG-Ready in der Config
+        # aktiviert ist und das Result eine Zustandsreihe enthaelt —
+        # auch wenn der Solver durchgehend Zustand 2 waehlt (typisch
+        # ausserhalb der Heizsaison). Eine Caption macht den Solver-
+        # Befund explizit, damit der User nicht im Dunkeln tappt.
+        sg_enabled = config.get("heat_pump", {}).get("sg_ready", False)
+        if sg_enabled and len(result.sg_ready_state) > 0:
             st.markdown("### SG-Ready Zustand (BWP v1.1)")
+            states_arr = result.sg_ready_state
             fig_sg = go.Figure()
             fig_sg.add_trace(go.Scatter(
-                x=ts, y=result.sg_ready_state, name="SG-Ready",
+                x=ts, y=states_arr, name="SG-Ready",
                 mode="lines", line=dict(color="darkblue", width=2),
                 fill="tozeroy",
                 hovertemplate=(
@@ -1919,6 +1926,39 @@ with tab_optimize:
                 height=220, margin=dict(t=30),
             )
             st.plotly_chart(fig_sg, use_container_width=True)
+
+            # Solver-Befund als Caption: welche Zustaende wurden wie lange
+            # gewaehlt? Zeigt insbesondere, wenn durchgehend Normalbetrieb
+            # gewaehlt wurde — sonst wirkt das Panel "kaputt" (leere
+            # Variation), obwohl der Solver es bewusst entschieden hat.
+            import collections as _coll
+            counts = _coll.Counter(int(v) for v in states_arr)
+            total = sum(counts.values())
+            step_min = (
+                inp.step_minutes if inp is not None
+                else data.get("step_minutes", 15)
+            )
+            labels = {
+                1: "Zwangsabschaltung",
+                2: "Normalbetrieb",
+                3: "Einschaltempfehlung",
+                4: "Zwangseinschaltung",
+            }
+            parts = [
+                f"**{labels[s]}**: {counts[s] * step_min / 60:.1f} h "
+                f"({counts[s] / total * 100:.0f} %)"
+                for s in (1, 2, 3, 4) if counts[s] > 0
+            ]
+            if counts[2] == total:
+                st.caption(
+                    "ℹ️ Der Solver entschied sich ueber den gesamten "
+                    "Horizont fuer Normalbetrieb (Zustand 2). Typisch "
+                    "ausserhalb der Heizsaison oder bei sehr "
+                    "gleichmaessigem Strompreisprofil — kein Anreiz "
+                    "fuer eine Speicher-Ueberhoehung."
+                )
+            else:
+                st.caption(" · ".join(parts))
 
         # Preis-Overlay
         if inp is not None:
