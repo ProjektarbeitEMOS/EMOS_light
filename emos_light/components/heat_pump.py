@@ -198,9 +198,16 @@ class HeatPump(MILPComponent):
                 Umschalten zwischen FBH und WW zaehlt **nicht** als Start,
                 solange die WP an bleibt — nur das OFF->ON-Anschalten
                 belastet den Verdichter.
-            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Zwangsabschaltung)
-            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Einschaltempfehlung)
-            hp_sg4[t]: Binaer — SG-Ready Zustand 4 (Zwangseinschaltung)
+            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Zwangsabschaltung, WP aus)
+            hp_sg2[t]: Binaer — SG-Ready Zustand 2 (Normalbetrieb, WP an, kein Boost)
+            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Einschaltempfehlung, WP an + WW-Boost)
+            hp_sg4[t]: Binaer — SG-Ready Zustand 4 (Zwangseinschaltung, WP an + WW + Estrich-Boost)
+
+            SG-Ready steuert in diesem Modell DIE EINZIGE Schaltentscheidung
+            der WP: der Solver hat ausser ueber den gewaehlten SG-Zustand
+            keinen direkten Zugriff auf ``hp_on``. Genau ein SG-Zustand ist
+            pro Schritt aktiv (``sg1+sg2+sg3+sg4 = 1``), und ``hp_on = 1 - sg1``
+            — die WP ist nur abschaltbar, indem der Solver Zustand 1 waehlt.
 
         Wenn mehrere Waermesenken aktiv sind, werden zusaetzlich
         Aufteilungs-Variablen pro Senke erzeugt:
@@ -216,6 +223,7 @@ class HeatPump(MILPComponent):
         }
         if self.sg_ready:
             result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
+            result["hp_sg2"] = make_binary_array("hp_sg2", num_steps)
             result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
             result["hp_sg4"] = make_binary_array("hp_sg4", num_steps)
 
@@ -280,44 +288,43 @@ class HeatPump(MILPComponent):
                     f"hp_max_starts_{day.isoformat()}",
                 )
 
-        # SG-Ready Constraints (BWP v1.1, vier Schaltzustaende):
-        #   Zustand 1 (sg1=1, sg3=0, sg4=0)  — Zwangsabschaltung
-        #     => WP und el. Zusatzheizung aus.
-        #   Zustand 2 (sg1=0, sg3=0, sg4=0)  — Normalbetrieb (Default).
-        #   Zustand 3 (sg1=0, sg3=1, sg4=0)  — Einschaltempfehlung
-        #     => WP an, WW-Sollwert ueberhoeht (Estrich nicht).
-        #   Zustand 4 (sg1=0, sg3=0, sg4=1)  — Zwangseinschaltung
-        #     => WP an, WW UND Estrich-Pufferspeicher ueberhoeht.
-        # Die WW-/Estrich-Cap-Erweiterungen liegen im Optimizer
-        # (ww_sg_ready_cap_t bzw. ufh_sg_ready_cap_t), weil dort die
-        # Speicher-Variablen verfuegbar sind.
+        # SG-Ready Constraints (BWP v1.1) — SG-Ready ist der EINZIGE
+        # Steuerkanal des Solvers fuer die WP:
+        #
+        #   sg1 + sg2 + sg3 + sg4 = 1   (pro Schritt genau ein Zustand)
+        #   hp_on + sg1            = 1   (WP nur per sg1 abschaltbar)
+        #
+        # Damit ist:
+        #   sg1 = 1 → hp_on = 0  (Zwangsabschaltung)
+        #   sg2 = 1 → hp_on = 1  (Normalbetrieb, kein Speicher-Boost)
+        #   sg3 = 1 → hp_on = 1  (Einschaltempf., WW-Boost erlaubt)
+        #   sg4 = 1 → hp_on = 1  (Zwangseinsch., WW + Estrich-Boost erlaubt)
+        #
+        # Die Speicher-Cap-Erweiterungen liegen im Optimizer (siehe
+        # ww_sg_ready_cap_t und ufh_sg_ready_cap_t).
         if self.sg_ready and "hp_sg1" in variables:
             sg1 = variables["hp_sg1"]
+            sg2 = variables["hp_sg2"]
             sg3 = variables["hp_sg3"]
             sg4 = variables["hp_sg4"]
             min_hold_steps = steps_for_minutes(self.sg_min_hold_minutes, step_minutes)
 
-            # Exklusivitaet aller vier Zustaende: hoechstens einer aktiv
-            # (Zustand 2 entspricht sg1 = sg3 = sg4 = 0).
             for t in range(num_steps):
+                # Genau ein SG-Zustand pro Schritt
                 model += (
-                    sg1[t] + sg3[t] + sg4[t] <= 1,
-                    f"hp_sg_mutex_{t}",
+                    sg1[t] + sg2[t] + sg3[t] + sg4[t] == 1,
+                    f"hp_sg_select_{t}",
+                )
+                # hp_on ist die direkte Konsequenz: AUS gdw. sg1.
+                model += (
+                    hp_on[t] + sg1[t] == 1,
+                    f"hp_sg_drives_on_{t}",
                 )
 
-                # Zustand 1: Zwangsabschaltung — WP MUSS aus sein.
-                # PDF: "Die Waermepumpe und die elektrische Zusatzheizung
-                # sind aus." Hartes Verbot statt Power-Limit.
-                model += (
-                    hp_on[t] + sg1[t] <= 1,
-                    f"hp_sg1_forces_off_{t}",
-                )
-
-                # Zustand 3 und 4 setzen WP-Betrieb voraus.
-                model += sg3[t] <= hp_on[t], f"hp_sg3_needs_on_{t}"
-                model += sg4[t] <= hp_on[t], f"hp_sg4_needs_on_{t}"
-
-            # Mindesthaltezeiten fuer alle drei (gegen Pendeln).
+            # Mindesthaltezeiten fuer alle nicht-trivialen Zustaende (gegen
+            # Pendeln). sg2 ist der "Default" — keine eigene Haltezeit
+            # noetig, weil WP-Lauf-/Pausenzeit ueber hp_on bereits durch
+            # min_run_/min_pause_time erzwungen wird.
             add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
             add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
             add_min_hold_time(model, sg4, min_hold_steps=min_hold_steps, name="hp_sg4")
@@ -362,13 +369,19 @@ class HeatPump(MILPComponent):
         )
         if self.sg_ready and "hp_sg3" in variables:
             sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
+            sg2_vals = np.array(
+                [v.varValue or 0.0 for v in variables.get("hp_sg2", [])]
+            )
             sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
             sg4_vals = np.array(
                 [v.varValue or 0.0 for v in variables.get("hp_sg4", [])]
             )
-            # Priorisierung (kann nie kollidieren wegen Mutex):
-            # sg1 -> 1, sg4 -> 4, sg3 -> 3, sonst 2 (Normalbetrieb).
+            # Genau eine Variable ist 1, alle anderen 0 (Selektions-Constraint).
+            # Wir starten konservativ bei 2 (Normal) und ueberschreiben mit den
+            # anderen Zustaenden, falls dort > 0.5.
             state = np.full(num_steps, 2, dtype=int)
+            if len(sg2_vals) == num_steps:
+                state = np.where(sg2_vals > 0.5, 2, state)
             if len(sg4_vals) == num_steps:
                 state = np.where(sg4_vals > 0.5, 4, state)
             state = np.where(sg3_vals > 0.5, 3, state)

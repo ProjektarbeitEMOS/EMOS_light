@@ -33,8 +33,11 @@ from emos_light.components.heat_pump import HeatPump
 # Schichten 1: HeatPump in Isolation — Variablen und Constraint-Schema
 # ---------------------------------------------------------------------------
 
-def test_hp_sg_ready_creates_three_binaries():
-    """sg1, sg3, sg4 sind alle vorhanden, wenn SG-Ready aktiv ist."""
+def test_hp_sg_ready_creates_four_binaries():
+    """sg1, sg2, sg3, sg4 sind alle vorhanden, wenn SG-Ready aktiv ist.
+    Seit der Erweiterung Mai 2026 ist SG-Ready der einzige Steuerkanal
+    des Solvers fuer die WP — sg2 (Normalbetrieb) ist daher als eigene
+    Binary modelliert, nicht mehr nur impliziter Default."""
     hp = HeatPump("hp", {
         "max_electrical_power_kw": 8.0,
         "min_electrical_power_kw": 1.0,
@@ -44,7 +47,7 @@ def test_hp_sg_ready_creates_three_binaries():
     })
     model = pulp.LpProblem("test")
     vars_ = hp.get_optimization_variables(num_steps=96, model=model)
-    for key in ("hp_sg1", "hp_sg3", "hp_sg4"):
+    for key in ("hp_sg1", "hp_sg2", "hp_sg3", "hp_sg4"):
         assert key in vars_, f"Fehlende Binary: {key}"
         assert len(vars_[key]) == 96
 
@@ -59,21 +62,25 @@ def test_sg_ready_state4_offset_must_exceed_state3():
     assert hp.sg_temp_raise_4 >= hp.sg_temp_raise_3
 
 
-def test_hp_sg_constraints_have_mutex_and_state_links():
-    """add_constraints schreibt mutex (sg1+sg3+sg4 <= 1) und die
-    Zwangs-/Verbots-Verknuepfungen."""
+def test_hp_sg_constraints_implement_sole_control_channel():
+    """add_constraints schreibt das neue Schema:
+      sg1 + sg2 + sg3 + sg4 = 1   (hp_sg_select_)
+      hp_on + sg1            = 1   (hp_sg_drives_on_)
+    """
     hp = HeatPump("hp", {"sg_ready": True})
     model = pulp.LpProblem("test")
     vars_ = hp.get_optimization_variables(num_steps=96, model=model)
     hp.add_constraints(model, vars_, step_minutes=15)
     names = list(model.constraints.keys())
-    # Mutex
-    assert any(n.startswith("hp_sg_mutex_") for n in names)
-    # Zwangsabschaltung sg1
-    assert any(n.startswith("hp_sg1_forces_off_") for n in names)
-    # sg3 / sg4 setzen Betrieb voraus
-    assert any(n.startswith("hp_sg3_needs_on_") for n in names)
-    assert any(n.startswith("hp_sg4_needs_on_") for n in names)
+    # Selektion: pro Schritt genau ein Zustand aktiv
+    assert any(n.startswith("hp_sg_select_") for n in names)
+    # hp_on direkt aus sg1 abgeleitet
+    assert any(n.startswith("hp_sg_drives_on_") for n in names)
+    # Alte Constraints sind weg (waeren redundant unter dem neuen Schema)
+    assert not any(n.startswith("hp_sg_mutex_") for n in names)
+    assert not any(n.startswith("hp_sg1_forces_off_") for n in names)
+    assert not any(n.startswith("hp_sg3_needs_on_") for n in names)
+    assert not any(n.startswith("hp_sg4_needs_on_") for n in names)
 
 
 def test_hp_sg_ready_disabled_omits_binaries():
@@ -134,27 +141,49 @@ def test_solver_runs_with_sg_ready_enabled():
 
 
 def test_sg_ready_state_in_result_is_valid():
-    """sg_ready_state ist eine Reihe in {1, 2, 3, 4} (mit 2 als Default)."""
+    """sg_ready_state ist eine Reihe in {1, 2, 3, 4} — jeder Schritt
+    hat einen wohldefinierten Zustand. Welche tatsaechlich auftauchen,
+    haengt vom Szenario ab (z.B. extremer Winter: oft sg1/sg4)."""
     cfg = _winter_cfg()
     _, res = _run(cfg)
     assert res.success
-    states = set(np.unique(res.sg_ready_state))
-    # Alle Werte muessen aus {1,2,3,4} sein.
-    assert states <= {1, 2, 3, 4}
-    # Default muss vorhanden sein — sonst waere die ganze Zeit eine
-    # SG-Aktion erzwungen, was bei einem stinknormalen Winter unrealistisch.
-    assert 2 in states
+    states = set(int(s) for s in np.unique(res.sg_ready_state))
+    assert states <= {1, 2, 3, 4}, f"Unerwartete Zustaende: {states}"
+    # Mindestens ein nicht-trivialer Zustand muss vom Solver gewaehlt
+    # werden — die Kostenoptimierung soll das SG-Steuerschema aktiv
+    # ausnutzen.
+    assert states != {2}, "Solver hat im Winter nichts ausser Normal gewaehlt"
 
 
 def test_sg_ready_states_are_mutually_exclusive_per_step():
-    """Pro Zeitschritt nie mehr als ein nicht-trivialer SG-Zustand
-    (Mutex via sg1+sg3+sg4 <= 1)."""
+    """Pro Zeitschritt genau ein SG-Zustand aktiv (Selektion via
+    sg1+sg2+sg3+sg4 = 1)."""
     cfg = _winter_cfg()
     _, res = _run(cfg)
     states = res.sg_ready_state
-    # jeder Wert ist genau einer aus {1,2,3,4} — wir haben in
-    # extract_result eine Prioritaetskette, also reicht der Set-Check.
-    assert set(np.unique(states)) <= {1, 2, 3, 4}
+    assert set(int(s) for s in np.unique(states)) <= {1, 2, 3, 4}
+    # jeder Schritt hat genau einen wohldefinierten Zustand (sonst
+    # waere ein Wert ausserhalb {1..4} im Array gelandet).
+    assert all(s in (1, 2, 3, 4) for s in states)
+
+
+def test_sg_ready_is_sole_wp_control_channel():
+    """hp_on muss exakt komplementaer zu sg1 sein — die WP laeuft
+    iff der Solver KEIN sg1 waehlt. Damit ist SG-Ready der einzige
+    Stellhebel fuer das Ein-/Ausschalten der WP."""
+    cfg = _winter_cfg()
+    _, res = _run(cfg)
+    states = np.asarray(res.sg_ready_state)
+    hp_running = res.hp_power_kw > 1e-6
+    expected_running = states != 1
+    # Solver-Ergebnisse sind binaer-konsistent
+    assert np.all(hp_running == expected_running), (
+        "hp_on und sg1 nicht komplementaer:\n"
+        f"  Schritte WP laeuft trotz sg1=1: "
+        f"{int(np.sum(hp_running & (states == 1)))}\n"
+        f"  Schritte WP aus obwohl sg1=0: "
+        f"{int(np.sum(~hp_running & (states != 1)))}"
+    )
 
 
 # ---------------------------------------------------------------------------
