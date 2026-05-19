@@ -1346,6 +1346,11 @@ with tab_optimize:
                     ))
 
             # 13:00-Marker (Day-Ahead-Publikation) — pro Tag im Zeitraum.
+            # Achtung: ``add_vline`` mit annotation_text rechnet intern
+            # einen Mittelwert der x-Koordinaten und scheitert bei
+            # datetime-Werten ("int + datetime"). Wir nutzen daher
+            # ``add_shape`` + ``add_annotation`` getrennt — beide
+            # akzeptieren datetimes problemlos.
             tmin_plot, tmax_plot = ts_list[0], _ts_at(
                 max(w["horizon_end_step"] for w in windows)
             )
@@ -1353,11 +1358,20 @@ with tab_optimize:
             while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
                 marker = datetime.datetime.combine(day, datetime.time(13, 0))
                 if tmin_plot <= marker <= tmax_plot:
-                    fig_horizon.add_vline(
-                        x=marker, line=dict(color="orange", dash="dash"),
-                        annotation_text="13:00",
-                        annotation_position="top",
-                        annotation_font=dict(color="orange", size=10),
+                    fig_horizon.add_shape(
+                        type="line",
+                        x0=marker, x1=marker,
+                        xref="x", yref="paper",
+                        y0=0, y1=1,
+                        line=dict(color="orange", dash="dash"),
+                    )
+                    fig_horizon.add_annotation(
+                        x=marker, y=1.0,
+                        xref="x", yref="paper",
+                        text="13:00",
+                        showarrow=False,
+                        yanchor="bottom",
+                        font=dict(color="orange", size=10),
                     )
                 day += datetime.timedelta(days=1)
 
@@ -1365,8 +1379,12 @@ with tab_optimize:
             day = tmin_plot.date() + datetime.timedelta(days=1)
             while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
                 midnight = datetime.datetime.combine(day, datetime.time(0))
-                fig_horizon.add_vline(
-                    x=midnight, line=dict(color="gray", dash="dot"),
+                fig_horizon.add_shape(
+                    type="line",
+                    x0=midnight, x1=midnight,
+                    xref="x", yref="paper",
+                    y0=0, y1=1,
+                    line=dict(color="gray", dash="dot"),
                 )
                 day += datetime.timedelta(days=1)
 
