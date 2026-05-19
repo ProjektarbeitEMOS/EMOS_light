@@ -67,6 +67,13 @@ class OptimizationResult:
     # SG-Ready Zustand BWP v1.1 (1=Lastabwurf, 2=Normal, 3=Verstaerkt)
     sg_ready_state: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Einschaltvorgaenge (OFF -> ON) der Waermepumpe. Nur das Anschalten
+    # belastet den Verdichter — Umschalten zwischen FBH und WW zaehlt nicht.
+    # ``hp_starts_per_day`` ist ein dict[date -> int], ``hp_starts_count`` die
+    # Gesamtsumme ueber den Horizont.
+    hp_starts_per_day: dict = field(default_factory=dict)
+    hp_starts_count: int = 0
+
     # Kosten-Details
     grid_buy_cost_eur: float = 0.0
     feed_in_revenue_eur: float = 0.0

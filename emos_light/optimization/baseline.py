@@ -210,6 +210,10 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
 
     # Hysterese-Zustand: "OFF" | "FLOOR" | "WW"
     hp_state = "OFF"
+    # Einschaltvorgaenge pro Kalendertag mitzaehlen (informativ — die
+    # Baseline ist die Referenzstrategie und respektiert kein hartes
+    # Limit; das Dashboard kann den Vergleich gegen MILP/MPC zeigen).
+    hp_starts_per_day: dict = {}
 
     # Zeitreihen vorbereiten
     grid_buy_all = np.zeros(num_steps)
@@ -312,6 +316,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 elif not ufh_active or floor_e >= floor_high_e:
                     hp_state = "OFF"
 
+            prev_state = hp_state
             if hp_state == "OFF":
                 if ww_active and ww_e < ww_low_e_t:
                     hp_state = "WW"
@@ -321,6 +326,10 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                             hp_state = "FLOOR"
                     elif floor_e < floor_low_e:
                         hp_state = "FLOOR"
+            # Einschaltvorgang OFF -> {FLOOR,WW} zaehlen
+            if prev_state == "OFF" and hp_state != "OFF":
+                day = inp.timestamps[t].date()
+                hp_starts_per_day[day] = hp_starts_per_day.get(day, 0) + 1
 
             # Leistung gemaess State
             if hp_state == "WW":
@@ -489,6 +498,11 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         "exec_end_step": num_steps,
         "horizon_end_step": num_steps,
     }]
+    # Einschaltvorgaenge der Baseline mitliefern (analog zum MILP),
+    # damit das Dashboard die Verdichter-Belastung gegen MILP/MPC
+    # vergleichen kann.
+    result.hp_starts_per_day = hp_starts_per_day
+    result.hp_starts_count = int(sum(hp_starts_per_day.values()))
 
     # KPIs anwenden (Eigenverbrauch, Autarkie etc.)
     from emos_light.utils.kpi import calculate_kpis

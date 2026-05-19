@@ -569,6 +569,19 @@ with tab_config:
                 help="Vorlauftemperatur WW-Bereitung — bestimmt COP WW",
             )
 
+            config["heat_pump"]["max_starts_per_day"] = int(st.number_input(
+                "Max. Einschaltvorgaenge pro Tag",
+                min_value=0, max_value=48,
+                value=int(config["heat_pump"].get("max_starts_per_day", 8)),
+                step=1, key=_wkey("hp_max_starts"),
+                help=(
+                    "Verdichter-Schonung: jedes OFF->ON belastet den "
+                    "Verdichter. Umschalten zwischen Heizkreis und WW "
+                    "zaehlt nicht, solange die WP an bleibt. "
+                    "0 = keine Begrenzung."
+                ),
+            ))
+
             config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key=_wkey("sg_en"))
             if config["heat_pump"]["sg_ready"]:
                 sg_col1, sg_col2 = st.columns(2)
@@ -1278,6 +1291,42 @@ with tab_optimize:
                 )
             else:
                 kpi_row3[3].metric("Gesch. Lebensdauer", "-")
+
+        # WP-Einschaltvorgaenge (Verdichter-Schonung — siehe heat_pump.py)
+        if (
+            config.get("heat_pump", {}).get("enabled")
+            and getattr(result, "hp_starts_per_day", None)
+        ):
+            max_starts = int(
+                config.get("heat_pump", {}).get("max_starts_per_day", 8)
+            )
+            days = sorted(result.hp_starts_per_day.keys())
+            per_day = [result.hp_starts_per_day[d] for d in days]
+            limit_hit = any(c >= max_starts for c in per_day) if max_starts > 0 else False
+            with st.container():
+                st.markdown(
+                    "**WP-Einschaltvorgaenge** "
+                    "(Schonung des Verdichters — Umschalten Heizkreis ↔ WW "
+                    "zaehlt nicht):"
+                )
+                cols = st.columns(max(2, len(days) + 1))
+                for i, (d, c) in enumerate(zip(days, per_day)):
+                    delta_str = (
+                        f"max {max_starts}" if max_starts > 0 else "ohne Limit"
+                    )
+                    cols[i].metric(
+                        d.strftime("%d.%m."), f"{c}", delta=delta_str,
+                        delta_color="off",
+                    )
+                cols[-1].metric(
+                    "Summe",
+                    f"{result.hp_starts_count}",
+                    delta=(
+                        "Limit erreicht" if limit_hit
+                        else ("im Limit" if max_starts > 0 else "ohne Limit")
+                    ),
+                    delta_color=("inverse" if limit_hit else "normal"),
+                )
 
         # ---- Planungshorizont ----
         # Visualisiert, wie weit die Optimierung in die Zukunft schaut und

@@ -17,6 +17,7 @@ SG-Ready Zustaende nach BWP v1.1:
 from typing import Any
 
 import numpy as np
+import pulp
 
 from emos_light.components.base import MILPComponent
 from emos_light.components._milp_helpers import (
@@ -94,6 +95,9 @@ class HeatPump(MILPComponent):
         self.operating_max_temp = config.get("operating_max_temp_c", 43.0)
         self.min_run_minutes = config.get("min_run_time_minutes", 15)
         self.min_pause_minutes = config.get("min_pause_time_minutes", 15)
+        # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
+        # Setz auf 0 oder negative Werte, um die Restriktion zu deaktivieren.
+        self.max_starts_per_day = int(config.get("max_starts_per_day", 8))
         self.sg_ready = config.get("sg_ready", True)
         self.sg_temp_raise_3 = config.get("sg_ready_temp_raise_state3_c", 5.0)
         self.sg_state1_power_limit = config.get("sg_ready_state1_power_limit_kw", 0.0)
@@ -103,6 +107,7 @@ class HeatPump(MILPComponent):
         # Werden in prepare() / set_active_heat_sinks() vom Optimizer gesetzt.
         self._cop_heating: np.ndarray | None = None
         self._cop_dhw: np.ndarray | None = None
+        self._timestamps: list | None = None
         self._active_sinks: set = set()
 
     # Vorlauftemperatur je Senken-Bezeichner (Konvention)
@@ -155,6 +160,9 @@ class HeatPump(MILPComponent):
         """Vorberechnung der COP-Zeitreihen aus der Aussentemperatur."""
         self._cop_heating = self.calculate_cop_heating(inp.outside_temp_c)
         self._cop_dhw = self.calculate_cop_dhw(inp.outside_temp_c)
+        # Zeitstempel puffern — werden in add_constraints fuer die
+        # Tagesgruppierung der max_starts_per_day-Restriktion gebraucht.
+        self._timestamps = list(inp.timestamps)
 
     def set_active_heat_sinks(self, sinks: set) -> None:
         """Welche Senken sind aktiv? Bestimmt, ob ein WP-Split noetig ist."""
@@ -171,6 +179,11 @@ class HeatPump(MILPComponent):
         Variablen:
             hp_on[t]: Binaer — WP an/aus
             hp_power[t]: Elektrische Leistung gesamt [kW]
+            hp_start[t]: Binaer — Einschaltvorgang OFF -> ON bei t
+                (gekoppelt an hp_on, wird mit max_starts_per_day begrenzt).
+                Umschalten zwischen FBH und WW zaehlt **nicht** als Start,
+                solange die WP an bleibt — nur das OFF->ON-Anschalten
+                belastet den Verdichter.
             hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Lastabwurf)
             hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Verstaerkt)
 
@@ -184,6 +197,7 @@ class HeatPump(MILPComponent):
             "hp_power": make_var_array(
                 "hp_power", num_steps, low=0, high=self.max_power_kw,
             ),
+            "hp_start": make_binary_array("hp_start", num_steps),
         }
         if self.sg_ready:
             result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
@@ -220,6 +234,35 @@ class HeatPump(MILPComponent):
 
         add_min_run_time(model, hp_on, min_run_steps=min_run_steps, name="hp")
         add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
+
+        # Einschalt-Zaehler-Indikator: hp_start[t] muss 1 sein, wenn
+        # zwischen t-1 und t von OFF auf ON gewechselt wird. Da hp_start in
+        # die Tagessumme eingeht und diese eine Obergrenze hat, wird der
+        # Solver hp_start nur dann anheben, wenn er muss — die untere
+        # Schranke (start >= on[t]-on[t-1]) erzwingt das. Bei t=0 nehmen
+        # wir an, dass die WP vorher AUS war (konservativ; fuer MPC-
+        # Folgewindows liefert dies u.U. einen unnoetigen Zaehl-Start).
+        hp_start = variables["hp_start"]
+        for t in range(num_steps):
+            prev = 0 if t == 0 else hp_on[t - 1]
+            model += (
+                hp_start[t] >= hp_on[t] - prev,
+                f"hp_start_link_{t}",
+            )
+
+        # Tageslimit fuer Einschaltvorgaenge. Gruppiert nach Kalenderdatum
+        # aus den vom Optimizer (via prepare) durchgereichten Timestamps.
+        # max_starts_per_day <= 0 schaltet die Restriktion aus.
+        if self.max_starts_per_day > 0 and self._timestamps is not None:
+            by_day: dict = {}
+            for t, ts in enumerate(self._timestamps[:num_steps]):
+                by_day.setdefault(ts.date(), []).append(t)
+            for day, idxs in by_day.items():
+                model += (
+                    pulp.lpSum(hp_start[t] for t in idxs)
+                    <= self.max_starts_per_day,
+                    f"hp_max_starts_{day.isoformat()}",
+                )
 
         # SG-Ready Constraints (BWP v1.1)
         if self.sg_ready and "hp_sg1" in variables:
@@ -278,7 +321,7 @@ class HeatPump(MILPComponent):
     def extract_result(
         self, result: Any, variables: dict, num_steps: int, dt_h: float,
     ) -> None:
-        """WP-Leistung und SG-Ready-Zustand ins Result schreiben."""
+        """WP-Leistung, SG-Ready-Zustand und Einschalt-Zaehler ins Result."""
         result.hp_power_kw = np.array(
             [v.varValue or 0.0 for v in variables["hp_power"]]
         )
@@ -288,6 +331,22 @@ class HeatPump(MILPComponent):
             result.sg_ready_state = np.where(
                 sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
             )
+        # Einschaltvorgaenge zaehlen (aus hp_start). Pro Kalendertag und
+        # in Summe — gleiches Schema wie das max_starts_per_day-Constraint.
+        if "hp_start" in variables and self._timestamps is not None:
+            start_vals = np.array(
+                [v.varValue or 0.0 for v in variables["hp_start"]]
+            )
+            starts_bool = start_vals > 0.5
+            per_day: dict = {}
+            for t, is_start in enumerate(starts_bool):
+                if t >= num_steps:
+                    break
+                if is_start:
+                    day = self._timestamps[t].date()
+                    per_day[day] = per_day.get(day, 0) + 1
+            result.hp_starts_per_day = per_day
+            result.hp_starts_count = int(starts_bool[:num_steps].sum())
 
     def heat_supply(self, variables: dict, t: int, sink: str) -> Any:
         """Thermische Leistung an die jeweilige Senke (kW).

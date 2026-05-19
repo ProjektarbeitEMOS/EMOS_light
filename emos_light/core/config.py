@@ -87,6 +87,11 @@ DEFAULT_CONFIG = {
         "operating_max_temp_c": 43.0,
         "min_run_time_minutes": 15,
         "min_pause_time_minutes": 15,
+        # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
+        # Schont den Verdichter — laeuft die WP einmal, darf sie beliebig
+        # lang laufen und auch zwischen Heizen/WW umschalten, nur das
+        # OFF -> ON-Anschalten zaehlt. Default 8/Tag.
+        "max_starts_per_day": 8,
         "sg_ready": True,
         "sg_ready_temp_raise_state3_c": 5.0,
         "sg_ready_state1_power_limit_kw": 0.0,
