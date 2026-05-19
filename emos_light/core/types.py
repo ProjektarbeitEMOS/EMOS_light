@@ -49,6 +49,13 @@ class OptimizationResult:
     # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-
     # heit beruecksichtigt) und im Dashboard direkt geplottet.
     ev_soc_kwh: dict = field(default_factory=dict)
+    # Slack-Aggregate pro Wallbox in kWh — signalisieren, dass das
+    # User-Setup nicht erfuellbar war:
+    # ``ev_target_slack_kwh[wb_name]`` = kWh, die zur Abfahrt fehlten
+    # ``ev_underrun_slack_kwh[wb_name]`` = kWh, um die der Akku rechnerisch
+    #   unter 0 fiel (z.B. wegen zu engem Preisperzentil-Filter).
+    ev_target_slack_kwh: dict = field(default_factory=dict)
+    ev_underrun_slack_kwh: dict = field(default_factory=dict)
     timestamps: list = field(default_factory=list)
 
     # Thermische Fahrplaene — Estrich (Fussbodenheizung)

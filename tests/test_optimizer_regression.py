@@ -132,10 +132,13 @@ def test_solver_finds_optimum(scenario_factory, make_optimizer_run):
     cfg_battery_only, cfg_full_house,
 ])
 def test_battery_throughput_consistent(scenario_factory, make_optimizer_run):
-    """Wenn Batterie aktiv ist: Charge + Discharge >= 0 und SOC bleibt im Fenster."""
+    """Wenn Batterie aktiv ist: Charge + Discharge >= 0 (mit Toleranz fuer
+    LP-Numerikrauschen) und SOC bleibt im Fenster."""
     res = make_optimizer_run(scenario_factory())
-    assert res.batt_charge_kw is not None and (res.batt_charge_kw >= 0).all()
-    assert res.batt_discharge_kw is not None and (res.batt_discharge_kw >= 0).all()
+    # LP-Solver liefern manchmal -1e-15-Werte statt exakt 0 — Toleranz.
+    eps = 1e-9
+    assert res.batt_charge_kw is not None and (res.batt_charge_kw >= -eps).all()
+    assert res.batt_discharge_kw is not None and (res.batt_discharge_kw >= -eps).all()
     # SoC-Fenster (Default 10–90% von 10 kWh = 1–9 kWh)
     assert (res.batt_soc_kwh >= 0.99).all() and (res.batt_soc_kwh <= 9.01).all()
 

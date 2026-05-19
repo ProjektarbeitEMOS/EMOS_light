@@ -1382,6 +1382,35 @@ with tab_optimize:
         kpi_row2[2].metric("PV-Ertrag", f"{result.pv_total_kwh:.1f} kWh")
         kpi_row2[3].metric("Netzbezug", f"{result.grid_buy_total_kwh:.1f} kWh")
 
+        # EV-Slack-Warnung: wenn das Setup nicht erfuellbar war (z.B. zu
+        # enger Preisperzentil-Filter), zeigt der Solver durch positive
+        # Slack-Werte explizit, wieviel SOC zur Abfahrt fehlte bzw. wie
+        # weit der Akku rechnerisch unter 0 fiel. Frueher hat dieser
+        # Fall direkt zu Infeasibility gefuehrt — heute kommt eine
+        # Best-Effort-Loesung mit klarer Warnung.
+        ev_target_slacks = getattr(result, "ev_target_slack_kwh", {}) or {}
+        ev_underrun_slacks = getattr(result, "ev_underrun_slack_kwh", {}) or {}
+        for wb_name, gap in ev_target_slacks.items():
+            underrun = ev_underrun_slacks.get(wb_name, 0.0)
+            if gap > 0.01 or underrun > 0.01:
+                msgs = []
+                if gap > 0.01:
+                    msgs.append(
+                        f"**{gap:.1f} kWh** fehlten zum Ziel-SOC bei der Abfahrt"
+                    )
+                if underrun > 0.01:
+                    msgs.append(
+                        f"Akku-Bilanz unterschreitet rechnerisch 0 "
+                        f"(kumuliert {underrun:.1f} kWh)"
+                    )
+                st.warning(
+                    f"⚠️ EV **{wb_name}**: " + "; ".join(msgs) + ". "
+                    "Setup nicht erfuellbar — z.B. ``charge_only_below_percentile_pct`` "
+                    "zu eng oder ``driving_loss_pct_per_hour`` zu hoch. Der Solver "
+                    "hat ein Best-Effort-Ergebnis geliefert; das negative SOC im "
+                    "Plot ist ein Signal fuer 'Akku-Setup unrealistisch', kein Bug."
+                )
+
         # Batterie-Alterungs-KPIs (PDF Speichergruppe)
         if config.get("battery", {}).get("enabled") and result.battery_throughput_kwh > 0:
             kpi_row3 = st.columns(4)
