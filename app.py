@@ -31,6 +31,7 @@ _PENDING_IMPORT_PATH = (
 )
 
 from emos_light.core.config import load_config, DEFAULT_CONFIG, WALLBOX_DEFAULT, EV_DEFAULT, PV_SURFACE_DEFAULT
+from emos_light.core.config import _deep_merge as _config_deep_merge
 from emos_light.core.scenario import (
     build_components,
     build_optimizer,
@@ -59,6 +60,30 @@ st.caption("Waermepumpe | Fussbodenheizung | Frischwassersystem | Dynamischer St
 # ================================================================
 # Session State
 # ================================================================
+def _merge_with_defaults(user_yaml: dict | None) -> dict:
+    """Importierte/wiederhergestellte Config IMMER mit DEFAULT_CONFIG mergen.
+
+    Sorgt dafuer, dass nach dem Import keine Top-Level-Sektion fehlt —
+    sonst crasht das Sidebar-Rendering spaeter mit ``KeyError`` (z.B.
+    bei ``config["hot_water_storage"]["enabled"]``, wenn der User
+    eine schlanke YAML ohne diese Sektion hochgeladen hat). Nutzt den
+    rekursiven ``_deep_merge`` aus emos_light.core.config — gleiches
+    Verhalten wie ``load_config(path)``.
+    """
+    import copy as _copy
+    base = _copy.deepcopy(DEFAULT_CONFIG)
+    if not isinstance(user_yaml, dict):
+        return base
+    merged = _config_deep_merge(base, user_yaml)
+    # Wallbox-Liste sauber mit Defaults pro Eintrag mergen
+    if "wallboxes" in user_yaml and isinstance(user_yaml["wallboxes"], list):
+        merged["wallboxes"] = [
+            _config_deep_merge(WALLBOX_DEFAULT, wb)
+            for wb in user_yaml["wallboxes"]
+        ]
+    return merged
+
+
 if "config" not in st.session_state:
     config_path = Path("config/default_config.yaml")
     # Hat der letzte Session-Run einen Import angestossen, der dann
@@ -67,7 +92,13 @@ if "config" not in st.session_state:
     if _PENDING_IMPORT_PATH.exists():
         try:
             with _PENDING_IMPORT_PATH.open("r", encoding="utf-8") as f:
-                st.session_state.config = yaml.safe_load(f)
+                pending_yaml = yaml.safe_load(f)
+            # Defense-in-Depth: auch wenn die Pending-Datei ueblicherweise
+            # vom Import-Block geschrieben wird (bereits vollstaendig),
+            # filtern wir hier nochmal durch DEFAULT_CONFIG. Damit
+            # ueberleben auch alte Pending-Dateien aus frueheren Versionen
+            # oder schlanke YAMLs ohne alle Sektionen.
+            st.session_state.config = _merge_with_defaults(pending_yaml)
         finally:
             try:
                 _PENDING_IMPORT_PATH.unlink()
@@ -175,12 +206,12 @@ with st.sidebar:
         if st.session_state.get("_imported_config_id") != file_id:
             try:
                 user_yaml = yaml.safe_load(config_file)
-                base_config = load_config(None)
-                for key, val in user_yaml.items():
-                    if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
-                        base_config[key].update(val)
-                    else:
-                        base_config[key] = val
+                # Vollstaendigen, mit Defaults gemergter Config bauen —
+                # selbst wenn die hochgeladene YAML einzelne Sektionen
+                # auslaesst (z.B. nur ``pv`` und ``battery``), bekommen
+                # wir trotzdem ein vollstaendiges Dict zurueck. Spart
+                # uns spaeter Sidebar-KeyErrors.
+                base_config = _merge_with_defaults(user_yaml)
 
                 # Drei-Phasen-Import:
                 #
