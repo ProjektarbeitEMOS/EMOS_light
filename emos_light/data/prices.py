@@ -87,6 +87,7 @@ def get_surcharges_summary(tariff_config: dict) -> dict:
 def fetch_day_ahead_prices(
     date: Optional[datetime.date] = None,
     bidding_zone: str = "DE-LU",
+    num_days: int = 1,
 ) -> pd.DataFrame:
     """Ruft Day-Ahead-Strompreise von der Energy-Charts API ab.
 
@@ -94,27 +95,42 @@ def fetch_day_ahead_prices(
     Als Fallback werden synthetische Preise generiert.
 
     Args:
-        date: Datum fuer die Preise (Standard: morgen).
+        date: Startdatum fuer die Preise (Standard: morgen).
         bidding_zone: Gebotszone (Standard: DE-LU fuer Deutschland/Luxemburg).
+        num_days: Anzahl Tage ab ``date`` (inklusive). Fuer den 48h-Day-Ahead-
+            Horizont (vor 13 Uhr heute + ganzer morgen) wird hier ``2``
+            uebergeben — der Fetcher zieht dann den vollen Bereich von der
+            API statt ihn am Ende mit dem letzten Wert zu padden.
 
     Returns:
         DataFrame mit Spalten ['timestamp', 'price_eur_mwh', 'price_ct_kwh'].
     """
     if date is None:
         date = datetime.date.today() + datetime.timedelta(days=1)
+    num_days = max(1, int(num_days))
 
     try:
-        return _fetch_from_api(date, bidding_zone)
+        return _fetch_from_api(date, bidding_zone, num_days)
     except Exception:
-        return generate_synthetic_prices(date)
+        return generate_synthetic_prices(date, num_steps=96 * num_days)
 
 
-def _fetch_from_api(date: datetime.date, bidding_zone: str) -> pd.DataFrame:
-    """Versucht Preise von der Energy-Charts API zu laden."""
-    date_str = date.strftime("%Y-%m-%d")
+def _fetch_from_api(
+    date: datetime.date, bidding_zone: str, num_days: int = 1,
+) -> pd.DataFrame:
+    """Versucht Preise von der Energy-Charts API zu laden.
+
+    Die API erwartet ``start`` und ``end`` als Datum (inklusive). Fuer
+    num_days=2 ergibt das z.B. start=2025-11-01, end=2025-11-02 — 48 h
+    Day-Ahead-Daten in einem Aufruf.
+    """
+    start_str = date.strftime("%Y-%m-%d")
+    end_str = (
+        date + datetime.timedelta(days=num_days - 1)
+    ).strftime("%Y-%m-%d")
     url = (
         f"https://api.energy-charts.info/price"
-        f"?bzn={bidding_zone}&start={date_str}&end={date_str}"
+        f"?bzn={bidding_zone}&start={start_str}&end={end_str}"
     )
 
     response = requests.get(url, timeout=10)
@@ -135,27 +151,33 @@ def _fetch_from_api(date: datetime.date, bidding_zone: str) -> pd.DataFrame:
 
 
 def generate_synthetic_prices(
-    date: datetime.date, num_steps: int = 96
+    date: datetime.date, num_steps: int = 96, step_minutes: int = 15,
 ) -> pd.DataFrame:
     """Generiert synthetische Day-Ahead-Preise fuer Tests.
 
-    Typisches deutsches Tagesprofil mit:
+    Das typische deutsche Tagesprofil wiederholt sich pro Tag (mod 24h),
+    sodass auch Mehr-Tages-Horizonte (z.B. 48h fuer Day-Ahead-MPC ab 13 Uhr)
+    sinnvoll abgedeckt sind:
+
     - Basispreis ~80 EUR/MWh
     - Morgen-Peak 6-9h: +40
     - Abend-Peak 17-21h: +50
     - Solar-Dip 11-15h: -30
     - Nacht-Tal 0-5h: -25
-    - Zufaelliges Rauschen +/-5
+    - Zufaelliges Rauschen +/-5 (deterministisch pro Tag)
     - Geclippt auf [-10, 300] EUR/MWh
 
     Args:
-        date: Datum (wird als Seed fuer Reproduzierbarkeit verwendet).
-        num_steps: Anzahl Zeitschritte (Standard: 96 = 15-min fuer 24h).
+        date: Startdatum (wird als Seed fuer Reproduzierbarkeit verwendet).
+        num_steps: Anzahl Zeitschritte insgesamt.
+        step_minutes: Zeitschrittlaenge in Minuten (Default 15).
 
     Returns:
         DataFrame mit synthetischen Preisen.
     """
-    hours = np.linspace(0, 24, num_steps, endpoint=False)
+    step_h = step_minutes / 60.0
+    hours_abs = np.arange(num_steps) * step_h  # 0, dt, 2dt, ...
+    hours = hours_abs % 24                     # Tagesprofil wiederholt sich
 
     # Basisprofil: typischer DE Day-Ahead Verlauf
     base_price = 80  # EUR/MWh Grundpreis
@@ -171,14 +193,21 @@ def generate_synthetic_prices(
 
     prices = base_price + morning_peak + evening_peak + solar_dip + night_valley
 
-    # Reproduzierbares Rauschen basierend auf Datum
-    rng = np.random.default_rng(seed=int(date.strftime("%Y%m%d")))
-    prices += rng.normal(0, 5, num_steps)
-    prices = np.clip(prices, -10, 300)
+    # Reproduzierbares Rauschen pro Tag — jeder Tag bekommt seinen eigenen
+    # Seed, damit das Rauschen auf Tagesgrenzen springt (sonst waeren die
+    # Schwankungen ueber das gesamte Mehr-Tages-Fenster korreliert).
+    day_idx = (hours_abs // 24).astype(int)
+    base_seed = int(date.strftime("%Y%m%d"))
+    noise = np.zeros(num_steps)
+    for d in np.unique(day_idx):
+        mask = day_idx == d
+        rng = np.random.default_rng(seed=base_seed + int(d))
+        noise[mask] = rng.normal(0, 5, mask.sum())
+    prices = np.clip(prices + noise, -10, 300)
 
     timestamps = [
         datetime.datetime.combine(date, datetime.time())
-        + datetime.timedelta(minutes=int(i * 1440 / num_steps))
+        + datetime.timedelta(minutes=int(i * step_minutes))
         for i in range(num_steps)
     ]
 

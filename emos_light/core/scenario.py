@@ -113,24 +113,50 @@ def load_input_data(
     num_steps = int(horizon_hours * 60 / step_minutes)
     lat = general.get("latitude", 49.33)
     lon = general.get("longitude", 12.11)
+    # Anzahl Tage, die der Horizont (inkl. Startttag) abdeckt — wird
+    # benoetigt, damit die API-Fetcher den vollen Day-Ahead-Bereich
+    # holen (sonst wuerde der zweite Tag mit dem letzten Wert gepaddet).
+    num_days = max(1, int(np.ceil(horizon_hours / 24.0)))
 
     # Preise
     if use_api:
         try:
-            prices_df = fetch_day_ahead_prices(date)
+            prices_df = fetch_day_ahead_prices(date, num_days=num_days)
         except Exception:
-            prices_df = generate_synthetic_prices(date, num_steps)
+            prices_df = generate_synthetic_prices(
+                date, num_steps=num_steps, step_minutes=step_minutes,
+            )
     else:
-        prices_df = generate_synthetic_prices(date, num_steps)
+        prices_df = generate_synthetic_prices(
+            date, num_steps=num_steps, step_minutes=step_minutes,
+        )
 
     # Wetter
     if use_api:
         try:
             weather_df = fetch_weather_forecast(lat, lon, date, num_steps, step_minutes)
         except Exception:
-            weather_df = generate_synthetic_weather(date, num_steps)
+            weather_df = generate_synthetic_weather(
+                date, num_steps=num_steps, step_minutes=step_minutes,
+            )
     else:
-        weather_df = generate_synthetic_weather(date, num_steps)
+        weather_df = generate_synthetic_weather(
+            date, num_steps=num_steps, step_minutes=step_minutes,
+        )
+
+    # Preise auf step_minutes resamplen (Day-Ahead-API liefert stuendlich;
+    # die internen Schritte sind 15-min) — block-konstant per ffill.
+    if (
+        "timestamp" in prices_df.columns
+        and len(prices_df) > 0
+        and len(prices_df) < num_steps
+    ):
+        prices_df = (
+            prices_df.set_index("timestamp")
+            .resample(f"{step_minutes}min")
+            .ffill()
+            .reset_index()
+        )
 
     spot_prices = _pad_array(prices_df["price_ct_kwh"].values, num_steps)
     tariff = config.get("tariff", {})
