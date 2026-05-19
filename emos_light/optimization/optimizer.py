@@ -45,12 +45,6 @@ from emos_light.core.types import TimeSeriesInput, OptimizationResult
 
 
 UNMET_HEAT_PENALTY_CT = 500.0
-# Strafkosten fuer unerreichten EV-Ziel-SOC zur Abfahrt, in ct pro kWh
-# Lieferluecke. Gleicher Preisstand wie Heizen-Komfort — das EV-Modell
-# soll genauso wichtig sein wie das Raumklima, aber gleichzeitig
-# nachgiebig wenn das User-Setup (z.B. enger Preisperzentil-Filter)
-# eine harte Erfuellung unmoeglich macht.
-UNMET_EV_PENALTY_CT = 500.0
 
 
 class EMOSLightOptimizer:
@@ -370,29 +364,6 @@ class EMOSLightOptimizer:
                 * UNMET_HEAT_PENALTY_CT * dt_h
                 for t in range(num_steps)
             )
-
-        # EV-Target-Slacks pro Wallbox: bestrafen unerreichten Ziel-SOC zur
-        # Abfahrt. Slack ist in kWh, Strafkosten in ct/kWh — kein dt_h-Faktor,
-        # weil der Slack pro Abfahrt eine einmalige Lieferluecke beschreibt
-        # (nicht eine pro Zeitschritt anhaltende).
-        for wb in self.wallboxes:
-            if not wb.enabled:
-                continue
-            slack_key = f"wb_{wb.name}_target_slack"
-            if slack_key in variables:
-                cost += pulp.lpSum(
-                    variables[slack_key][t] * UNMET_EV_PENALTY_CT
-                    for t in range(num_steps)
-                )
-            # SOC-Unterlauf: physikalisch unmoegliche Akku-Bilanz wird
-            # mit der gleichen Strafe wie der Target-Verfehler belegt.
-            # Das signalisiert "Setup unrealistisch" ohne Infeasibility.
-            underrun_key = f"wb_{wb.name}_soc_underrun_slack"
-            if underrun_key in variables:
-                cost += pulp.lpSum(
-                    variables[underrun_key][t] * UNMET_EV_PENALTY_CT
-                    for t in range(num_steps)
-                )
 
         # Batterie-Alterungskosten (PDF Speichergruppe, Kap. 3+4)
         # Durchsatz (charge + discharge) wird mit c_aging/2 gewichtet,

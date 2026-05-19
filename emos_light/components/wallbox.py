@@ -216,35 +216,13 @@ class Wallbox(MILPComponent):
                 f"{prefix}_on", num_steps,
             ),
             # SOC pro Zeitschritt — Bound oben durch BMS (max_soc), unten
-            # absichtlich UNBOUNDED (low=None). Physikalisch kann der
-            # Akku zwar nicht unter 0 fallen, aber wenn das User-Setup
-            # das verlangt (zu kurze Ladezeit + zu langer Fahrtverlust),
-            # wuerde ein harter Bound bei 0 das Problem infeasible
-            # machen. Stattdessen erlauben wir hier negative Zwischen-
-            # werte und bestrafen sie ueber den ``soc_underrun_slack``
-            # mit ``UNMET_EV_PENALTY_CT``. Damit signalisiert das
-            # Modell die unrealistische Konfiguration als hohe Strafe,
-            # ohne den Solver zu blockieren.
+            # bei 0 (physikalisch). Wenn die Konfiguration den Akku
+            # rechnerisch unter 0 druecken wuerde, ist das Setup
+            # unrealistisch und der Solver meldet Infeasibility — der
+            # User muss dann z.B. den Preisperzentil-Filter lockern oder
+            # die Mindestreichweite deaktivieren.
             f"wb_{self.name}_soc": make_var_array(
-                f"{prefix}_soc", num_steps, low=None, high=soc_max_kwh,
-            ),
-            # Slack fuer SOC-Unterlauf: aktiv, wenn die Akkubilanz
-            # virtuell unter 0 ginge (physikalisch unmoeglich, aber
-            # mathematisch erlaubt mit Strafe).
-            f"wb_{self.name}_soc_underrun_slack": make_var_array(
-                f"{prefix}_soc_underrun_slack", num_steps,
-                low=0.0, high=soc_max_kwh * 10,
-            ),
-            # Soft-Slack pro Schritt fuer das Departure-Target. Aktiv nur
-            # an Abfahrtsschritten (siehe add_constraints), sonst auf 0
-            # festgenagelt. Wird vom Optimizer mit ``UNMET_EV_PENALTY_CT``
-            # bestraft (analog Komfortband-Slack der Raumluft) — damit
-            # ist das Modell auch bei sehr engem Preisperzentil-Filter
-            # nicht infeasible, sondern liefert ein Best-Effort-Ergebnis
-            # mit klarem Strafkostenbeitrag.
-            f"wb_{self.name}_target_slack": make_var_array(
-                f"{prefix}_target_slack", num_steps,
-                low=0.0, high=soc_max_kwh,
+                f"{prefix}_soc", num_steps, low=0.0, high=soc_max_kwh,
             ),
         }
 
@@ -274,17 +252,7 @@ class Wallbox(MILPComponent):
         power = variables[f"wb_{self.name}_power"]
         on = variables[f"wb_{self.name}_on"]
         soc = variables[f"wb_{self.name}_soc"]
-        soc_underrun = variables[f"wb_{self.name}_soc_underrun_slack"]
         num_steps = len(power)
-
-        # SOC darf physikalisch nicht negativ sein — wir erzwingen das
-        # ueber einen Slack, damit ein zu enges User-Setup nicht direkt
-        # in Infeasibility laeuft, sondern Strafkosten erzeugt.
-        for t in range(num_steps):
-            model += (
-                soc[t] + soc_underrun[t] >= 0,
-                f"{prefix}_soc_nonneg_{t}",
-            )
 
         # 1) Modulationsbereich (Min/Max gekoppelt an on/off)
         add_on_off_power_link(
@@ -304,8 +272,14 @@ class Wallbox(MILPComponent):
             if not present_t:
                 model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
 
-        # 3) Preisfilter: nur in den guenstigsten X % der Tagesstunden laden
-        if self._allowed_charging_steps is not None:
+        # 3) Preisfilter — nur als hartes power=0-Constraint aktiv, wenn
+        # die Mindestreichweite NICHT erzwungen wird. Mit aktiver
+        # Mindestreichweite hat das Departure-Target Prioritaet (der
+        # Cost-Minimizer waehlt dabei sowieso natuerlich die billigsten
+        # Stunden, selbst wenn ein paar teurere noetig sind, um den
+        # Target zu erreichen). Sonst kann es bei zu engem Filter zu
+        # Infeasibility kommen.
+        if self._allowed_charging_steps is not None and not self.min_range_enabled:
             for t in range(num_steps):
                 if t not in self._allowed_charging_steps:
                     model += (
@@ -343,38 +317,23 @@ class Wallbox(MILPComponent):
                     f"{prefix}_soc_step_{t}",
                 )
 
-        # 5) Ziel-SOC zum Abfahrtszeitpunkt — SOFT-Constraint mit Slack:
-        # jede 1->0-Kante in presence ist eine Abfahrt; soc dort muss
-        #   ``soc[t] + slack[t] >= target_soc * cap``
-        # erfuellen. Der Slack wird vom Optimizer mit
-        # ``UNMET_EV_PENALTY_CT`` (default 500 ct/kWh — gleicher Preis wie
-        # Komfortband-Verletzung) bestraft. Damit gibt es auch bei sehr
-        # engem Preisfilter (z.B. charge_only_below_percentile_pct = 30)
-        # keine Infeasibility — der Solver akzeptiert ggf. einen
-        # niedrigeren End-SOC, zeigt die Lieferluecke aber explizit als
-        # Strafkosten im Ergebnis.
-        # An Nicht-Departure-Steps wird der Slack auf 0 festgenagelt
-        # (sonst koennte der Solver Slack "frei" verwenden, ohne dass
-        # er eine Constraint kompensiert).
-        target_slack = variables[f"wb_{self.name}_target_slack"]
-        is_departure: list[bool] = [False] * num_steps
+        # 5) Ziel-SOC zum Abfahrtszeitpunkt — HARTES Constraint: jede
+        # 1->0-Kante in presence ist eine Abfahrt, soc[t] muss dort
+        # mind. ``target_soc * cap`` betragen. Bei aktiver Mindest-
+        # reichweite hat dieses Constraint Prioritaet ueber den
+        # Preisperzentil-Filter — d.h. wenn die billigsten X % nicht
+        # ausreichen, wird auch ausserhalb des Filters geladen. Der
+        # Cost-Minimizer waehlt natuerlich trotzdem die guenstigsten
+        # verfuegbaren Stunden.
         if self.min_range_enabled:
+            target_soc_kwh = self.target_soc * self.ev_capacity_kwh
             for t in range(num_steps):
                 was_present = presence[t - 1] if t > 0 else True
                 if was_present and not presence[t]:
-                    is_departure[t] = True
-        target_soc_kwh = self.target_soc * self.ev_capacity_kwh
-        for t in range(num_steps):
-            if is_departure[t]:
-                model += (
-                    soc[t] + target_slack[t] >= target_soc_kwh,
-                    f"{prefix}_target_at_departure_{t}",
-                )
-            else:
-                model += (
-                    target_slack[t] == 0,
-                    f"{prefix}_target_slack_zero_{t}",
-                )
+                    model += (
+                        soc[t] >= target_soc_kwh,
+                        f"{prefix}_target_at_departure_{t}",
+                    )
 
     # ------------------------------------------------------------------
     # Bilanz-Beitraege
@@ -401,21 +360,4 @@ class Wallbox(MILPComponent):
                 result.ev_soc_kwh = {}
             result.ev_soc_kwh[self.name] = np.array(
                 [v.varValue or 0.0 for v in variables[f"wb_{self.name}_soc"]]
-            )
-        # Slack-Aggregate fuer Dashboard-Warnungen ans Result haengen:
-        # ``ev_target_slack_kwh`` = unerreichter Ziel-SOC zur Abfahrt
-        # ``ev_underrun_slack_kwh`` = physikalisch unmoegliche SOC-Bilanz
-        ts_key = f"wb_{self.name}_target_slack"
-        su_key = f"wb_{self.name}_soc_underrun_slack"
-        if ts_key in variables:
-            if not hasattr(result, "ev_target_slack_kwh") or result.ev_target_slack_kwh is None:
-                result.ev_target_slack_kwh = {}
-            result.ev_target_slack_kwh[self.name] = float(
-                sum(v.varValue or 0.0 for v in variables[ts_key])
-            )
-        if su_key in variables:
-            if not hasattr(result, "ev_underrun_slack_kwh") or result.ev_underrun_slack_kwh is None:
-                result.ev_underrun_slack_kwh = {}
-            result.ev_underrun_slack_kwh[self.name] = float(
-                sum(v.varValue or 0.0 for v in variables[su_key])
             )

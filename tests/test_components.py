@@ -294,11 +294,8 @@ def test_wallbox_min_range_disabled():
 
 
 def test_wallbox_always_has_soc_variable_with_bounds():
-    """SOC-Variable: obere Schranke = max_soc * Kapazitaet (BMS-Obergrenze).
-    Untere Schranke bewusst ``None`` — der Akku kann mathematisch unter 0
-    fallen, wenn das User-Setup das verlangt (zu enger Preisfilter o.ae.).
-    Diese unphysikalischen Werte werden via ``soc_underrun_slack`` mit
-    UNMET_EV_PENALTY_CT bestraft, statt direkt in Infeasibility zu fuehren."""
+    """SOC-Variable mit physikalischen Bounds: 0 (Akku-Untergrenze) bis
+    max_soc * Kapazitaet (BMS-Obergrenze)."""
     wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "min_range_enabled": True})
     model = pulp.LpProblem("test")
     vars_ = wb.get_optimization_variables(num_steps=96, model=model)
@@ -306,15 +303,11 @@ def test_wallbox_always_has_soc_variable_with_bounds():
     soc_vars = vars_["wb_wb1_soc"]
     assert len(soc_vars) == 96
     for v in soc_vars:
-        assert v.lowBound is None  # bewusst unbounded, Slack bestraft Unterlauf
+        assert v.lowBound == 0.0
+        # max_soc default 1.0 -> upBound = 1.0 * 60 kWh = 60.
         assert v.upBound == pytest.approx(
             WALLBOX_DEFAULT["ev_battery_capacity_kwh"]
         )
-    # Slack-Variable fuer SOC-Unterlauf muss existieren und nichtnegativ sein.
-    underrun = vars_["wb_wb1_soc_underrun_slack"]
-    assert len(underrun) == 96
-    for v in underrun:
-        assert v.lowBound == 0.0
 
 
 def test_wallbox_constraints_use_target_at_departure_when_enabled():

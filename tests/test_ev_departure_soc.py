@@ -145,19 +145,18 @@ def test_milp_custom_loss_rate_respected():
     )
 
 
-def test_milp_extreme_driving_loss_uses_underrun_slack():
-    """Bei 10 %/h * 11 h = 110 % Kapazitaetsverlust kann der Akku
-    rechnerisch nicht 0 halten. Statt Infeasibility liefert das
-    Modell ein Best-Effort-Ergebnis mit positivem ``ev_underrun_slack_kwh``
-    — Signal an den User, dass das Setup physikalisch unmoeglich ist."""
+def test_milp_infeasible_when_driving_loss_exceeds_capacity():
+    """Bei 10 %/h * 11 h = 110 % Kapazitaetsverlust kann der Akku-Bound
+    (soc >= 0) nicht eingehalten werden — der Solver meldet zu Recht
+    Infeasibility. Das ist die korrekte Reaktion: das User-Setup ist
+    physikalisch unmoeglich (Auto muesste mit negativem Akku zurueck-
+    kommen). Der User muss dann Akkukapazitaet, Abwesenheitsfenster
+    oder Fahrverbrauch anpassen."""
     cfg = _cfg_pv_wb(arrival=18, departure=7)
     cfg["wallboxes"][0]["driving_loss_pct_per_hour"] = 10.0
     _, res = _run(cfg)
-    assert res.success
-    underrun = res.ev_underrun_slack_kwh.get("wb1", 0.0)
-    assert underrun > 0, (
-        f"Erwartet positiven underrun-Slack bei 10 %/h Verlust, got {underrun}"
-    )
+    assert not res.success
+    assert "Infeasible" in res.solver_status
 
 
 # ---------------------------------------------------------------------------
