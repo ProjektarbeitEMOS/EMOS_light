@@ -93,10 +93,19 @@ DEFAULT_CONFIG = {
         # OFF -> ON-Anschalten zaehlt. Default 8/Tag.
         "max_starts_per_day": 8,
         "sg_ready": True,
+        # Sollwert-Ueberhoehung im SG-Ready-Zustand 3 (Einschaltempfehlung).
+        # Laut BWP v1.1: einmalige Speicherladung WW + Sollwert-Ueberhoehung.
+        # Estrich (Pufferspeicher) bekommt bei sg3 KEINEN Boost — PDF:
+        # "Wenn keine Waermeanforderung vorliegt und Schaltzustand 3 anliegt,
+        # findet keine Speicherladung im Heizbetrieb statt."
         "sg_ready_temp_raise_state3_c": 5.0,
-        "sg_ready_state1_power_limit_kw": 0.0,
+        # Sollwert-Ueberhoehung im SG-Ready-Zustand 4 (Zwangseinschaltung).
+        # PDF: WW erst, danach Pufferspeicher mit erhoehter Temperatur
+        # (Sollwert + variabler Offset 0..20 K). Muss > state3-Wert sein.
+        "sg_ready_temp_raise_state4_c": 10.0,
+        # Mindesthaltezeit fuer jeden SG-Ready-Zustand. Verhindert kurze
+        # Schaltspiele und entspricht typischen BWP-Mindesthaltzeiten.
         "sg_ready_min_hold_minutes": 10,
-        "sg_ready_min_cooldown_minutes": 10,
     },
     "hot_water_storage": {
         "enabled": True,

@@ -99,10 +99,24 @@ class HeatPump(MILPComponent):
         # Setz auf 0 oder negative Werte, um die Restriktion zu deaktivieren.
         self.max_starts_per_day = int(config.get("max_starts_per_day", 8))
         self.sg_ready = config.get("sg_ready", True)
-        self.sg_temp_raise_3 = config.get("sg_ready_temp_raise_state3_c", 5.0)
-        self.sg_state1_power_limit = config.get("sg_ready_state1_power_limit_kw", 0.0)
+        # SG-Ready-Konfiguration (BWP v1.1, siehe heat_pump.add_constraints).
+        # Bei Zustand 3 (Einschaltempfehlung) wird der WW-Sollwert um diese
+        # Temperaturspanne angehoben; Estrich (Pufferspeicher) bleibt
+        # unveraendert (PDF: ohne Waermeanforderung keine Speicherladung
+        # im Heizbetrieb bei sg3).
+        self.sg_temp_raise_3 = float(
+            config.get("sg_ready_temp_raise_state3_c", 5.0)
+        )
+        # Bei Zustand 4 (Zwangseinschaltung) wird sowohl WW als auch der
+        # Estrich-Pufferspeicher angehoben — Wert muss > sg3-Wert sein.
+        self.sg_temp_raise_4 = float(
+            config.get("sg_ready_temp_raise_state4_c", 10.0)
+        )
+        if self.sg_temp_raise_4 < self.sg_temp_raise_3:
+            # Sicherheits-Korrektur (PDF: "Der Temperaturwert liegt
+            # ueber dem fuer Schaltzustand 3 eingestellten Wert.")
+            self.sg_temp_raise_4 = self.sg_temp_raise_3
         self.sg_min_hold_minutes = config.get("sg_ready_min_hold_minutes", 10)
-        self.sg_min_cooldown_minutes = config.get("sg_ready_min_cooldown_minutes", 10)
 
         # Werden in prepare() / set_active_heat_sinks() vom Optimizer gesetzt.
         self._cop_heating: np.ndarray | None = None
@@ -184,8 +198,9 @@ class HeatPump(MILPComponent):
                 Umschalten zwischen FBH und WW zaehlt **nicht** als Start,
                 solange die WP an bleibt — nur das OFF->ON-Anschalten
                 belastet den Verdichter.
-            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Lastabwurf)
-            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Verstaerkt)
+            hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Zwangsabschaltung)
+            hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Einschaltempfehlung)
+            hp_sg4[t]: Binaer — SG-Ready Zustand 4 (Zwangseinschaltung)
 
         Wenn mehrere Waermesenken aktiv sind, werden zusaetzlich
         Aufteilungs-Variablen pro Senke erzeugt:
@@ -202,6 +217,7 @@ class HeatPump(MILPComponent):
         if self.sg_ready:
             result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
             result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
+            result["hp_sg4"] = make_binary_array("hp_sg4", num_steps)
 
         # Senken-Split nur wenn mehr als eine Senke aktiv
         if len(self._active_sinks) > 1:
@@ -264,28 +280,47 @@ class HeatPump(MILPComponent):
                     f"hp_max_starts_{day.isoformat()}",
                 )
 
-        # SG-Ready Constraints (BWP v1.1)
+        # SG-Ready Constraints (BWP v1.1, vier Schaltzustaende):
+        #   Zustand 1 (sg1=1, sg3=0, sg4=0)  — Zwangsabschaltung
+        #     => WP und el. Zusatzheizung aus.
+        #   Zustand 2 (sg1=0, sg3=0, sg4=0)  — Normalbetrieb (Default).
+        #   Zustand 3 (sg1=0, sg3=1, sg4=0)  — Einschaltempfehlung
+        #     => WP an, WW-Sollwert ueberhoeht (Estrich nicht).
+        #   Zustand 4 (sg1=0, sg3=0, sg4=1)  — Zwangseinschaltung
+        #     => WP an, WW UND Estrich-Pufferspeicher ueberhoeht.
+        # Die WW-/Estrich-Cap-Erweiterungen liegen im Optimizer
+        # (ww_sg_ready_cap_t bzw. ufh_sg_ready_cap_t), weil dort die
+        # Speicher-Variablen verfuegbar sind.
         if self.sg_ready and "hp_sg1" in variables:
             sg1 = variables["hp_sg1"]
             sg3 = variables["hp_sg3"]
+            sg4 = variables["hp_sg4"]
             min_hold_steps = steps_for_minutes(self.sg_min_hold_minutes, step_minutes)
 
-            # Exklusivitaet SG1/SG3
-            add_mutual_exclusion(model, sg1, sg3, name="hp_sg")
-
+            # Exklusivitaet aller vier Zustaende: hoechstens einer aktiv
+            # (Zustand 2 entspricht sg1 = sg3 = sg4 = 0).
             for t in range(num_steps):
-                # Leistungslimit bei SG1
                 model += (
-                    hp_power[t] <= self.max_power_kw * (1 - sg1[t])
-                    + self.sg_state1_power_limit * sg1[t],
-                    f"hp_sg1_power_limit_{t}",
+                    sg1[t] + sg3[t] + sg4[t] <= 1,
+                    f"hp_sg_mutex_{t}",
                 )
-                # SG3 setzt Betrieb voraus
-                model += sg3[t] <= hp_on[t], f"hp_sg3_needs_on_{t}"
 
-            # Mindesthaltezeiten fuer SG1 und SG3
+                # Zustand 1: Zwangsabschaltung — WP MUSS aus sein.
+                # PDF: "Die Waermepumpe und die elektrische Zusatzheizung
+                # sind aus." Hartes Verbot statt Power-Limit.
+                model += (
+                    hp_on[t] + sg1[t] <= 1,
+                    f"hp_sg1_forces_off_{t}",
+                )
+
+                # Zustand 3 und 4 setzen WP-Betrieb voraus.
+                model += sg3[t] <= hp_on[t], f"hp_sg3_needs_on_{t}"
+                model += sg4[t] <= hp_on[t], f"hp_sg4_needs_on_{t}"
+
+            # Mindesthaltezeiten fuer alle drei (gegen Pendeln).
             add_min_hold_time(model, sg1, min_hold_steps=min_hold_steps, name="hp_sg1")
             add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
+            add_min_hold_time(model, sg4, min_hold_steps=min_hold_steps, name="hp_sg4")
 
         # Senken-Split-Constraint: hp_power = sum(hp_power_<sink>)
         # Nur wenn mehrere Senken aktiv sind, sonst speist hp_power direkt
@@ -328,9 +363,17 @@ class HeatPump(MILPComponent):
         if self.sg_ready and "hp_sg3" in variables:
             sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
             sg3_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg3"]])
-            result.sg_ready_state = np.where(
-                sg1_vals > 0.5, 1, np.where(sg3_vals > 0.5, 3, 2)
+            sg4_vals = np.array(
+                [v.varValue or 0.0 for v in variables.get("hp_sg4", [])]
             )
+            # Priorisierung (kann nie kollidieren wegen Mutex):
+            # sg1 -> 1, sg4 -> 4, sg3 -> 3, sonst 2 (Normalbetrieb).
+            state = np.full(num_steps, 2, dtype=int)
+            if len(sg4_vals) == num_steps:
+                state = np.where(sg4_vals > 0.5, 4, state)
+            state = np.where(sg3_vals > 0.5, 3, state)
+            state = np.where(sg1_vals > 0.5, 1, state)
+            result.sg_ready_state = state
         # Einschaltvorgaenge zaehlen (aus hp_start). Pro Kalendertag und
         # in Summe — gleiches Schema wie das max_starts_per_day-Constraint.
         if "hp_start" in variables and self._timestamps is not None:

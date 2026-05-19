@@ -69,10 +69,14 @@ heat_pump:
   # Umschalten zwischen Heizkreis und Warmwasser zaehlt nicht.
   max_starts_per_day: 8
   sg_ready: true
+  # Sollwert-Ueberhoehung im SG-Ready-Zustand 3 (Einschaltempfehlung,
+  # PDF: einmalige WW-Speicherladung + Sollwert-Ueberhoehung).
   sg_ready_temp_raise_state3_c: 5.0
-  sg_ready_state1_power_limit_kw: 0.0
+  # Sollwert-Ueberhoehung im SG-Ready-Zustand 4 (Zwangseinschaltung).
+  # Muss > state3-Wert sein, Bereich 0..20 K laut BWP v1.1.
+  sg_ready_temp_raise_state4_c: 10.0
+  # Mindesthaltezeit fuer jeden SG-Ready-Zustand (verhindert Pendelschalten).
   sg_ready_min_hold_minutes: 10
-  sg_ready_min_cooldown_minutes: 10
 
 hot_water_storage:
   enabled: true

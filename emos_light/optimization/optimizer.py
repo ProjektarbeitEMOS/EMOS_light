@@ -239,20 +239,28 @@ class EMOSLightOptimizer:
                     f"ww_min_energy_schedule_{t}",
                 )
 
-            # SG-Ready: Dynamische WW-Speicher Obergrenze (BWP v1.1)
+            # SG-Ready: Dynamische WW-Speicher-Obergrenze (BWP v1.1).
+            # Sowohl sg3 (Einschaltempfehlung) als auch sg4 (Zwangsein-
+            # schaltung) erlauben eine Sollwert-Ueberhoehung im
+            # Warmwasserspeicher. Bei sg4 ist der Offset hoeher als bei
+            # sg3 — typisch Default 10 K vs. 5 K, einstellbar 0..20 K.
             if self.heat_pump.sg_ready and "hp_sg3" in variables:
                 sg3 = variables["hp_sg3"]
-                delta_cap_3 = (
+                sg4 = variables.get("hp_sg4")
+                vol_factor = (
                     self.hot_water_storage.volume_liters
                     * ThermalStorage.SPECIFIC_HEAT_WH_PER_L_K
-                    * self.heat_pump.sg_temp_raise_3
                     / 1000.0
                 )
+                delta_cap_3 = vol_factor * self.heat_pump.sg_temp_raise_3
+                delta_cap_4 = vol_factor * self.heat_pump.sg_temp_raise_4
                 for t in range(num_steps):
+                    extra = delta_cap_3 * sg3[t]
+                    if sg4 is not None:
+                        extra = extra + delta_cap_4 * sg4[t]
                     model += (
                         variables[f"{prefix}_energy_kwh"][t]
-                        <= self.hot_water_storage.capacity_kwh
-                        + delta_cap_3 * sg3[t],
+                        <= self.hot_water_storage.capacity_kwh + extra,
                         f"ww_sg_ready_cap_{t}",
                     )
 
@@ -260,6 +268,37 @@ class EMOSLightOptimizer:
             heating_slack = [
                 pulp.LpVariable(f"heating_slack_{t}", 0) for t in range(num_steps)
             ]
+
+            # SG-Ready Zustand 4: Pufferspeicher (= Estrich in EMOS Light)
+            # ueberhoeht. PDF: "Heizbetrieb-Abweichung: ... kuenstliche
+            # Waermeanforderung ... zur Aufladung des Pufferspeichers auf
+            # den Sollwert und den variabel einstellbaren Offset 0..20 K."
+            # Zustand 3 boostet den Estrich NICHT (PDF: "Wenn keine
+            # Waermeanforderung vorliegt und Schaltzustand 3 anliegt,
+            # findet keine Speicherladung im Heizbetrieb statt").
+            if (
+                self.heat_pump
+                and self.heat_pump.sg_ready
+                and "hp_sg4" in variables
+                and "ufh_floor_energy" in variables
+            ):
+                sg4 = variables["hp_sg4"]
+                cap_per_k = self.underfloor_heating.capacity_kwh_per_k
+                delta_floor_4 = cap_per_k * self.heat_pump.sg_temp_raise_4
+                # Hard-Bound der Variable lockern, damit der Solver das
+                # Ueberschreiten ueberhaupt darstellen kann.
+                new_high = (
+                    self.underfloor_heating.total_capacity_kwh + delta_floor_4
+                )
+                for v in variables["ufh_floor_energy"]:
+                    v.upBound = new_high
+                for t in range(num_steps):
+                    model += (
+                        variables["ufh_floor_energy"][t]
+                        <= self.underfloor_heating.total_capacity_kwh
+                        + delta_floor_4 * sg4[t],
+                        f"ufh_sg_ready_cap_{t}",
+                    )
 
         # ============================================================
         # Elektrische Energiebilanz — generisch ueber milp_components

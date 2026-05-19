@@ -636,26 +636,43 @@ with tab_config:
                 ),
             ))
 
-            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key=_wkey("sg_en"))
+            config["heat_pump"]["sg_ready"] = st.checkbox(
+                "SG-Ready aktiviert (BWP v1.1)",
+                value=config["heat_pump"].get("sg_ready", True),
+                key=_wkey("sg_en"),
+                help=(
+                    "Vier Schaltzustaende nach Vaillant Elektro-Kompendium:\n"
+                    "1 = Zwangsabschaltung, 2 = Normal,\n"
+                    "3 = Einschaltempfehlung (WW-Boost), "
+                    "4 = Zwangseinschaltung (WW + Pufferspeicher-Boost)."
+                ),
+            )
             if config["heat_pump"]["sg_ready"]:
                 sg_col1, sg_col2 = st.columns(2)
-                config["heat_pump"]["sg_ready_state1_power_limit_kw"] = sg_col1.number_input(
-                    "Zustand 1 (Lastabwurf): Max. Leistung (kW)", 0.0, 10.0,
-                    float(config["heat_pump"].get("sg_ready_state1_power_limit_kw", 0.0)), 0.5,
-                    help="0 = komplette EVU-Sperre, >0 = Leistungsbegrenzung (z.B. Par14a)",
+                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col1.number_input(
+                    "Zustand 3: WW-Sollwert-Ueberhoehung (K)", 0.0, 20.0,
+                    float(config["heat_pump"].get("sg_ready_temp_raise_state3_c", 5.0)),
+                    1.0,
+                    help=(
+                        "Einmalige WW-Speicherladung mit angehobenem Sollwert. "
+                        "Estrich bleibt unveraendert (Pufferspeicher wird bei "
+                        "sg3 ohne Waermeanforderung nicht beladen)."
+                    ),
                 )
-                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col2.number_input(
-                    "Zustand 3 (Verstaerkt): Temp-Erhoehung WW (K)", 0.0, 15.0,
-                    float(config["heat_pump"].get("sg_ready_temp_raise_state3_c", 5.0)), 1.0,
+                config["heat_pump"]["sg_ready_temp_raise_state4_c"] = sg_col2.number_input(
+                    "Zustand 4: Pufferspeicher-Offset (K)", 0.0, 20.0,
+                    float(config["heat_pump"].get("sg_ready_temp_raise_state4_c", 10.0)),
+                    1.0,
+                    help=(
+                        "Zwangseinschaltung: WW + Estrich-Pufferspeicher werden "
+                        "ueberhoeht. Muss > Zustand-3-Wert sein (BWP v1.1)."
+                    ),
                 )
-                sg_col3, sg_col4 = st.columns(2)
-                config["heat_pump"]["sg_ready_min_hold_minutes"] = int(sg_col3.number_input(
+                config["heat_pump"]["sg_ready_min_hold_minutes"] = int(st.number_input(
                     "Min. Haltezeit SG-Zustand (min)", 0, 60,
                     int(config["heat_pump"].get("sg_ready_min_hold_minutes", 10)), 5,
-                ))
-                config["heat_pump"]["sg_ready_min_cooldown_minutes"] = int(sg_col4.number_input(
-                    "Min. Cooldown zw. Wechsel (min)", 0, 60,
-                    int(config["heat_pump"].get("sg_ready_min_cooldown_minutes", 10)), 5,
+                    key=_wkey("sg_min_hold"),
+                    help="Mindestdauer, fuer die ein Nicht-Normal-Zustand gehalten wird.",
                 ))
 
     # WW-Speicher & Frischwasserstation
@@ -1872,7 +1889,11 @@ with tab_optimize:
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))
         st.plotly_chart(fig_th, use_container_width=True)
 
-        # SG-Ready Zustand (BWP v1.1)
+        # SG-Ready Zustand (BWP v1.1) — vier Schaltzustaende:
+        #  1 = Zwangsabschaltung   (K1:K2 = 1:0)
+        #  2 = Normalbetrieb       (K1:K2 = 0:0)
+        #  3 = Einschaltempfehlung (K1:K2 = 0:1, WW-Boost)
+        #  4 = Zwangseinschaltung  (K1:K2 = 1:1, WW + Pufferspeicher-Boost)
         if len(result.sg_ready_state) > 0 and np.any(result.sg_ready_state != 2):
             st.markdown("### SG-Ready Zustand (BWP v1.1)")
             fig_sg = go.Figure()
@@ -1880,10 +1901,22 @@ with tab_optimize:
                 x=ts, y=result.sg_ready_state, name="SG-Ready",
                 mode="lines", line=dict(color="darkblue", width=2),
                 fill="tozeroy",
+                hovertemplate=(
+                    "%{x|%H:%M}<br>Zustand %{y}<extra></extra>"
+                ),
             ))
             fig_sg.update_layout(
-                yaxis=dict(tickvals=[1, 2, 3], ticktext=["Lastabwurf", "Normal", "Verstaerkt"], range=[0.5, 3.5]),
-                height=200, margin=dict(t=30),
+                yaxis=dict(
+                    tickvals=[1, 2, 3, 4],
+                    ticktext=[
+                        "1 Abschaltung",
+                        "2 Normal",
+                        "3 Einschaltempf.",
+                        "4 Zwangseinsch.",
+                    ],
+                    range=[0.5, 4.5],
+                ),
+                height=220, margin=dict(t=30),
             )
             st.plotly_chart(fig_sg, use_container_width=True)
 
