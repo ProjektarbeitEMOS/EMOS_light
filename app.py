@@ -1089,7 +1089,23 @@ with tab_input:
                     csv_includes_hp,
                 )
                 st.session_state["input_data"] = data
-                st.success(f"Daten geladen: {data['num_steps']} Zeitschritte")
+                eff_h = data.get("horizon_hours", data["num_steps"] * data["step_minutes"] / 60)
+                st.success(
+                    f"Daten geladen: {data['num_steps']} Zeitschritte "
+                    f"({eff_h:.0f} h)"
+                )
+                # Hinweis, falls der Horizont wegen fehlender
+                # Day-Ahead-Preise geschrumpft wurde.
+                if data.get("horizon_shrunk"):
+                    st.info(
+                        f"ℹ️ Day-Ahead-Preise fuer den Folgetag sind noch "
+                        f"nicht publiziert (EPEX-SPOT-Auktion laeuft typ. "
+                        f"bis ~13 Uhr Ortszeit). Der Horizont wurde von "
+                        f"{int(data['configured_horizon_hours'])} h auf "
+                        f"{int(eff_h)} h verkuerzt — es wird nur ueber den "
+                        f"Zeitraum optimiert, fuer den echte Marktpreise "
+                        f"vorliegen."
+                    )
             except Exception as e:
                 st.error(f"Fehler beim Laden: {e}")
 
@@ -1180,6 +1196,17 @@ with tab_optimize:
                 )
                 st.session_state["input_data"] = data
                 inp = build_time_series_input(config, data)
+                # Day-Ahead-Verfuegbarkeit: wenn der Horizont geschrumpft
+                # wurde, das Banner einmal hier anzeigen (analog zum
+                # Eingabedaten-Tab), damit der Nutzer es auch sieht, wenn
+                # er die Optimierung ohne separates "Daten laden" startet.
+                if data.get("horizon_shrunk"):
+                    st.info(
+                        f"ℹ️ Day-Ahead-Preise fuer den Folgetag sind noch "
+                        f"nicht publiziert. Optimiere nur ueber "
+                        f"{int(data.get('horizon_hours', 24))} h "
+                        f"(konfiguriert: {int(data.get('configured_horizon_hours', 48))} h)."
+                    )
 
                 # Komponenten und Optimizer erstellen
                 components = build_components(config)

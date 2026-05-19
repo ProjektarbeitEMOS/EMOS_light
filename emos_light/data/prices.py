@@ -115,6 +115,40 @@ def fetch_day_ahead_prices(
         return generate_synthetic_prices(date, num_steps=96 * num_days)
 
 
+def is_day_ahead_published(
+    date: datetime.date, bidding_zone: str = "DE-LU",
+) -> bool:
+    """Prueft, ob Day-Ahead-Preise fuer ``date`` an der Boerse publiziert sind.
+
+    Day-Ahead-Preise werden an der EPEX SPOT um ca. 13 Uhr CET fuer den
+    naechsten Tag veroeffentlicht. Vor der Publikation liefert die
+    Energy-Charts-API entweder einen Fehler oder einen leeren bzw. sehr
+    kurzen DataFrame zurueck — beides interpretieren wir als "nicht
+    verfuegbar".
+
+    Wird vom Dashboard / load_input_data benutzt, um den
+    Optimierungshorizont dynamisch zwischen 24h und 48h umzuschalten:
+    erst wenn die morgigen Day-Ahead-Preise publiziert sind, plant der
+    Optimierer auch fuer morgen.
+
+    Args:
+        date: Liefertag, fuer den die Preise gepruet werden.
+        bidding_zone: Gebotszone (Default DE-LU).
+
+    Returns:
+        True, wenn der Strikt-Fetch erfolgreich ist UND der DataFrame
+        mindestens ~ein voller Tag (>=20 Stunden) abdeckt.
+    """
+    try:
+        df = _fetch_from_api(date, bidding_zone, num_days=1)
+    except Exception:
+        return False
+    # API kann auch erfolgreich, aber unvollstaendig antworten (z.B. nur
+    # 1-2 Stunden, wenn die Auktion gerade laeuft). Wir verlangen einen
+    # weitgehend kompletten Tag.
+    return len(df) >= 20
+
+
 def _fetch_from_api(
     date: datetime.date, bidding_zone: str, num_days: int = 1,
 ) -> pd.DataFrame:
