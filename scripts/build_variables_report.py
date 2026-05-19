@@ -273,11 +273,11 @@ def build_intro():
     overview_rows = [
         [cell("PV-Anlage"),       cell("Quelle"),    cell("Erzeugungsprognose (passiv, keine Variablen)")],
         [cell("Batterie"),        cell("Speicher"),  cell("Lade/Entlade/SOC + Logik-Binär")],
-        [cell("Wärmepumpe"), cell("Wandler"),   cell("EIN/AUS, Leistung, SG-Ready 1/3")],
+        [cell("Wärmepumpe"), cell("Wandler"),   cell("Leistung, SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, Tageslimit Einschaltvorgaenge")],
         [cell("Estrich (FBH)"),   cell("Speicher"),  cell("Energie + Wärmezufuhr + Q Estrich→Raum")],
-        [cell("Pufferspeicher"),  cell("Speicher"),  cell("Energie + Q_in/Q_demand")],
+        [cell("Pufferspeicher"),  cell("Speicher"),  cell("Energie + Q_in/Q_demand + Legionellen-Binary")],
         [cell("Frischwasserst."), cell("Wandler"),   cell("Bedarfsmodifikator (passiv)")],
-        [cell("Wallbox"),         cell("Senke"),     cell("Leistung + Aktiv-Binär, je Wallbox")],
+        [cell("Wallbox"),         cell("Senke"),     cell("Leistung + Aktiv-Binaer + EV-SOC-Zustandsvariable (Ziel-SOC, 5%/h Fahrverbrauch)")],
         [cell("E-Auto"),          cell("Parameter"), cell("liefert Wallbox-Konfig (passiv)")],
         [cell("Gebäude (Raum)"),  cell("Speicher"),  cell("T_innen-Zustandsvariable + Komfortband-Slacks (MILP seit Mai 2026)")],
         [cell("Netz (Kern)"),     cell("Anschluss"), cell("Bezug/Einspeisung + Binär-Disjunktion")],
@@ -468,9 +468,12 @@ def section_battery():
 def section_heatpump():
     out = [H1("4. Wärmepumpe")]
     out.append(P(
-        "Variable elektrische Leistung mit Modulationsbereich, EIN/AUS-"
-        "Binärvariable, Mindestlauf-/Pausenzeiten, optional SG-Ready "
-        "Zustände 1 und 3 (BWP v1.1)."
+        "Variable elektrische Leistung mit Modulationsbereich. Seit Mai 2026 "
+        "ist SG-Ready (BWP v1.1) der <b>einzige</b> Steuerkanal: vier "
+        "Zustaende (1=Zwangsabschaltung, 2=Normal, 3=Einschaltempfehlung, "
+        "4=Zwangseinschaltung), genau einer pro Schritt aktiv. y^HP wird "
+        "daraus direkt abgeleitet. Zusaetzlich Tageslimit fuer "
+        "Einschaltvorgaenge zur Verdichter-Schonung."
     ))
 
     out.append(H2("Inputs"))
@@ -483,19 +486,23 @@ def section_heatpump():
          "Aussentemperatur-Betriebsfenster"),
         ("min_run_time_minutes", "15", "Mindestlaufzeit nach Start"),
         ("min_pause_time_minutes", "15", "Mindestpause nach Stopp"),
+        ("max_starts_per_day", "8",
+         "Max. OFF->ON pro Kalendertag (Verdichter-Schonung; 0 = kein Limit)"),
         ("sg_ready", "true", "SG-Ready-Schnittstelle vorhanden"),
         ("sg_ready_temp_raise_state3_c", "5.0",
-         "Zusaetzliche WW-Solltemp in SG3"),
-        ("sg_ready_state1_power_limit_kw", "0.0",
-         "Leistungslimit bei SG1 (0 = vollstaendige Sperre)"),
+         "WW-Soll-Erhoehung in SG3 (Einschaltempfehlung)"),
+        ("sg_ready_temp_raise_state4_c", "10.0",
+         "WW- + Estrich-Soll-Erhoehung in SG4 (Zwangseinschaltung), >= sg3"),
         ("sg_ready_min_hold_minutes", "10",
-         "Mindesthaltezeit fuer SG1/SG3"),
+         "Mindesthaltezeit fuer SG3/SG4"),
     ]))
 
     out.append(H2("Entscheidungs-Variablen (pro Zeitschritt t)"))
     out.append(vars_table([
         ("hp_on[t]",    "y^HP_t",  "binaer",
-         "{0, 1}", "1 = WP an"),
+         "{0, 1}", "1 = WP an (aus SG-Ready abgeleitet)"),
+        ("hp_start[t]", "y^HP,start_t", "binaer",
+         "{0, 1}", "OFF->ON-Indikator, geht in Tagessumme"),
         ("hp_power[t]", "P^HP_t",  "kontinuierlich",
          "[0, max_electrical_power_kw]", "Elektrische Gesamtleistung"),
         ("hp_power_floor[t]", "P^HP,Floor_t", "kontinuierlich",
@@ -504,10 +511,14 @@ def section_heatpump():
         ("hp_power_ww[t]", "P^HP,WW_t", "kontinuierlich",
          "[0, max_electrical_power_kw]",
          "Anteil fuer WW-Pfad (nur wenn beide Senken aktiv)"),
-        ("sg_state_1[t]", "y^SG1_t", "binaer",
-         "{0, 1}", "1 = Lastabwurf aktiv (nur bei sg_ready)"),
-        ("sg_state_3[t]", "y^SG3_t", "binaer",
-         "{0, 1}", "1 = verstaerkter Betrieb (nur bei sg_ready)"),
+        ("hp_sg1[t]", "y^SG1_t", "binaer",
+         "{0, 1}", "Zwangsabschaltung (EVU-Sperre)"),
+        ("hp_sg2[t]", "y^SG2_t", "binaer",
+         "{0, 1}", "Normalbetrieb"),
+        ("hp_sg3[t]", "y^SG3_t", "binaer",
+         "{0, 1}", "Einschaltempfehlung (WW-Boost)"),
+        ("hp_sg4[t]", "y^SG4_t", "binaer",
+         "{0, 1}", "Zwangseinschaltung (WW + Estrich-Boost)"),
     ]))
 
     out.append(H2("Beigesteuerte Constraints"))
@@ -517,27 +528,32 @@ def section_heatpump():
         ("hp_min_run_{t}_{k}", "Mindestlaufzeit: y^HP_t - y^HP_{t-1} ≤ y^HP_{t+k}"),
         ("hp_min_pause_{t}_{k}",
          "Mindestpausenzeit: y^HP_{t-1} - y^HP_t ≤ 1 - y^HP_{t+k}"),
+        ("hp_start_link_{t}",
+         "y^HP,start_t ≥ y^HP_t - y^HP_{t-1}  (Einschalt-Indikator)"),
+        ("hp_max_starts_{day}",
+         "Σ_{t in day} y^HP,start_t ≤ N^max,start  (Default 8/Tag)"),
         ("hp_power_split_{t}",
          "P^HP_t = P^HP,Floor_t + P^HP,WW_t   (wenn beide Senken aktiv)"),
         ("heat_to_floor_{t}",
          "Q^Floor,in_t = COP^heiz_t · P^HP,Floor_t"),
         ("heat_to_ww_{t}",
          "Q^WW,in_t = COP^ww_t · P^HP,WW_t"),
-        ("sg_exclusive_{t}",
-         "y^SG1_t + y^SG3_t ≤ 1"),
-        ("sg1_power_limit_{t}",
-         "P^HP_t ≤ P_max(1-y^SG1_t) + p^SG1 · y^SG1_t"),
-        ("sg3_needs_on_{t}",
-         "y^SG3_t ≤ y^HP_t"),
-        ("sg1_hold_{t}_{k} / sg3_hold_{t}_{k}",
-         "Mindesthaltezeiten fuer SG-Zustaende"),
+        ("sg_one_active_{t}",
+         "y^SG1_t + y^SG2_t + y^SG3_t + y^SG4_t = 1  (genau ein Zustand)"),
+        ("hp_on_from_sg_{t}",
+         "y^HP_t + y^SG1_t = 1  (WP nur per SG1 abschaltbar)"),
+        ("sg3_hold_{t}_{k} / sg4_hold_{t}_{k}",
+         "Mindesthaltezeiten fuer Einschaltzustaende"),
     ]))
 
     out.append(H2("Output"))
     out.append(output_table([
         ("hp_power_kw",  "kW",  "Elektrische WP-Leistung pro Zeitschritt"),
-        ("sg_ready_state", "1/2/3",
-         "Resultierender SG-Zustand (1 Lastabw., 2 Normal, 3 Verstaerkt)"),
+        ("sg_ready_state", "1/2/3/4",
+         "Resultierender SG-Zustand (1 Aus, 2 Normal, 3 Empfehlung, 4 Zwangsein)"),
+        ("hp_starts_per_day", "dict[date,int]",
+         "Anzahl OFF->ON-Vorgaenge pro Kalendertag (max max_starts_per_day)"),
+        ("hp_starts_count", "int", "Gesamtsumme der Einschaltvorgaenge"),
         ("q_floor_kw",   "kW",  "Thermische Leistung in den Estrich"),
         ("q_ww_kw",      "kW",  "Thermische Leistung in den WW-Speicher"),
     ]))
@@ -720,7 +736,11 @@ def section_wallbox():
     out = [H1("8. Wallbox")]
     out.append(P(
         "Pro aktive Wallbox <i>w</i> wird ein eigener Variablenblock erzeugt. "
-        "Mehrere Wallboxen koexistieren als unabhängige Bloecke."
+        "Mehrere Wallboxen koexistieren als unabhängige Bloecke. Seit Mai "
+        "2026 fuehrt die Wallbox eine explizite EV-SOC-Zustandsvariable "
+        "mit Fahrverbrauch waehrend Abwesenheit; das Ziel-SOC-Constraint "
+        "greift exakt zur Abfahrtszeit (statt nur als globale Mindest-"
+        "Ladeenergie ueber den Horizont)."
     ))
 
     out.append(H2("Inputs"))
@@ -730,7 +750,10 @@ def section_wallbox():
         ("phases", "3", "1 oder 3 (begrenzt min/max)"),
         ("ev_battery_capacity_kwh", "60.0", "Akkukapazitaet des Fahrzeugs"),
         ("current_soc / target_soc", "0.30 / 0.80",
-         "Aktueller und Ziel-SoC"),
+         "Aktueller SOC bei Optimierungs-Start und Ziel-SOC zur Abfahrt"),
+        ("max_soc", "1.0", "Obergrenze des EV-Akkus (Hardware-Schutz)"),
+        ("driving_loss_pct_per_hour", "5.0",
+         "Fahrverbrauch waehrend Abwesenheit (% von Kapazitaet/h)"),
         ("arrival_hour / departure_hour", "17 / 7",
          "EV-Anwesenheitsfenster"),
         ("charging_efficiency", "0.92", "Ladewirkungsgrad"),
@@ -742,6 +765,9 @@ def section_wallbox():
          "[0, max_power_kw]", "Ladeleistung Wallbox w"),
         ("wb_<name>_on[t]",    "y^WB,w_t", "binaer",
          "{0, 1}", "1 = Wallbox w laedt aktiv"),
+        ("wb_<name>_soc[t]",   "SOC^EV,w_t", "kontinuierlich",
+         "[0, max_soc · ev_battery_capacity_kwh]",
+         "EV-SOC in kWh (Zustandsvariable, seit Mai 2026)"),
     ]))
 
     out.append(H2("Beigesteuerte Constraints"))
@@ -752,14 +778,20 @@ def section_wallbox():
          "P^WB,w_t ≥ P_min · y^WB,w_t"),
         ("wb_<name>_ev_absent_{t}",
          "P^WB,w_t = 0 fuer t ausserhalb der EV-Anwesenheit"),
-        ("wb_<name>_min_energy",
-         "Σ P^WB,w_t · Δt ≥ E^WB,bedarf_w   (Reichweite gesichert)"),
+        ("wb_<name>_soc_balance_{t}",
+         "SOC^EV,w_{t+1} = SOC^EV,w_t + η · P^WB,w_t · Δt   (anwesend)"),
+        ("wb_<name>_soc_drain_{t}",
+         "SOC^EV,w_{t+1} = SOC^EV,w_t - ℓ^drive   (abwesend, 5%/h-Verbrauch)"),
+        ("wb_<name>_target_soc_at_{t_dep}",
+         "SOC^EV,w_{t_dep} ≥ SOC^ziel · E^EV,kap   (an jeder Abfahrt)"),
     ]))
 
     out.append(H2("Output"))
     out.append(output_table([
         ("wallbox_power_kw[<name>]", "kW",
          "Zeitreihe Ladeleistung pro Wallbox"),
+        ("ev_soc_kwh[<name>]", "kWh",
+         "EV-SOC-Trajektorie pro Wallbox (gestrichelt waehrend Abwesenheit)"),
     ]))
     out.append(PageBreak())
     return out

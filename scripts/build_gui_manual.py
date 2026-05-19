@@ -322,13 +322,14 @@ def sec_sidebar():
     out.append(field_table([
         ("Optimierungsmodus",
          "Radio: Day-Ahead / MPC / Baseline",
-         "<b>Day-Ahead (MILP):</b> einmalig für 24 h optimieren mit "
-         "Prognosen — Referenzlauf.<br/>"
+         "<b>Day-Ahead (MILP):</b> einmalig über den vollen Horizont "
+         "(Default 48 h) optimieren — Referenzlauf mit perfekter "
+         "Vorausschau auf die Prognosen.<br/>"
          "<b>MPC (rollierend):</b> mehrere kurze Optimierungen "
          "hintereinander, mit Zustandsübernahme — näher an Realbetrieb.<br/>"
          "<b>Baseline (regelbasiert):</b> kein MILP, sondern naive "
-         "Steuerung (PV-Überschuss in Batterie, sonst Netz). Dient "
-         "als Vergleichswert."),
+         "Steuerung (PV-Überschuss in Batterie, Hysterese-WP, sofort-"
+         "Laden für die Wallbox). Dient als Vergleichswert."),
         ("MPC Ausführungsfenster (h)",
          "1–6, Default 1",
          "Nur sichtbar bei MPC. Wieviele Stunden des Optimierungs"
@@ -344,6 +345,26 @@ def sec_sidebar():
         "Hard-Cap: nie über die bereitgestellten Eingangsdaten hinaus "
         "(<font face='Courier'>optimization_horizon_hours</font>, "
         "Default 48 h)."
+    ))
+    out.append(P(
+        "<b>Dynamische Horizont-Anpassung bei Echtdaten (Mai 2026):</b> "
+        "Wenn die Checkbox 'Echte Daten (API)' gesetzt ist, prüft EMOS "
+        "Light vor dem Lauf, ob die Day-Ahead-Preise für den Folgetag "
+        "schon an der EPEX publiziert sind. Falls nicht (typisch vor "
+        "13 Uhr), wird der Horizont automatisch von 48 h auf 24 h "
+        "verkürzt — es wird nie über einen Zeitraum optimiert, für den "
+        "keine echten Marktpreise vorliegen. Ein Info-Banner im "
+        "Eingabedaten- und Optimierungs-Tab macht das transparent."
+    ))
+    out.append(P(
+        "<b>Planungshorizont-Panel (Mai 2026):</b> Im Optimierungs-Tab "
+        "erscheint nach dem Lauf ein Gantt-ähnliches Panel, das pro "
+        "MPC-Iteration einen Balken zeigt — dunkler Teil = "
+        "Ausführungsfenster, heller Teil = Planungs-Lookahead. "
+        "Vertikale 13:00-Marker (Day-Ahead-Publikation) und "
+        "Mitternacht-Marker als Tagesgrenze sind eingezeichnet. "
+        "Damit ist auf einen Blick zu sehen, wie weit der MPC in "
+        "jeder Iteration vorausschaut."
     ))
     out.append(P(
         "Unter den Modus-Einstellungen sieht man eine Live-Liste der "
@@ -554,18 +575,30 @@ def sec_heatpump():
          "Vorlauftemperatur für die Warmwasserbereitung. Höher = "
          "schlechterer COP, aber nötig für Komfort und Hygiene "
          "(Legionellenschutz typisch ≥ 60 °C einmal/Tag)."),
+        ("Max. Einschaltvorgänge pro Tag",
+         "0–48, Default 8",
+         "Verdichter-Schonung: jedes OFF→ON belastet die WP "
+         "mechanisch. Umschalten zwischen Heizkreis und WW zählt "
+         "<b>nicht</b>, solange die WP an bleibt — nur das echte "
+         "OFF→ON. 0 = kein Limit. Im Dashboard zeigt eine eigene "
+         "Kennzahl pro Tag, wie viele Starts verbraucht wurden."),
     ]))
-    out.append(H2("SG-Ready (BWP v1.1)"))
+    out.append(H2("SG-Ready (BWP v1.1) — vier Zustände, einziger Steuerkanal"))
     out.append(P(
-        "SG-Ready ist die Standard­schnittstelle für netzdienliche "
-        "Steuerung von Wärmepumpen — drei Zustände:"
+        "Seit Mai 2026 ist SG-Ready die <b>einzige</b> Schaltlogik der "
+        "WP (statt zusätzlich neben einem freien EIN/AUS-Schalter zu "
+        "stehen). Pro Zeitschritt ist genau einer der vier Zustände "
+        "aktiv:"
     ))
     out.append(P(
-        "<b>Zustand 1</b> (Lastabwurf): WP wird gedrosselt oder gesperrt — "
-        "z. B. wegen § 14a EnWG.<br/>"
-        "<b>Zustand 2</b> (Normalbetrieb): Standard.<br/>"
-        "<b>Zustand 3</b> (Verstärkter Betrieb): WP heizt den WW-Speicher "
-        "über den regulären Sollwert hinaus — günstige Strompreise nutzen."
+        "<b>Zustand 1</b> (Zwangsabschaltung): WP ist hart aus — z. B. "
+        "EVU-Sperre oder § 14a EnWG.<br/>"
+        "<b>Zustand 2</b> (Normalbetrieb): WP läuft regulär.<br/>"
+        "<b>Zustand 3</b> (Einschaltempfehlung): WW-Sollwert wird "
+        "angehoben — günstige Strompreise gezielt nutzen.<br/>"
+        "<b>Zustand 4</b> (Zwangseinschaltung): zusätzlich auch der "
+        "Estrich-Pufferspeicher wird angehoben — maximale "
+        "Energie­einlagerung in Niedrigpreiszeiten."
     ))
     out.append(field_table([
         ("SG-Ready aktiviert",
@@ -579,15 +612,17 @@ def sec_heatpump():
         ("Zustand 3: Temp-Erhöhung WW (K)",
          "0–15, Default 5",
          "Um wie viel Kelvin der WW-Speicher in SG3 über seinen "
-         "regulären Maximalwert geheizt werden darf. 5 K = etwa "
+         "regulären Maximalwert geheizt werden darf. 5 K ≈ "
          "+15 % Speicherkapazität."),
+        ("Zustand 4: Temp-Erhöhung WW + Estrich (K)",
+         "0–20, Default 10 (muss ≥ SG3)",
+         "In SG4 wird sowohl der WW-Speicher als auch der "
+         "Estrich-Pufferspeicher um diesen Wert angehoben. "
+         "Erlaubt die volle Day-Ahead-Speicherbewirtschaftung."),
         ("Min. Haltezeit SG-Zustand (min)",
          "0–60, Default 10",
          "Verhindert schnelles Umschalten zwischen SG-Zuständen. "
          "Hardware-Schutz."),
-        ("Min. Cooldown zw. Wechsel (min)",
-         "0–60, Default 10",
-         "Mindestabstand zwischen zwei Zustands­wechseln."),
     ]))
     out.append(PageBreak())
     return out

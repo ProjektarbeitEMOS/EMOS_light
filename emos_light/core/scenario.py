@@ -17,7 +17,12 @@ from emos_light.components.underfloor_heating import UnderfloorHeating
 from emos_light.components.wallbox import Wallbox
 from emos_light.components.electric_vehicle import ElectricVehicle
 from emos_light.core.types import TimeSeriesInput
-from emos_light.data.prices import fetch_day_ahead_prices, generate_synthetic_prices, calculate_consumer_price
+from emos_light.data.prices import (
+    fetch_day_ahead_prices,
+    generate_synthetic_prices,
+    calculate_consumer_price,
+    is_day_ahead_published,
+)
 from emos_light.data.weather import fetch_weather_forecast, generate_synthetic_weather
 from emos_light.data.profiles import (
     generate_load_profile,
@@ -109,28 +114,72 @@ def load_input_data(
     """Laedt alle Eingabedaten (Preise, Wetter, Profile)."""
     general = config.get("general", {})
     step_minutes = general.get("time_step_minutes", 15)
-    horizon_hours = general.get("optimization_horizon_hours", 48)
-    num_steps = int(horizon_hours * 60 / step_minutes)
+    configured_horizon_hours = general.get("optimization_horizon_hours", 48)
     lat = general.get("latitude", 49.33)
     lon = general.get("longitude", 12.11)
+    # Anzahl Tage, die der Horizont (inkl. Startttag) abdeckt — wird
+    # benoetigt, damit die API-Fetcher den vollen Day-Ahead-Bereich
+    # holen (sonst wuerde der zweite Tag mit dem letzten Wert gepaddet).
+    num_days = max(1, int(np.ceil(configured_horizon_hours / 24.0)))
+
+    # Dynamische Anpassung an die Day-Ahead-Verfuegbarkeit:
+    # Wenn echte Daten genutzt werden und der konfigurierte Horizont
+    # ueber Tag 1 hinaus reicht, probieren wir, ob die Day-Ahead-Preise
+    # fuer den letzten benoetigten Tag schon publiziert sind. Falls
+    # nicht (typisch vor 13 Uhr Ortszeit, wenn die EPEX-SPOT-Auktion
+    # fuer morgen noch laeuft), schrumpfen wir num_days/horizon_hours
+    # auf den tatsaechlich verfuegbaren Bereich. So wird nie ueber einen
+    # Zeitraum optimiert, fuer den keine echten Marktpreise vorliegen.
+    horizon_shrunk = False
+    if use_api and num_days > 1:
+        last_day = date + datetime.timedelta(days=num_days - 1)
+        while num_days > 1 and not is_day_ahead_published(last_day):
+            num_days -= 1
+            last_day = date + datetime.timedelta(days=num_days - 1)
+            horizon_shrunk = True
+
+    horizon_hours = min(configured_horizon_hours, num_days * 24)
+    num_steps = int(horizon_hours * 60 / step_minutes)
 
     # Preise
     if use_api:
         try:
-            prices_df = fetch_day_ahead_prices(date)
+            prices_df = fetch_day_ahead_prices(date, num_days=num_days)
         except Exception:
-            prices_df = generate_synthetic_prices(date, num_steps)
+            prices_df = generate_synthetic_prices(
+                date, num_steps=num_steps, step_minutes=step_minutes,
+            )
     else:
-        prices_df = generate_synthetic_prices(date, num_steps)
+        prices_df = generate_synthetic_prices(
+            date, num_steps=num_steps, step_minutes=step_minutes,
+        )
 
     # Wetter
     if use_api:
         try:
             weather_df = fetch_weather_forecast(lat, lon, date, num_steps, step_minutes)
         except Exception:
-            weather_df = generate_synthetic_weather(date, num_steps)
+            weather_df = generate_synthetic_weather(
+                date, num_steps=num_steps, step_minutes=step_minutes,
+            )
     else:
-        weather_df = generate_synthetic_weather(date, num_steps)
+        weather_df = generate_synthetic_weather(
+            date, num_steps=num_steps, step_minutes=step_minutes,
+        )
+
+    # Preise auf step_minutes resamplen (Day-Ahead-API liefert stuendlich;
+    # die internen Schritte sind 15-min) — block-konstant per ffill.
+    if (
+        "timestamp" in prices_df.columns
+        and len(prices_df) > 0
+        and len(prices_df) < num_steps
+    ):
+        prices_df = (
+            prices_df.set_index("timestamp")
+            .resample(f"{step_minutes}min")
+            .ffill()
+            .reset_index()
+        )
 
     spot_prices = _pad_array(prices_df["price_ct_kwh"].values, num_steps)
     tariff = config.get("tariff", {})
@@ -254,6 +303,12 @@ def load_input_data(
         "step_minutes": step_minutes,
         "lat": lat,
         "lon": lon,
+        # Effektiver Horizont (nach evtl. Day-Ahead-Shrink), damit das
+        # Dashboard und nachgelagerte Routinen die tatsaechliche
+        # Fensterlaenge kennen — nicht den konfigurierten Wunsch.
+        "horizon_hours": horizon_hours,
+        "configured_horizon_hours": configured_horizon_hours,
+        "horizon_shrunk": horizon_shrunk,
     }
 
 

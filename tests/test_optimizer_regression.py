@@ -51,8 +51,12 @@ EXPECTED = {
         "wb_kwh":    32.6,
     },
     "full": {
-        "cost_eur":   5.4613,
-        "obj_eur":    6.6139,
+        # Aktualisiert 2026-05-19: EV-Modell strikter (Ziel-SOC zur Abfahrt
+        # + 5 %/h Fahrverbrauch waehrend Abwesenheit). Der Solver kann das
+        # Laden nicht mehr an das Horizont-Ende schieben, daher leicht
+        # hoehere Netzkosten beim Full-House-Szenario.
+        "cost_eur":   5.9246,
+        "obj_eur":    6.8264,
         "hp_kwh":     2.78,
     },
 }

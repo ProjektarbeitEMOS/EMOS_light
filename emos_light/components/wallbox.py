@@ -59,6 +59,15 @@ class Wallbox(MILPComponent):
         self.departure_hour = config.get("departure_hour", 7)
         self.arrival_hour = config.get("arrival_hour", 17)
         self.charging_efficiency = config.get("charging_efficiency", 0.92)
+        # Fahrverbrauch pro Stunde Abwesenheit, in Prozent der EV-Kapazitaet.
+        # Default 5 % / h — pragmatische Annahme fuer den taeglichen Pendel-
+        # einsatz (siehe Projekt-Doku). Setzt den SOC waehrend der Fahrt
+        # linear herab; bei Rueckkehr startet das Auto mit dem reduzierten
+        # SOC, daher muss zwischen Ankunft und nachster Abfahrt wieder
+        # genug geladen werden, um target_soc zu erreichen.
+        self.driving_loss_pct_per_hour = float(
+            config.get("driving_loss_pct_per_hour", 5.0)
+        )
 
         # Garantierte Mindestreichweite (Min-Energy-Constraint).
         # Wenn False: kein Energie-Constraint, stattdessen wird in jedem
@@ -192,14 +201,26 @@ class Wallbox(MILPComponent):
         Variablen:
             wb_<name>_power[t]: Ladeleistung in kW (>= 0)
             wb_<name>_on[t]:    Binaer - Wallbox aktiv (fuer Mindestleistung)
+            wb_<name>_soc[t]:   EV-SOC in kWh am Anfang von Schritt t
+                                (0 <= soc <= max_soc * Kapazitaet). Wird
+                                pro Schritt nach Anwesenheit/Abwesenheit
+                                explizit fortgeschrieben.
         """
         prefix = f"wb_{self.name}"
+        soc_max_kwh = self.max_soc * self.ev_capacity_kwh
         return {
             f"wb_{self.name}_power": make_var_array(
                 f"{prefix}_power", num_steps, low=0, high=self.max_power_kw,
             ),
             f"wb_{self.name}_on": make_binary_array(
                 f"{prefix}_on", num_steps,
+            ),
+            # SOC pro Zeitschritt — Bound oben durch BMS (max_soc), unten
+            # bei 0. Wenn Abwesenheits-Verlust den SOC unter 0 druecken
+            # wuerde, wird das Problem infeasible — der User muss dann
+            # Akkukapazitaet oder Anwesenheitsfenster anpassen.
+            f"wb_{self.name}_soc": make_var_array(
+                f"{prefix}_soc", num_steps, low=0.0, high=soc_max_kwh,
             ),
         }
 
@@ -209,13 +230,26 @@ class Wallbox(MILPComponent):
         Constraints:
             1. Ladeleistung an on/off-Variable gekoppelt (Min und Max)
             2. EV-Anwesenheit: power = 0 ausserhalb Anwesenheitszeit
-            3. Mindestlademenge: sum(power * dt) >= energy_needed
+            3. Preisfilter (optional)
+            4. SOC-Bilanz: soc[t+1] = soc[t] + present(t)*power[t]*dt*eff
+                          - (1 - present(t)) * loss_per_step
+               Damit verliert das Auto pro Stunde Abwesenheit
+               ``driving_loss_pct_per_hour`` Prozent SOC; bei Rueckkehr
+               startet es mit reduziertem SOC und muss neu geladen
+               werden, falls vor der naechsten Abfahrt target_soc
+               wieder erreicht werden soll.
+            5. Ziel-SOC zum Abfahrtszeitpunkt: an jeder Praesenz-zu-
+               Absenz-Kante muss ``soc[t_dep] >= target_soc * cap``.
+               Loest die alte "Mindestlademenge ueber Horizont"-Logik
+               ab — verhindert, dass der Solver das Laden erst nach
+               Abfahrt erledigt.
         """
         prefix = f"wb_{self.name}"
         dt_h = step_hours(step_minutes)
 
         power = variables[f"wb_{self.name}_power"]
         on = variables[f"wb_{self.name}_on"]
+        soc = variables[f"wb_{self.name}_soc"]
         num_steps = len(power)
 
         # 1) Modulationsbereich (Min/Max gekoppelt an on/off)
@@ -228,12 +262,15 @@ class Wallbox(MILPComponent):
 
         # 2) EV-Anwesenheit: ausserhalb der Anwesenheit hart auf 0
         steps_per_hour = 60 // step_minutes
+        presence: list[bool] = []
         for t in range(num_steps):
             hour = (t // steps_per_hour) % 24
-            if not self._is_ev_present(hour):
+            present_t = self._is_ev_present(hour)
+            presence.append(present_t)
+            if not present_t:
                 model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
 
-        # 2b) Preisfilter: nur in den guenstigsten X % der Tagesstunden laden
+        # 3) Preisfilter: nur in den guenstigsten X % der Tagesstunden laden
         if self._allowed_charging_steps is not None:
             for t in range(num_steps):
                 if t not in self._allowed_charging_steps:
@@ -242,39 +279,51 @@ class Wallbox(MILPComponent):
                         f"{prefix}_price_filter_{t}",
                     )
 
-        # 3) Lade-Strategie
+        # 4) SOC-Bilanz
         #
-        # Immer eine HARTE OBERGRENZE: niemals ueber max_soc laden
-        # (entspricht physisch dem Akku-BMS).
-        total_energy = pulp.lpSum(power[t] * dt_h for t in range(num_steps))
-        model += (
-            total_energy <= self.max_charge_kwh,
-            f"{prefix}_max_energy",
+        #   soc[0] = initial_soc * capacity
+        #   soc[t+1] = soc[t] + present(t)*power[t]*dt*eff
+        #             - (1-present(t)) * driving_loss_per_step
+        #
+        # Driving-Loss in kWh pro Schritt:
+        #   loss/step = driving_loss_pct/100 * capacity * dt_h
+        # (5 %/h * 60 kWh = 3 kWh/h = 0.75 kWh / 15min-step)
+        initial_soc_kwh = self.current_soc * self.ev_capacity_kwh
+        loss_per_step_kwh = (
+            self.driving_loss_pct_per_hour / 100.0
+            * self.ev_capacity_kwh
+            * dt_h
         )
 
-        if self.min_range_enabled:
-            # 3a) Garantierte Mindestlademenge bis Abfahrt (target_soc).
-            #     Solver darf zwischen target_soc und max_soc frei waehlen.
-            model += (
-                total_energy >= self.energy_needed_kwh,
-                f"{prefix}_min_energy",
-            )
-        else:
-            # 3b) Ohne SOC-Kommunikation: lade in den erlaubten Slots
-            #     "so viel wie moeglich" — entweder bis voll (max_soc)
-            #     oder bis die erlaubten Slots ausgehen. Realisiert als
-            #     Min-Constraint mit dem kleineren der beiden Werte;
-            #     mit der oberen Schranke aus 3) zusammen ist der
-            #     Solver gezwungen, dort exakt zu laden, ohne ueber
-            #     max_soc hinauszuschiessen.
-            allowed_slots = self._count_charging_slots(num_steps, step_minutes)
-            max_via_slots = allowed_slots * dt_h * self.max_power_kw
-            opportunistic_min = min(self.max_charge_kwh, max_via_slots)
-            if opportunistic_min > 0:
+        model += (soc[0] == initial_soc_kwh, f"{prefix}_soc_init")
+        for t in range(num_steps - 1):
+            if presence[t]:
                 model += (
-                    total_energy >= opportunistic_min,
-                    f"{prefix}_opportunistic_charge",
+                    soc[t + 1]
+                    == soc[t] + power[t] * dt_h * self.charging_efficiency,
+                    f"{prefix}_soc_step_{t}",
                 )
+            else:
+                model += (
+                    soc[t + 1] == soc[t] - loss_per_step_kwh,
+                    f"{prefix}_soc_step_{t}",
+                )
+
+        # 5) Ziel-SOC zum Abfahrtszeitpunkt: jede 1->0-Kante in presence
+        # ist eine Abfahrt; soc dort muss >= target * capacity sein. Auch
+        # eine Abfahrt am Schritt 0 (z.B. wenn current_soc bereits am Ziel
+        # ist) ist erfasst, weil soc[0] == initial_soc_kwh — der Solver
+        # meldet dann ggf. Infeasibility, wenn current_soc < target.
+        if self.min_range_enabled:
+            target_soc_kwh = self.target_soc * self.ev_capacity_kwh
+            for t in range(num_steps):
+                # Abfahrt zwischen t-1 und t: vorher anwesend, jetzt nicht
+                was_present = presence[t - 1] if t > 0 else True
+                if was_present and not presence[t]:
+                    model += (
+                        soc[t] >= target_soc_kwh,
+                        f"{prefix}_target_at_departure_{t}",
+                    )
 
     # ------------------------------------------------------------------
     # Bilanz-Beitraege
@@ -291,8 +340,14 @@ class Wallbox(MILPComponent):
     def extract_result(
         self, result: Any, variables: dict, num_steps: int, dt_h: float,
     ) -> None:
-        """Wallbox-Ladeleistung in result.wallbox_power_kw[name] ablegen."""
+        """Ladeleistung und EV-SOC-Trajektorie pro Wallbox ins Result."""
         import numpy as np
         result.wallbox_power_kw[self.name] = np.array(
             [v.varValue or 0.0 for v in variables[f"wb_{self.name}_power"]]
         )
+        if f"wb_{self.name}_soc" in variables:
+            if not hasattr(result, "ev_soc_kwh") or result.ev_soc_kwh is None:
+                result.ev_soc_kwh = {}
+            result.ev_soc_kwh[self.name] = np.array(
+                [v.varValue or 0.0 for v in variables[f"wb_{self.name}_soc"]]
+            )

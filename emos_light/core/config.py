@@ -87,11 +87,25 @@ DEFAULT_CONFIG = {
         "operating_max_temp_c": 43.0,
         "min_run_time_minutes": 15,
         "min_pause_time_minutes": 15,
+        # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
+        # Schont den Verdichter — laeuft die WP einmal, darf sie beliebig
+        # lang laufen und auch zwischen Heizen/WW umschalten, nur das
+        # OFF -> ON-Anschalten zaehlt. Default 8/Tag.
+        "max_starts_per_day": 8,
         "sg_ready": True,
+        # Sollwert-Ueberhoehung im SG-Ready-Zustand 3 (Einschaltempfehlung).
+        # Laut BWP v1.1: einmalige Speicherladung WW + Sollwert-Ueberhoehung.
+        # Estrich (Pufferspeicher) bekommt bei sg3 KEINEN Boost — PDF:
+        # "Wenn keine Waermeanforderung vorliegt und Schaltzustand 3 anliegt,
+        # findet keine Speicherladung im Heizbetrieb statt."
         "sg_ready_temp_raise_state3_c": 5.0,
-        "sg_ready_state1_power_limit_kw": 0.0,
+        # Sollwert-Ueberhoehung im SG-Ready-Zustand 4 (Zwangseinschaltung).
+        # PDF: WW erst, danach Pufferspeicher mit erhoehter Temperatur
+        # (Sollwert + variabler Offset 0..20 K). Muss > state3-Wert sein.
+        "sg_ready_temp_raise_state4_c": 10.0,
+        # Mindesthaltezeit fuer jeden SG-Ready-Zustand. Verhindert kurze
+        # Schaltspiele und entspricht typischen BWP-Mindesthaltzeiten.
         "sg_ready_min_hold_minutes": 10,
-        "sg_ready_min_cooldown_minutes": 10,
     },
     "hot_water_storage": {
         "enabled": True,
@@ -192,6 +206,12 @@ WALLBOX_DEFAULT = {
     "departure_hour": 7,
     "arrival_hour": 18,
     "charging_efficiency": 0.92,
+    # SOC-Verlust pro Stunde Abwesenheit (Pendelverbrauch), in Prozent
+    # der EV-Kapazitaet. Bei Default 5 %/h und 60 kWh ergibt das 3 kWh/h,
+    # was einem moderaten Verbrauch von ~15 kWh/100km bei 60 km/h
+    # entspricht — eine pragmatische Naeherung fuer den taeglichen
+    # Pendeleinsatz.
+    "driving_loss_pct_per_hour": 5.0,
 }
 
 EV_DEFAULT = {

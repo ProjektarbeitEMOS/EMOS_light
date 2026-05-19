@@ -615,11 +615,11 @@ def slide_components_overview(prs, page):
         ("Komponente", "Variablen", "Hauptbeitrag", "Rolle"),
         ("Netz", "P^buy, P^sell + Binär", "Disjunktion Bezug ↔ Einspeisung", "Quelle/Senke"),
         ("Batterie", "P_ch, P_dis, E + 2 Binär", "SOC-Bilanz, Lade/Entlade-Disjunktion", "Speicher"),
-        ("Wärmepumpe", "P^HP, y^HP + SG1/SG3", "Modulation, Mindestlauf, SG-Ready", "Wandler"),
+        ("Wärmepumpe", "P^HP, y^HP, y^start + SG1/2/3/4", "SG-Ready einziger Steuerkanal, max 8 Starts/Tag", "Wandler"),
         ("Estrich (FBH)", "E^Floor, Q^Floor_in, Q^Floor→Raum", "Bilanz mit explizitem Wärmestrom an Raum", "Speicher"),
         ("Gebäude (Raum)", "T_innen, s_low, s_high", "Raumluftbilanz + Komfortband (Mai 2026)", "Speicher"),
-        ("Pufferspeicher (WW)", "E^WW, Q^WW_in, Q^demand", "Zwei-Zonen-Verluste", "Speicher"),
-        ("Wallbox", "P^WB, y^WB", "EV-Anwesenheit + Mindestlademenge", "Senke"),
+        ("Pufferspeicher (WW)", "E^WW, Q^WW_in + Legionellen-Bin.", "Zwei-Zonen-Verluste, SG3/SG4-Boost", "Speicher"),
+        ("Wallbox", "P^WB, y^WB, SOC^EV", "Ziel-SOC zur Abfahrt, 5%/h Fahrverbrauch", "Senke"),
         ("PV / FWS / E-Auto", "(keine eigenen)", "Lieferung von Eingangs-Zeitreihen", "passiv"),
     ]
 
@@ -756,17 +756,19 @@ def slide_heatpump_constraints(prs, page):
     items = [
         {"text": "Modulationsbereich: P^HP_min · y^HP_t ≤ P^HP_t ≤ P^HP_max · y^HP_t",
          "bold_lead": True},
-        {"text": "Mindestlaufzeit (nach Start): y^HP_t − y^HP_{t-1} ≤ y^HP_{t+k}",
+        {"text": "Mindestlaufzeit / Mindestpausenzeit (Hardware-Schutz)",
          "bold_lead": True},
-        {"text": "Mindestpausenzeit (nach Stopp): analog",
+        {"text": "Tageslimit Einschaltvorgänge (Mai 2026): "
+                 "y^start_t ≥ y^HP_t − y^HP_{t-1};  Σ_{t∈Tag} y^start_t ≤ 8",
          "bold_lead": True},
         {"text": "Thermische Kopplung: Q^Floor_in_t = COP^heiz_t · P^HP,Floor_t "
-                 "und Q^WW_in_t = COP^ww_t · P^HP,WW_t",
+                 "und Q^WW_in_t = COP^ww_t · P^HP,WW_t  (COP vorberechnet → linear)",
          "bold_lead": True},
-        {"text": "Aufteilung: P^HP_t = P^HP,Floor_t + P^HP,WW_t",
+        {"text": "SG-Ready (BWP v1.1) als einziger Steuerkanal: "
+                 "Σ_i y^SGi_t = 1   und   y^HP_t + y^SG1_t = 1",
          "bold_lead": True},
-        {"text": "SG-Ready (BWP v1.1): SG1 vs SG3 exklusiv, Leistungslimit "
-                 "bei SG1, Mindesthaltezeit für beide Zustände",
+        {"text": "SG3: WW-Sollwert +ΔT³. SG4: zusätzlich auch Estrich-Sollwert "
+                 "+ΔT⁴ (Zwangseinschaltung mit Pufferspeicher-Boost)",
          "bold_lead": True},
     ]
     add_bullets(slide, items, fontsize=16, line_spacing=1.35,

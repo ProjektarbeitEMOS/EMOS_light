@@ -5,6 +5,10 @@ und dass die Baseline (regelbasiert) immer schlechter (oder gleich) ist
 als die MILP-Optimierung — sonst stimmt etwas nicht mit dem Optimizer.
 """
 
+import copy
+import datetime
+
+import numpy as np
 import pytest
 
 from emos_light.core.scenario import (
@@ -19,10 +23,22 @@ from emos_light.optimization.baseline import (
 from .conftest import (
     cfg_battery_only,
     cfg_full_house,
+    cfg_hp_ufh,
     cfg_hp_ww,
     cfg_wallbox_only,
     TEST_DATE,
 )
+
+
+def _cfg_room_winter() -> dict:
+    """WP + FBH + Building bei kaltem Winter — pruefen, dass das Raumluft-
+    Modell der Baseline laeuft (analog zu tests/test_milp_room.py)."""
+    cfg = cfg_hp_ufh()
+    cfg["building"]["enabled"] = True
+    cfg["building"]["indoor_temp_c"] = 21.0
+    cfg["building"]["comfort_temp_min_c"] = 20.0
+    cfg["building"]["comfort_temp_max_c"] = 24.0
+    return cfg
 
 
 def _input_for(cfg):
@@ -111,3 +127,103 @@ def test_milp_no_worse_than_baseline(scenario):
         f"{scenario.__name__}: MILP={milp.total_cost_eur:.4f} > "
         f"Baseline={base.total_cost_eur:.4f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Raumluftmodell (Mai 2026) — Baseline mit Building als aktiver Komponente
+# ---------------------------------------------------------------------------
+
+def test_baseline_room_mode_populates_result_fields():
+    """Mit aktivem Building muss die Baseline T_innen/heat_loss/q_to_room
+    in das Result schreiben — analog zum MILP-Pfad."""
+    cfg = _cfg_room_winter()
+    inp = _input_for(cfg)
+    res = run_baseline(inp, cfg)
+
+    assert res.success is True
+    n = len(res.timestamps)
+
+    assert res.indoor_temp_c is not None and len(res.indoor_temp_c) == n
+    assert res.heat_loss_kw is not None and len(res.heat_loss_kw) == n
+    assert res.q_floor_to_room_kw is not None and len(res.q_floor_to_room_kw) == n
+
+    # T_innen muss in einem plausiblen Bereich um die Komfortgrenzen herum
+    # bleiben — die Baseline taktet, also etwas Toleranz erlaubt.
+    assert res.indoor_temp_c.min() > 15.0, (
+        f"T_innen unrealistisch tief: {res.indoor_temp_c.min():.2f} °C"
+    )
+    assert res.indoor_temp_c.max() < 30.0, (
+        f"T_innen unrealistisch hoch: {res.indoor_temp_c.max():.2f} °C"
+    )
+
+
+def test_baseline_room_mode_balance_consistent():
+    """Stationaere Energiebilanz: ueber den ganzen Tag muss die WP genug
+    Waerme liefern, dass das Haus im Mittel nicht abkuehlt — d.h.
+    sum(q_floor_to_room) ≈ sum(q_loss), beide > 0."""
+    cfg = _cfg_room_winter()
+    inp = _input_for(cfg)
+    res = run_baseline(inp, cfg)
+
+    dt_h = inp.step_minutes / 60.0
+    q_to_room_kwh = float(np.sum(res.q_floor_to_room_kw)) * dt_h
+    q_loss_kwh = float(np.sum(res.heat_loss_kw)) * dt_h
+
+    # WP muss Waerme abgeben (Estrich -> Raum), sonst kuehlt das Haus
+    # nur ab. Verlust > 0 ohnehin (Aussentemperatur < Innentemperatur).
+    assert q_loss_kwh > 0, "Verluste muessten im Winter positiv sein"
+    assert q_to_room_kwh > 0, "Estrich muesste Waerme an den Raum abgeben"
+    # Bei Hysterese-Regelung sollte der Mittelwert vergleichbar sein —
+    # ueber 24 h schwankt T_innen, aber netto deckt die Heizung den
+    # Verlust. Toleranz: 50 % (Hysterese ist nicht praezise).
+    assert abs(q_to_room_kwh - q_loss_kwh) < 0.5 * q_loss_kwh + 5.0, (
+        f"Energiebilanz weit auseinander: "
+        f"q_to_room={q_to_room_kwh:.2f} kWh, q_loss={q_loss_kwh:.2f} kWh"
+    )
+
+
+def test_baseline_room_mode_heat_loss_formula():
+    """heat_loss_kw[t] muss exakt UA·(T_innen[t-1]-T_aus[t])/1000 sein
+    (gleiche explizite-Euler-Konvention wie der MILP-Optimizer)."""
+    cfg = _cfg_room_winter()
+    inp = _input_for(cfg)
+    res = run_baseline(inp, cfg)
+
+    from emos_light.components.building import Building
+    b = Building("test", cfg["building"])
+    ua_kw_per_k = b.ua_w_per_k / 1000.0
+
+    # prev = [initial, T_innen[0], T_innen[1], ...]
+    prev = np.concatenate(([b.indoor_temp], res.indoor_temp_c[:-1]))
+    expected = ua_kw_per_k * (prev - inp.outside_temp_c[: len(prev)])
+    assert np.allclose(res.heat_loss_kw, expected, atol=1e-6), (
+        "heat_loss_kw weicht von UA·(T_innen_prev - T_aus)/1000 ab"
+    )
+
+
+def test_baseline_room_mode_milp_no_worse():
+    """MILP darf auch im Raumluftmodus nicht teurer sein als die Baseline."""
+    cfg = _cfg_room_winter()
+    inp = _input_for(cfg)
+    base = run_baseline(inp, cfg)
+    milp = build_optimizer(build_components(cfg)).optimize(inp)
+
+    assert milp.total_cost_eur <= base.total_cost_eur + 0.01, (
+        f"MILP={milp.total_cost_eur:.4f} > Baseline={base.total_cost_eur:.4f}"
+    )
+
+
+def test_baseline_without_building_keeps_old_fallback():
+    """Ohne Building muss die Baseline ohne T_innen-Felder durchlaufen
+    (alte Verlustraten-Hysterese, kompatibel zu pre-Mai-2026)."""
+    cfg = cfg_hp_ufh()
+    cfg["building"]["enabled"] = False
+    inp = _input_for(cfg)
+    res = run_baseline(inp, cfg)
+    assert res.success
+    # indoor_temp_c bleibt leer (Default field aus dataclass = leere Reihe)
+    assert len(res.indoor_temp_c) == 0
+    assert len(res.heat_loss_kw) == 0
+    assert len(res.q_floor_to_room_kw) == 0
+    # Aber Estrich-Trajektorie wird wie gehabt gefuellt
+    assert len(res.floor_energy_kwh) == len(res.timestamps)

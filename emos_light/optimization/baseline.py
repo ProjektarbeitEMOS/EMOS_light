@@ -55,12 +55,18 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
 
     - **WP mit Hysterese-Regelung** auf die thermischen Speicher:
         * Normalerweise aus.
-        * Startet, sobald ein Speicher (Estrich oder Warmwasser) die
-          untere Hysterese-Schwelle (25 % der nutzbaren Bandbreite)
-          unterschreitet — d.h. droht, die Komfort-Untergrenze zu
-          verletzen.
-        * Laeuft dann mit voller Leistung, bis die obere Schwelle
-          (95 %) erreicht ist.
+        * Bei **aktivem Gebaeudemodell** (``building.enabled = True``,
+          seit Mai 2026): Hysterese auf der **Raumlufttemperatur**
+          T_innen — startet, wenn T_innen unter (comfort_min + 1 K)
+          faellt, stoppt bei (comfort_max - 1 K). Estrichbilanz wird
+          dann mit dem expliziten Waermestrom Estrich->Raum gefuehrt
+          (MILP-Modell):
+              q_floor_to_room = h*A/1000 * (T_floor[t-1] - T_innen[t-1])
+              C_room * dT_innen/dt = q_floor_to_room - UA/1000 * (T_innen[t-1] - T_aus[t])
+        * **Ohne Gebaeudemodell** (Fallback, kompatibel zu pre-Mai-2026):
+          Hysterese auf der **Estrich-Energie** — 25 % unterhalb T_max
+          startet, 95 % stoppt. Estrichbilanz mit linearer Verlustrate.
+        * Warmwasserspeicher: Hysterese auf der WW-Energie unverändert.
         * Priorisierung: Warmwasser hat Vorrang vor Estrich
           (Brauchwasser ist zeitkritischer als Raumheizung, die
           mehrere Stunden Reserve im Estrich hat).
@@ -168,8 +174,46 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             _fws = FreshWaterStation("baseline_fws", fws_cfg)
             fws_efficiency = _fws.efficiency if _fws.efficiency > 0 else 1.0
 
+    # --- Gebaeude-Raumluftmodell (Mai 2026 — analog zum MILP-Optimizer) ---
+    # Wenn Building aktiv ist (und WP+FBH ebenfalls), wird die Hysterese
+    # nicht mehr auf der Estrich-Energie ausgewertet, sondern auf der
+    # Raumlufttemperatur T_innen. Estrichbilanz und Raumbilanz werden
+    # explizit gekoppelt (gleiches Modell wie in Building.heat_demand).
+    building_cfg = config.get("building", {})
+    building_active = (
+        building_cfg.get("enabled", False) and hp_enabled and ufh_active
+    )
+    building_obj = None
+    t_innen = 0.0
+    c_room_kwh_per_k = 0.0
+    ua_kw_per_k = 0.0
+    t_innen_low = 0.0
+    t_innen_high = 0.0
+    indoor_temp_all = None
+    heat_loss_all = None
+    q_floor_to_room_all = None
+    if building_active:
+        from emos_light.components.building import Building
+        building_obj = Building("baseline_building", building_cfg)
+        t_innen = building_obj.indoor_temp
+        c_room_kwh_per_k = building_obj.shell_capacity_kwh_per_k
+        ua_kw_per_k = building_obj.ua_w_per_k / 1000.0
+        # Hysterese-Schwellen auf T_innen: 1 K Sicherheitsband innerhalb
+        # des Komfortbands, damit der traege Estrich nicht ueber-/
+        # unterschiesst (in einem Schritt fliesst nur wenig Waerme in
+        # den Raum, aber dafuer auch nach dem WP-Ausschalten noch lange).
+        t_innen_low = building_obj.comfort_temp_min_c + 1.0
+        t_innen_high = building_obj.comfort_temp_max_c - 1.0
+        indoor_temp_all = np.zeros(num_steps)
+        heat_loss_all = np.zeros(num_steps)
+        q_floor_to_room_all = np.zeros(num_steps)
+
     # Hysterese-Zustand: "OFF" | "FLOOR" | "WW"
     hp_state = "OFF"
+    # Einschaltvorgaenge pro Kalendertag mitzaehlen (informativ — die
+    # Baseline ist die Referenzstrategie und respektiert kein hartes
+    # Limit; das Dashboard kann den Vergleich gegen MILP/MPC zeigen).
+    hp_starts_per_day: dict = {}
 
     # Zeitreihen vorbereiten
     grid_buy_all = np.zeros(num_steps)
@@ -194,6 +238,11 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     # Wallbox auf zu laden.
     ev_soc_kwh: dict = {}   # safe_name -> aktueller SOC (kWh, DC-seitig)
     ev_max_kwh: dict = {}   # safe_name -> max_soc * capacity (Obergrenze)
+    # SOC-Trajektorie pro Wallbox aufzeichnen — wird ans Result gehaengt,
+    # damit das Dashboard genau wie beim MILP-Pfad den realen Verlauf
+    # (Laden waehrend Anwesenheit, Verlust waehrend Abwesenheit) zeigen
+    # kann.
+    ev_soc_trajectory: dict = {}
     for wb_cfg in wallboxes_cfg:
         if wb_cfg.get("enabled", False):
             name = _safe_wb_name(
@@ -205,6 +254,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             max_soc = float(wb_cfg.get("max_soc", 1.0))
             ev_soc_kwh[name] = current * cap
             ev_max_kwh[name] = max_soc * cap
+            ev_soc_trajectory[name] = np.zeros(num_steps)
 
     total_cost_ct = 0.0
     feed_in_tariff = inp.feed_in_tariff_ct_kwh
@@ -221,10 +271,26 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
 
         if hp_enabled and cop_heating is not None and (ufh_active or ww_active):
             # ---- Hysterese-Modus auf den thermischen Speichern ----
-            # Verluste/Bedarf pro Speicher vorab
-            floor_loss_kw = (
-                ufh_obj.loss_rate_per_h * floor_e if ufh_active else 0.0
-            )
+            # Verluste/Bedarf pro Speicher vorab.
+            # Floor->Raum-Waermestrom:
+            #  - Bei aktivem Building (Mai 2026): explizit aus T_floor und
+            #    T_innen nach MILP-Modell. Floor-Verlust ist hier nicht
+            #    mehr ``loss_rate*E``, sondern der physikalische Strom in
+            #    den Raum (kann auch negativ werden, dann fliesst Waerme
+            #    vom Raum in den Estrich).
+            #  - Sonst Fallback auf das lineare Verlustratenmodell, das
+            #    den Verlust direkt auf die Estrich-Energie bezieht.
+            if building_active:
+                t_floor_prev = ufh_obj.energy_to_temp(floor_e)
+                q_floor_to_room = (
+                    ufh_obj.h_surface * ufh_obj.area_m2 / 1000.0
+                    * (t_floor_prev - t_innen)
+                )
+            else:
+                q_floor_to_room = (
+                    ufh_obj.loss_rate_per_h * floor_e if ufh_active else 0.0
+                )
+
             ww_demand_kw = 0.0
             ww_standby_loss_kw = 0.0
             if ww_active:
@@ -242,20 +308,34 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 else ww_low_e
             )
 
-            # Hysterese-Logik: Statemaschine
-            # Priorisierung: WW vor FBH (Brauchwasser zeitkritischer)
+            # Hysterese-Logik: Statemaschine.
+            # Priorisierung: WW vor FBH (Brauchwasser zeitkritischer).
+            # FBH-Kriterium:
+            #  - building_active: auf T_innen (MILP-konsistente Regelgroesse)
+            #  - sonst: auf Estrich-Energie (alte Logik)
             if hp_state == "WW" and (not ww_active or ww_e >= ww_high_e):
                 hp_state = "OFF"
-            elif hp_state == "FLOOR" and (
-                not ufh_active or floor_e >= floor_high_e
-            ):
-                hp_state = "OFF"
+            elif hp_state == "FLOOR":
+                if building_active:
+                    if t_innen >= t_innen_high or floor_e >= floor_cap:
+                        hp_state = "OFF"
+                elif not ufh_active or floor_e >= floor_high_e:
+                    hp_state = "OFF"
 
+            prev_state = hp_state
             if hp_state == "OFF":
                 if ww_active and ww_e < ww_low_e_t:
                     hp_state = "WW"
-                elif ufh_active and floor_e < floor_low_e:
-                    hp_state = "FLOOR"
+                elif ufh_active:
+                    if building_active:
+                        if t_innen < t_innen_low:
+                            hp_state = "FLOOR"
+                    elif floor_e < floor_low_e:
+                        hp_state = "FLOOR"
+            # Einschaltvorgang OFF -> {FLOOR,WW} zaehlen
+            if prev_state == "OFF" and hp_state != "OFF":
+                day = inp.timestamps[t].date()
+                hp_starts_per_day[day] = hp_starts_per_day.get(day, 0) + 1
 
             # Leistung gemaess State
             if hp_state == "WW":
@@ -267,13 +347,26 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
 
             # Speicher updaten
             if ufh_active:
-                floor_e = floor_e + (q_to_floor - floor_loss_kw) * dt_h
+                floor_e = floor_e + (q_to_floor - q_floor_to_room) * dt_h
                 floor_e = max(0.0, min(floor_e, floor_cap))
                 floor_energy_all[t] = floor_e
             if ww_active:
                 ww_e = ww_e + (q_to_ww - ww_demand_kw - ww_standby_loss_kw) * dt_h
                 ww_e = max(0.0, min(ww_e, ww_cap))
                 ww_energy_all[t] = ww_e
+
+            # Raumluft-Bilanz (nur bei aktivem Building) — explizites Euler,
+            # identisches Modell wie der MILP-Optimizer in Building.heat_demand.
+            if building_active:
+                q_loss = ua_kw_per_k * (
+                    t_innen - float(inp.outside_temp_c[t])
+                )
+                t_innen = t_innen + (
+                    q_floor_to_room - q_loss
+                ) * dt_h / c_room_kwh_per_k
+                indoor_temp_all[t] = t_innen
+                heat_loss_all[t] = q_loss
+                q_floor_to_room_all[t] = q_floor_to_room
 
         elif hp_enabled and cop_heating is not None:
             # ---- Fallback ohne Speicher: WP deckt heating + hw direkt ----
@@ -292,7 +385,9 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         q_ww_all[t] = q_to_ww
 
         # Wallboxen — sofort laden, wenn EV anwesend UND der Akku noch
-        # nicht voll ist (kein Preisfilter in der Baseline).
+        # nicht voll ist (kein Preisfilter in der Baseline). Waehrend
+        # Abwesenheit faellt der SOC linear mit ``driving_loss_pct_per_hour``
+        # (Default 5 % / h), gleiches Modell wie der MILP-Optimizer.
         wb_total = 0.0
         for wb_cfg in wallboxes_cfg:
             if not wb_cfg.get("enabled", False):
@@ -310,6 +405,13 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             )
             eff = float(wb_cfg.get("charging_efficiency", 0.92))
             max_kw = float(wb_cfg.get("max_power_kw", 0.0))
+            cap_kwh = float(wb_cfg.get("ev_battery_capacity_kwh", 60.0))
+            loss_pct_per_h = float(
+                wb_cfg.get("driving_loss_pct_per_hour", 5.0)
+            )
+
+            # Trajektorie: SOC am Anfang des Schritts (vor dem Update)
+            ev_soc_trajectory[name][t] = ev_soc_kwh[name]
 
             wb_power = 0.0
             if ev_present:
@@ -323,6 +425,12 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                     wb_power = min(max_kw, max_ac_kw)
                     # SOC nachfuehren (DC-seitig)
                     ev_soc_kwh[name] += wb_power * dt_h * eff
+            else:
+                # Auto faehrt: SOC sinkt um loss_pct/h * Kapazitaet
+                # (auf 0 geclampt, falls die Strecke laenger ist als
+                # die Reichweite).
+                loss_kwh = loss_pct_per_h / 100.0 * cap_kwh * dt_h
+                ev_soc_kwh[name] = max(0.0, ev_soc_kwh[name] - loss_kwh)
             wallbox_power_all[name][t] = wb_power
             wb_total += wb_power
 
@@ -395,6 +503,30 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             [ts_obj.energy_to_temp(e) for e in ww_energy_all]
         )
         result.q_ww_kw = q_ww_all
+    # Raumluftmodell (Mai 2026) — gleiche Result-Felder wie MILP, damit
+    # die Dashboard-Plots ohne Sonderbehandlung beide Modi rendern.
+    if building_active:
+        result.indoor_temp_c = indoor_temp_all
+        result.heat_loss_kw = heat_loss_all
+        result.q_floor_to_room_kw = q_floor_to_room_all
+
+    # Baseline plant nicht in die Zukunft — der gesamte simulierte Bereich
+    # wird ohne Lookahead Schritt fuer Schritt abgefahren. Damit das
+    # Dashboard fuer alle Modi dasselbe Planungs-Layout zeichnen kann,
+    # geben wir ein einziges, deckungsgleiches Fenster zurueck.
+    result.planning_windows = [{
+        "start_step": 0,
+        "exec_end_step": num_steps,
+        "horizon_end_step": num_steps,
+    }]
+    # Einschaltvorgaenge der Baseline mitliefern (analog zum MILP),
+    # damit das Dashboard die Verdichter-Belastung gegen MILP/MPC
+    # vergleichen kann.
+    result.hp_starts_per_day = hp_starts_per_day
+    result.hp_starts_count = int(sum(hp_starts_per_day.values()))
+    # EV-SOC-Trajektorie pro Wallbox (analog zum MILP-Pfad). Macht den
+    # Verlust waehrend Abwesenheit (5 %/h Default) im Dashboard sichtbar.
+    result.ev_soc_kwh = ev_soc_trajectory
 
     # KPIs anwenden (Eigenverbrauch, Autarkie etc.)
     from emos_light.utils.kpi import calculate_kpis

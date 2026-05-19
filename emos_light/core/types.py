@@ -45,6 +45,10 @@ class OptimizationResult:
     hp_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_on: np.ndarray = field(default_factory=lambda: np.array([]))
     wallbox_power_kw: dict = field(default_factory=dict)
+    # EV-SOC-Trajektorie pro Wallbox in kWh. Wird vom MILP-Optimizer als
+    # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-
+    # heit beruecksichtigt) und im Dashboard direkt geplottet.
+    ev_soc_kwh: dict = field(default_factory=dict)
     timestamps: list = field(default_factory=list)
 
     # Thermische Fahrplaene — Estrich (Fussbodenheizung)
@@ -67,6 +71,13 @@ class OptimizationResult:
     # SG-Ready Zustand BWP v1.1 (1=Lastabwurf, 2=Normal, 3=Verstaerkt)
     sg_ready_state: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Einschaltvorgaenge (OFF -> ON) der Waermepumpe. Nur das Anschalten
+    # belastet den Verdichter — Umschalten zwischen FBH und WW zaehlt nicht.
+    # ``hp_starts_per_day`` ist ein dict[date -> int], ``hp_starts_count`` die
+    # Gesamtsumme ueber den Horizont.
+    hp_starts_per_day: dict = field(default_factory=dict)
+    hp_starts_count: int = 0
+
     # Kosten-Details
     grid_buy_cost_eur: float = 0.0
     feed_in_revenue_eur: float = 0.0
@@ -87,3 +98,14 @@ class OptimizationResult:
     baseline_cost_eur: Optional[float] = None
     savings_eur: Optional[float] = None
     savings_pct: Optional[float] = None
+
+    # Planungsfenster fuer die Dashboard-Visualisierung:
+    # Pro MPC-Iteration (oder einmalig bei Day-Ahead/Baseline) drei Step-
+    # Indizes — Anfang des Fensters, Ende des Ausfuehrungsteils, Ende des
+    # gesamten Planungshorizonts. Damit kann das Dashboard zeigen, wie weit
+    # die Optimierung in die Zukunft schaut und welcher Teil tatsaechlich
+    # umgesetzt wird.
+    #   start_step      : Index, ab dem die Iteration plant (umgesetzt)
+    #   exec_end_step   : Index (exklusiv), bis zu dem umgesetzt wird
+    #   horizon_end_step: Index (exklusiv), bis zu dem geplant wird
+    planning_windows: list = field(default_factory=list)

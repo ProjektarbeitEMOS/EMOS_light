@@ -31,6 +31,7 @@ _PENDING_IMPORT_PATH = (
 )
 
 from emos_light.core.config import load_config, DEFAULT_CONFIG, WALLBOX_DEFAULT, EV_DEFAULT, PV_SURFACE_DEFAULT
+from emos_light.core.config import _deep_merge as _config_deep_merge
 from emos_light.core.scenario import (
     build_components,
     build_optimizer,
@@ -59,6 +60,30 @@ st.caption("Waermepumpe | Fussbodenheizung | Frischwassersystem | Dynamischer St
 # ================================================================
 # Session State
 # ================================================================
+def _merge_with_defaults(user_yaml: dict | None) -> dict:
+    """Importierte/wiederhergestellte Config IMMER mit DEFAULT_CONFIG mergen.
+
+    Sorgt dafuer, dass nach dem Import keine Top-Level-Sektion fehlt —
+    sonst crasht das Sidebar-Rendering spaeter mit ``KeyError`` (z.B.
+    bei ``config["hot_water_storage"]["enabled"]``, wenn der User
+    eine schlanke YAML ohne diese Sektion hochgeladen hat). Nutzt den
+    rekursiven ``_deep_merge`` aus emos_light.core.config — gleiches
+    Verhalten wie ``load_config(path)``.
+    """
+    import copy as _copy
+    base = _copy.deepcopy(DEFAULT_CONFIG)
+    if not isinstance(user_yaml, dict):
+        return base
+    merged = _config_deep_merge(base, user_yaml)
+    # Wallbox-Liste sauber mit Defaults pro Eintrag mergen
+    if "wallboxes" in user_yaml and isinstance(user_yaml["wallboxes"], list):
+        merged["wallboxes"] = [
+            _config_deep_merge(WALLBOX_DEFAULT, wb)
+            for wb in user_yaml["wallboxes"]
+        ]
+    return merged
+
+
 if "config" not in st.session_state:
     config_path = Path("config/default_config.yaml")
     # Hat der letzte Session-Run einen Import angestossen, der dann
@@ -67,7 +92,13 @@ if "config" not in st.session_state:
     if _PENDING_IMPORT_PATH.exists():
         try:
             with _PENDING_IMPORT_PATH.open("r", encoding="utf-8") as f:
-                st.session_state.config = yaml.safe_load(f)
+                pending_yaml = yaml.safe_load(f)
+            # Defense-in-Depth: auch wenn die Pending-Datei ueblicherweise
+            # vom Import-Block geschrieben wird (bereits vollstaendig),
+            # filtern wir hier nochmal durch DEFAULT_CONFIG. Damit
+            # ueberleben auch alte Pending-Dateien aus frueheren Versionen
+            # oder schlanke YAMLs ohne alle Sektionen.
+            st.session_state.config = _merge_with_defaults(pending_yaml)
         finally:
             try:
                 _PENDING_IMPORT_PATH.unlink()
@@ -167,6 +198,21 @@ with st.sidebar:
         type=["yaml", "yml"],
         key=_wkey("config_uploader"),
     )
+    # Persistenter UX-Anker: nach dem Import wird der File-Uploader
+    # absichtlich remountet (neuer Widget-Key) und ist daher leer.
+    # Damit der User trotzdem sieht, welche YAML aktuell aktiv ist,
+    # zeigen wir den Dateinamen als kleine Caption unter dem Widget.
+    _imported_name = st.session_state.get("_imported_config_name")
+    if _imported_name:
+        col_info, col_clear = st.columns([4, 1])
+        col_info.caption(f"📄 Importiert: **{_imported_name}**")
+        if col_clear.button(
+            "✕", key=_wkey("clear_import_marker"),
+            help="Anzeige loeschen (aendert die geladene Konfiguration nicht)",
+        ):
+            del st.session_state["_imported_config_name"]
+            st.session_state.pop("_imported_config_id", None)
+            st.rerun()
     if config_file is not None:
         # Datei-ID: stabil ueber rerun, eindeutig pro Upload. Damit
         # erkennen wir, dass derselbe Upload nach einem rerun schon
@@ -175,12 +221,12 @@ with st.sidebar:
         if st.session_state.get("_imported_config_id") != file_id:
             try:
                 user_yaml = yaml.safe_load(config_file)
-                base_config = load_config(None)
-                for key, val in user_yaml.items():
-                    if key in base_config and isinstance(val, dict) and isinstance(base_config[key], dict):
-                        base_config[key].update(val)
-                    else:
-                        base_config[key] = val
+                # Vollstaendigen, mit Defaults gemergter Config bauen —
+                # selbst wenn die hochgeladene YAML einzelne Sektionen
+                # auslaesst (z.B. nur ``pv`` und ``battery``), bekommen
+                # wir trotzdem ein vollstaendiges Dict zurueck. Spart
+                # uns spaeter Sidebar-KeyErrors.
+                base_config = _merge_with_defaults(user_yaml)
 
                 # Drei-Phasen-Import:
                 #
@@ -203,8 +249,15 @@ with st.sidebar:
                     )
                 # Alle Non-Config-Keys abraeumen (abgeleiteter State
                 # wie pv_surfaces, transiente Flags, gecachte Solver-
-                # Ergebnisse).
-                KEEP_KEYS = {"config", "_imported_config_id", "_widget_gen"}
+                # Ergebnisse). ``_imported_config_name`` ist eine reine
+                # Anzeige-Variable und ueberlebt die Cleanup-Runde, damit
+                # die UI weiter sehen kann, welche Datei aktiv ist
+                # (der File-Uploader selbst wird ja absichtlich
+                # remountet und ist nach dem Import leer).
+                KEEP_KEYS = {
+                    "config", "_imported_config_id",
+                    "_imported_config_name", "_widget_gen",
+                }
                 for key in list(st.session_state.keys()):
                     if key not in KEEP_KEYS:
                         del st.session_state[key]
@@ -214,6 +267,7 @@ with st.sidebar:
                     st.session_state.get("_widget_gen", 0) + 1
                 )
                 st.session_state["_imported_config_id"] = file_id
+                st.session_state["_imported_config_name"] = config_file.name
                 # Skip-Render-Cycle starten.
                 st.session_state["_remount_step"] = 1
                 st.success("Konfiguration geladen — wende an ...")
@@ -569,26 +623,56 @@ with tab_config:
                 help="Vorlauftemperatur WW-Bereitung — bestimmt COP WW",
             )
 
-            config["heat_pump"]["sg_ready"] = st.checkbox("SG-Ready aktiviert (BWP v1.1)", value=config["heat_pump"].get("sg_ready", True), key=_wkey("sg_en"))
+            config["heat_pump"]["max_starts_per_day"] = int(st.number_input(
+                "Max. Einschaltvorgaenge pro Tag",
+                min_value=0, max_value=48,
+                value=int(config["heat_pump"].get("max_starts_per_day", 8)),
+                step=1, key=_wkey("hp_max_starts"),
+                help=(
+                    "Verdichter-Schonung: jedes OFF->ON belastet den "
+                    "Verdichter. Umschalten zwischen Heizkreis und WW "
+                    "zaehlt nicht, solange die WP an bleibt. "
+                    "0 = keine Begrenzung."
+                ),
+            ))
+
+            config["heat_pump"]["sg_ready"] = st.checkbox(
+                "SG-Ready aktiviert (BWP v1.1)",
+                value=config["heat_pump"].get("sg_ready", True),
+                key=_wkey("sg_en"),
+                help=(
+                    "Vier Schaltzustaende nach Vaillant Elektro-Kompendium:\n"
+                    "1 = Zwangsabschaltung, 2 = Normal,\n"
+                    "3 = Einschaltempfehlung (WW-Boost), "
+                    "4 = Zwangseinschaltung (WW + Pufferspeicher-Boost)."
+                ),
+            )
             if config["heat_pump"]["sg_ready"]:
                 sg_col1, sg_col2 = st.columns(2)
-                config["heat_pump"]["sg_ready_state1_power_limit_kw"] = sg_col1.number_input(
-                    "Zustand 1 (Lastabwurf): Max. Leistung (kW)", 0.0, 10.0,
-                    float(config["heat_pump"].get("sg_ready_state1_power_limit_kw", 0.0)), 0.5,
-                    help="0 = komplette EVU-Sperre, >0 = Leistungsbegrenzung (z.B. Par14a)",
+                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col1.number_input(
+                    "Zustand 3: WW-Sollwert-Ueberhoehung (K)", 0.0, 20.0,
+                    float(config["heat_pump"].get("sg_ready_temp_raise_state3_c", 5.0)),
+                    1.0,
+                    help=(
+                        "Einmalige WW-Speicherladung mit angehobenem Sollwert. "
+                        "Estrich bleibt unveraendert (Pufferspeicher wird bei "
+                        "sg3 ohne Waermeanforderung nicht beladen)."
+                    ),
                 )
-                config["heat_pump"]["sg_ready_temp_raise_state3_c"] = sg_col2.number_input(
-                    "Zustand 3 (Verstaerkt): Temp-Erhoehung WW (K)", 0.0, 15.0,
-                    float(config["heat_pump"].get("sg_ready_temp_raise_state3_c", 5.0)), 1.0,
+                config["heat_pump"]["sg_ready_temp_raise_state4_c"] = sg_col2.number_input(
+                    "Zustand 4: Pufferspeicher-Offset (K)", 0.0, 20.0,
+                    float(config["heat_pump"].get("sg_ready_temp_raise_state4_c", 10.0)),
+                    1.0,
+                    help=(
+                        "Zwangseinschaltung: WW + Estrich-Pufferspeicher werden "
+                        "ueberhoeht. Muss > Zustand-3-Wert sein (BWP v1.1)."
+                    ),
                 )
-                sg_col3, sg_col4 = st.columns(2)
-                config["heat_pump"]["sg_ready_min_hold_minutes"] = int(sg_col3.number_input(
+                config["heat_pump"]["sg_ready_min_hold_minutes"] = int(st.number_input(
                     "Min. Haltezeit SG-Zustand (min)", 0, 60,
                     int(config["heat_pump"].get("sg_ready_min_hold_minutes", 10)), 5,
-                ))
-                config["heat_pump"]["sg_ready_min_cooldown_minutes"] = int(sg_col4.number_input(
-                    "Min. Cooldown zw. Wechsel (min)", 0, 60,
-                    int(config["heat_pump"].get("sg_ready_min_cooldown_minutes", 10)), 5,
+                    key=_wkey("sg_min_hold"),
+                    help="Mindestdauer, fuer die ein Nicht-Normal-Zustand gehalten wird.",
                 ))
 
     # WW-Speicher & Frischwasserstation
@@ -984,6 +1068,20 @@ with tab_config:
                         "Abfahrt (h)", 0, 24,
                         int(ev.get("departure_hour", 7)), key=_wkey(f"ev_{i}_dep"),
                     )
+                    ev["driving_loss_pct_per_hour"] = st.number_input(
+                        "Fahrverbrauch (% SOC / h Abwesenheit)",
+                        min_value=0.0, max_value=50.0,
+                        value=float(ev.get("driving_loss_pct_per_hour", 5.0)),
+                        step=0.5,
+                        key=_wkey(f"ev_{i}_drv_loss"),
+                        help=(
+                            "Pro Stunde Abwesenheit verliert der Akku diesen "
+                            "Anteil der Kapazitaet (Pendelverbrauch). Bei 60 "
+                            "kWh und 5 %/h entspricht das 3 kWh/h ≈ 15 kWh/"
+                            "100km bei 60 km/h. Der Wert wird auch an die "
+                            "verlinkte Wallbox weitergereicht."
+                        ),
+                    )
 
                     wb_names = [wb.get("name") for wb in config.get("wallboxes", []) if wb.get("enabled")]
                     if wb_names:
@@ -1059,6 +1157,10 @@ with tab_config:
                         wb["charge_only_below_percentile_pct"] = ev.get(
                             "charge_only_below_percentile_pct", 100.0
                         )
+                        # Fahrverbrauch (SOC-Verlust pro Abwesenheitsstunde)
+                        wb["driving_loss_pct_per_hour"] = float(
+                            ev.get("driving_loss_pct_per_hour", 5.0)
+                        )
 
 
 # ================================================================
@@ -1076,7 +1178,23 @@ with tab_input:
                     csv_includes_hp,
                 )
                 st.session_state["input_data"] = data
-                st.success(f"Daten geladen: {data['num_steps']} Zeitschritte")
+                eff_h = data.get("horizon_hours", data["num_steps"] * data["step_minutes"] / 60)
+                st.success(
+                    f"Daten geladen: {data['num_steps']} Zeitschritte "
+                    f"({eff_h:.0f} h)"
+                )
+                # Hinweis, falls der Horizont wegen fehlender
+                # Day-Ahead-Preise geschrumpft wurde.
+                if data.get("horizon_shrunk"):
+                    st.info(
+                        f"ℹ️ Day-Ahead-Preise fuer den Folgetag sind noch "
+                        f"nicht publiziert (EPEX-SPOT-Auktion laeuft typ. "
+                        f"bis ~13 Uhr Ortszeit). Der Horizont wurde von "
+                        f"{int(data['configured_horizon_hours'])} h auf "
+                        f"{int(eff_h)} h verkuerzt — es wird nur ueber den "
+                        f"Zeitraum optimiert, fuer den echte Marktpreise "
+                        f"vorliegen."
+                    )
             except Exception as e:
                 st.error(f"Fehler beim Laden: {e}")
 
@@ -1167,6 +1285,17 @@ with tab_optimize:
                 )
                 st.session_state["input_data"] = data
                 inp = build_time_series_input(config, data)
+                # Day-Ahead-Verfuegbarkeit: wenn der Horizont geschrumpft
+                # wurde, das Banner einmal hier anzeigen (analog zum
+                # Eingabedaten-Tab), damit der Nutzer es auch sieht, wenn
+                # er die Optimierung ohne separates "Daten laden" startet.
+                if data.get("horizon_shrunk"):
+                    st.info(
+                        f"ℹ️ Day-Ahead-Preise fuer den Folgetag sind noch "
+                        f"nicht publiziert. Optimiere nur ueber "
+                        f"{int(data.get('horizon_hours', 24))} h "
+                        f"(konfiguriert: {int(data.get('configured_horizon_hours', 48))} h)."
+                    )
 
                 # Komponenten und Optimizer erstellen
                 components = build_components(config)
@@ -1279,6 +1408,182 @@ with tab_optimize:
             else:
                 kpi_row3[3].metric("Gesch. Lebensdauer", "-")
 
+        # WP-Einschaltvorgaenge (Verdichter-Schonung — siehe heat_pump.py).
+        # Anzeige pro Kalendertag; eine Tagessumme ueber den Horizont waere
+        # irrefuehrend, weil das Limit per Tag, nicht pro Horizont gilt.
+        if (
+            config.get("heat_pump", {}).get("enabled")
+            and getattr(result, "hp_starts_per_day", None)
+        ):
+            max_starts = int(
+                config.get("heat_pump", {}).get("max_starts_per_day", 8)
+            )
+            days = sorted(result.hp_starts_per_day.keys())
+            per_day = [result.hp_starts_per_day[d] for d in days]
+            with st.container():
+                st.markdown(
+                    "**WP-Einschaltvorgaenge** "
+                    "(Schonung des Verdichters — Umschalten Heizkreis ↔ WW "
+                    "zaehlt nicht):"
+                )
+                cols = st.columns(max(2, len(days)))
+                for i, (d, c) in enumerate(zip(days, per_day)):
+                    delta_str = (
+                        f"max {max_starts}" if max_starts > 0 else "ohne Limit"
+                    )
+                    cols[i].metric(
+                        d.strftime("%d.%m."), f"{c}", delta=delta_str,
+                        delta_color="off",
+                    )
+
+        # ---- Planungshorizont ----
+        # Visualisiert, wie weit die Optimierung in die Zukunft schaut und
+        # welcher Teil tatsaechlich umgesetzt wird:
+        #   - Day-Ahead/Baseline: ein einziges Fenster ueber den gesamten
+        #     Eingangshorizont (z.B. 24 h oder 48 h).
+        #   - MPC: pro Iteration ein Balken; dunkler Teil = Ausfuehrung,
+        #     hellerer Teil = Planungs-Lookahead. Der dynamische Day-Ahead-
+        #     Horizont (vor 13 Uhr Tagesende heute, ab 13 Uhr Tagesende
+        #     morgen) ist hier direkt ablesbar.
+        if result.planning_windows:
+            st.markdown("### Planungshorizont")
+            windows = result.planning_windows
+            ts_list = list(ts)
+            n_steps = len(ts_list)
+            step_min_horizon = (
+                inp.step_minutes if inp is not None
+                else data.get("step_minutes", 15)
+            )
+
+            fig_horizon = go.Figure()
+
+            def _ts_at(idx: int):
+                """Step-Index in datetime — auch fuer den exklusiven Endindex
+                am Datenende (per Schritt-Offset extrapoliert)."""
+                if idx < n_steps:
+                    return ts_list[idx]
+                # Endindex == n_steps: einen Schritt ueber das letzte ts hinaus
+                return ts_list[-1] + datetime.timedelta(
+                    minutes=step_min_horizon
+                )
+
+            for i, w in enumerate(windows):
+                start_ts = _ts_at(w["start_step"])
+                exec_end_ts = _ts_at(w["exec_end_step"])
+                horizon_end_ts = _ts_at(w["horizon_end_step"])
+                horizon_h = (
+                    horizon_end_ts - start_ts
+                ).total_seconds() / 3600.0
+
+                # Ausfuehrungs-Anteil (dunkler Balken)
+                fig_horizon.add_trace(go.Scatter(
+                    x=[start_ts, exec_end_ts], y=[i, i],
+                    mode="lines",
+                    line=dict(color="royalblue", width=14),
+                    name="Ausfuehrungsfenster",
+                    showlegend=(i == 0),
+                    hovertemplate=(
+                        f"Iter {i + 1}<br>"
+                        "Ausfuehrung: %{x|%d.%m %H:%M}<extra></extra>"
+                    ),
+                ))
+                # Planungs-Lookahead (heller Balken, falls vorhanden)
+                if w["horizon_end_step"] > w["exec_end_step"]:
+                    fig_horizon.add_trace(go.Scatter(
+                        x=[exec_end_ts, horizon_end_ts], y=[i, i],
+                        mode="lines",
+                        line=dict(color="lightblue", width=14),
+                        name="Planungs-Lookahead",
+                        showlegend=(i == 0),
+                        hovertemplate=(
+                            f"Iter {i + 1}<br>"
+                            f"Horizont: {horizon_h:.1f} h<br>"
+                            "Ende: %{x|%d.%m %H:%M}<extra></extra>"
+                        ),
+                    ))
+
+            # 13:00-Marker (Day-Ahead-Publikation) — pro Tag im Zeitraum.
+            # Achtung: ``add_vline`` mit annotation_text rechnet intern
+            # einen Mittelwert der x-Koordinaten und scheitert bei
+            # datetime-Werten ("int + datetime"). Wir nutzen daher
+            # ``add_shape`` + ``add_annotation`` getrennt — beide
+            # akzeptieren datetimes problemlos.
+            tmin_plot, tmax_plot = ts_list[0], _ts_at(
+                max(w["horizon_end_step"] for w in windows)
+            )
+            day = tmin_plot.date()
+            while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
+                marker = datetime.datetime.combine(day, datetime.time(13, 0))
+                if tmin_plot <= marker <= tmax_plot:
+                    fig_horizon.add_shape(
+                        type="line",
+                        x0=marker, x1=marker,
+                        xref="x", yref="paper",
+                        y0=0, y1=1,
+                        line=dict(color="orange", dash="dash"),
+                    )
+                    fig_horizon.add_annotation(
+                        x=marker, y=1.0,
+                        xref="x", yref="paper",
+                        text="13:00",
+                        showarrow=False,
+                        yanchor="bottom",
+                        font=dict(color="orange", size=10),
+                    )
+                day += datetime.timedelta(days=1)
+
+            # Mitternacht-Marker, zur visuellen Tagesgrenze
+            day = tmin_plot.date() + datetime.timedelta(days=1)
+            while datetime.datetime.combine(day, datetime.time(0)) <= tmax_plot:
+                midnight = datetime.datetime.combine(day, datetime.time(0))
+                fig_horizon.add_shape(
+                    type="line",
+                    x0=midnight, x1=midnight,
+                    xref="x", yref="paper",
+                    y0=0, y1=1,
+                    line=dict(color="gray", dash="dot"),
+                )
+                day += datetime.timedelta(days=1)
+
+            n_win = len(windows)
+            fig_horizon.update_layout(
+                height=max(160, 80 + 22 * n_win),
+                yaxis=dict(
+                    title="Iteration",
+                    tickmode="array",
+                    tickvals=list(range(n_win)),
+                    ticktext=[f"#{i + 1}" for i in range(n_win)],
+                    autorange="reversed",
+                ),
+                xaxis=dict(title=""),
+                margin=dict(t=30, b=30),
+                hovermode="closest",
+                showlegend=(n_win <= 1 or opt_mode == "MPC (rollierend)"),
+            )
+            st.plotly_chart(fig_horizon, use_container_width=True)
+
+            # Caption mit Kennzahlen
+            max_horizon_h = max(
+                (
+                    _ts_at(w["horizon_end_step"]) - _ts_at(w["start_step"])
+                ).total_seconds() / 3600.0
+                for w in windows
+            )
+            mode_hint = (
+                "Day-Ahead-MILP: ein Fenster ueber den gesamten Horizont."
+                if opt_mode == "Day-Ahead (MILP)"
+                else (
+                    "Baseline: kein Lookahead — die Regel reagiert "
+                    "schrittweise auf den Zustand."
+                    if opt_mode == "Baseline (regelbasiert)"
+                    else f"MPC: {n_win} Iterationen, "
+                    f"max. Lookahead {max_horizon_h:.1f} h. "
+                    "13:00 = Day-Ahead-Publikation (EPEX SPOT), ab dann "
+                    "reicht der MPC-Horizont bis Tagesende **morgen**."
+                )
+            )
+            st.caption(mode_hint)
+
         # Elektrische Leistungsbilanz
         st.markdown("### Elektrische Leistungsbilanz")
         # Drei Subplots:
@@ -1345,9 +1650,12 @@ with tab_optimize:
             )
 
         # --- EV-SOC-Trajektorien (Row 3) ---
-        # Aus den Ladeleistungen pro Wallbox + EV-Daten den SOC-Verlauf
-        # integrieren. Ausserhalb der Anwesenheit: NaN, dann zeigt Plotly
-        # eine Luecke (sichtbar als "Auto ist weg").
+        # Bevorzugt nutzen wir die explizite SOC-Trajektorie aus dem
+        # Result (``result.ev_soc_kwh[name]``) — sowohl MILP als auch
+        # Baseline fuehren den SOC inzwischen als Zustandsvariable bzw.
+        # Tracker mit (inkl. 5 %/h Verlust waehrend Abwesenheit). Ohne
+        # diese Trajektorie (alte Ergebnisse, externe Quellen) fallen
+        # wir auf Power-Integration zurueck.
         if has_evs:
             dt_h_plot = data["step_minutes"] / 60.0
             steps_per_hour = max(1, 60 // data["step_minutes"])
@@ -1364,6 +1672,7 @@ with tab_optimize:
             # Pro Wallbox SOC integrieren
             ev_palette = ["cyan", "deepskyblue", "lightskyblue", "steelblue"]
             ref_capacity: float | None = None
+            soc_trajectories = getattr(result, "ev_soc_kwh", {}) or {}
             for wi, (wb_result_name, wb_power) in enumerate(wb_traces):
                 # Originale Wallbox-Cfg ueber safe-Name finden
                 wb_cfg = next(
@@ -1379,32 +1688,80 @@ with tab_optimize:
                                         wb_cfg.get("current_soc", 0.3)))
                 arrival = int(wb_cfg.get("arrival_hour", 17))
                 departure = int(wb_cfg.get("departure_hour", 7))
-                # Trajektorie aufbauen
-                soc_kwh = np.full(n_steps, np.nan)
-                e = soc0 * cap
-                for t in range(n_steps):
-                    hour = (t // steps_per_hour) % 24
-                    present = (
-                        arrival <= hour < departure
-                        if arrival <= departure
-                        else (hour >= arrival or hour < departure)
+
+                # Anwesenheitsmaske (gleiche Konvention wie Wallbox._is_ev_present)
+                presence = np.array([
+                    (arrival <= ((t // steps_per_hour) % 24) < departure)
+                    if arrival <= departure
+                    else (
+                        ((t // steps_per_hour) % 24) >= arrival
+                        or ((t // steps_per_hour) % 24) < departure
                     )
-                    if present:
-                        e = min(cap, e + wb_power[t] * dt_h_plot * eff)
-                        soc_kwh[t] = e
+                    for t in range(n_steps)
+                ])
+
+                if wb_result_name in soc_trajectories:
+                    # Explizite Trajektorie aus dem Optimizer/Baseline —
+                    # zeigt Lade- UND Verlustphasen (5 %/h waehrend
+                    # Abwesenheit) durchgehend.
+                    soc_kwh = np.asarray(
+                        soc_trajectories[wb_result_name], dtype=float,
+                    )
+                else:
+                    # Fallback: Power-Integration, nur waehrend Anwesenheit
+                    soc_kwh = np.full(n_steps, np.nan)
+                    e = soc0 * cap
+                    for t in range(n_steps):
+                        if presence[t]:
+                            e = min(cap, e + wb_power[t] * dt_h_plot * eff)
+                            soc_kwh[t] = e
                 soc_pct = (soc_kwh / cap) * 100.0 if cap > 0 else soc_kwh * 0
                 color = ev_palette[wi % len(ev_palette)]
+
+                # Linien-Split: durchgezogen wenn EV anwesend, gestrichelt
+                # wenn unterwegs. Transition-Punkte landen in BEIDEN
+                # Arrays, sodass die Linien nahtlos ineinandergreifen
+                # (sonst klafft eine Luecke zwischen letztem present-Punkt
+                # und erstem absent-Punkt).
+                solid_y = np.where(presence, soc_pct, np.nan)
+                dashed_y = np.where(~presence, soc_pct, np.nan)
+                # boundary stitching: an jeder Mask-Aenderung beide Arrays
+                # an genau diesem Index sichtbar machen
+                for t in range(1, n_steps):
+                    if presence[t] != presence[t - 1]:
+                        solid_y[t] = soc_pct[t]
+                        dashed_y[t] = soc_pct[t]
+
+                hovertpl = (
+                    "%{x|%H:%M}<br>"
+                    "SOC: %{y:.1f} %<br>"
+                    "= %{customdata:.2f} kWh<extra></extra>"
+                )
+
+                # Anwesend (solid)
                 fig_el.add_trace(
                     go.Scatter(
-                        x=ts, y=soc_pct,
+                        x=ts, y=solid_y,
                         name=f"EV SOC ({wb_name})",
                         line=dict(color=color),
                         connectgaps=False,
-                        hovertemplate=(
-                            "%{x|%H:%M}<br>"
-                            "SOC: %{y:.1f} %<br>"
-                            "= %{customdata:.2f} kWh<extra></extra>"
-                        ),
+                        hovertemplate=hovertpl,
+                        customdata=soc_kwh,
+                    ),
+                    row=3, col=1, secondary_y=False,
+                )
+                # Unterwegs (dashed) — gleiche Farbe, gleiche Legend-Group
+                # damit der User per Legend-Klick beide gemeinsam ein-/
+                # ausblenden kann; Trace selbst nicht in der Legende.
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=dashed_y,
+                        name=f"EV SOC ({wb_name}) — Fahrt",
+                        line=dict(color=color, dash="dash"),
+                        legendgroup=f"ev_soc_{wb_name}",
+                        showlegend=False,
+                        connectgaps=False,
+                        hovertemplate=hovertpl,
                         customdata=soc_kwh,
                     ),
                     row=3, col=1, secondary_y=False,
@@ -1532,20 +1889,126 @@ with tab_optimize:
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))
         st.plotly_chart(fig_th, use_container_width=True)
 
-        # SG-Ready Zustand (BWP v1.1)
-        if len(result.sg_ready_state) > 0 and np.any(result.sg_ready_state != 2):
+        # SG-Ready Zustand (BWP v1.1) — vier Schaltzustaende:
+        #  1 = Zwangsabschaltung   (K1:K2 = 1:0)
+        #  2 = Normalbetrieb       (K1:K2 = 0:0)
+        #  3 = Einschaltempfehlung (K1:K2 = 0:1, WW-Boost)
+        #  4 = Zwangseinschaltung  (K1:K2 = 1:1, WW + Pufferspeicher-Boost)
+        # Panel wird immer gerendert, wenn SG-Ready in der Config
+        # aktiviert ist und das Result eine Zustandsreihe enthaelt —
+        # auch wenn der Solver durchgehend Zustand 2 waehlt (typisch
+        # ausserhalb der Heizsaison). Eine Caption macht den Solver-
+        # Befund explizit, damit der User nicht im Dunkeln tappt.
+        sg_enabled = config.get("heat_pump", {}).get("sg_ready", False)
+        if sg_enabled and len(result.sg_ready_state) > 0:
             st.markdown("### SG-Ready Zustand (BWP v1.1)")
+            states_arr = np.asarray(result.sg_ready_state, dtype=int)
+            # Plot mit Step-Shape "hv" — diskrete Zustaende, Stufen halten
+            # bis zum naechsten Wechsel. Farben pro Zustand: rot Abschaltung,
+            # neutral Normal, hellblau Einschaltempfehlung, dunkelblau
+            # Zwangseinschaltung. Damit fallen einzelne Spikes selbst bei
+            # kurzer Dauer sofort ins Auge.
+            state_color = {
+                1: "#d62728",   # rot
+                2: "#7f7f7f",   # grau
+                3: "#1f77b4",   # blau
+                4: "#08306b",   # dunkelblau
+            }
+            state_name = {
+                1: "Abschaltung",
+                2: "Normal",
+                3: "Einschaltempf.",
+                4: "Zwangseinsch.",
+            }
             fig_sg = go.Figure()
+            # Eine durchgehende Step-Linie als Hintergrund
             fig_sg.add_trace(go.Scatter(
-                x=ts, y=result.sg_ready_state, name="SG-Ready",
-                mode="lines", line=dict(color="darkblue", width=2),
-                fill="tozeroy",
+                x=ts, y=states_arr,
+                mode="lines",
+                line=dict(color="#cccccc", width=1, shape="hv"),
+                showlegend=False,
+                hoverinfo="skip",
             ))
+            # Pro Zustand 1/3/4 eine farbige Marker-Serie nur an den
+            # Punkten, an denen dieser Zustand aktiv ist. Macht auch
+            # einzelne Schritte deutlich sichtbar.
+            for s in (1, 3, 4):
+                mask = states_arr == s
+                if mask.sum() == 0:
+                    continue
+                fig_sg.add_trace(go.Scatter(
+                    x=[ts[i] for i, m in enumerate(mask) if m],
+                    y=[s] * int(mask.sum()),
+                    mode="markers",
+                    marker=dict(
+                        color=state_color[s], size=10, symbol="square",
+                    ),
+                    name=f"{s} {state_name[s]}",
+                    hovertemplate=(
+                        f"Zustand {s} — {state_name[s]}<br>"
+                        "%{x|%d.%m %H:%M}<extra></extra>"
+                    ),
+                ))
+            # Optionale "Normal"-Marker fuer Komplettheit, klein und grau
+            mask2 = states_arr == 2
+            if mask2.sum() > 0:
+                fig_sg.add_trace(go.Scatter(
+                    x=[ts[i] for i, m in enumerate(mask2) if m],
+                    y=[2] * int(mask2.sum()),
+                    mode="markers",
+                    marker=dict(color=state_color[2], size=4, symbol="circle"),
+                    name="2 Normal", showlegend=True,
+                    hovertemplate="Zustand 2 — Normal<br>%{x|%d.%m %H:%M}<extra></extra>",
+                ))
             fig_sg.update_layout(
-                yaxis=dict(tickvals=[1, 2, 3], ticktext=["Lastabwurf", "Normal", "Verstaerkt"], range=[0.5, 3.5]),
-                height=200, margin=dict(t=30),
+                yaxis=dict(
+                    tickvals=[1, 2, 3, 4],
+                    ticktext=[
+                        "1 Abschaltung",
+                        "2 Normal",
+                        "3 Einschaltempf.",
+                        "4 Zwangseinsch.",
+                    ],
+                    range=[0.5, 4.5],
+                ),
+                height=260,
+                margin=dict(t=30),
+                hovermode="closest",
             )
             st.plotly_chart(fig_sg, use_container_width=True)
+
+            # Solver-Befund als Caption: welche Zustaende wurden wie lange
+            # gewaehlt? Zeigt insbesondere, wenn durchgehend Normalbetrieb
+            # gewaehlt wurde — sonst wirkt das Panel "kaputt" (leere
+            # Variation), obwohl der Solver es bewusst entschieden hat.
+            import collections as _coll
+            counts = _coll.Counter(int(v) for v in states_arr)
+            total = sum(counts.values())
+            step_min = (
+                inp.step_minutes if inp is not None
+                else data.get("step_minutes", 15)
+            )
+            labels = {
+                1: "Zwangsabschaltung",
+                2: "Normalbetrieb",
+                3: "Einschaltempfehlung",
+                4: "Zwangseinschaltung",
+            }
+            parts = [
+                f"**{labels[s]}**: {counts[s] * step_min / 60:.1f} h "
+                f"({counts[s] / total * 100:.0f} %)"
+                for s in (1, 2, 3, 4) if counts[s] > 0
+            ]
+            if counts[2] == total:
+                st.caption(
+                    "ℹ️ Der Solver entschied sich ueber den gesamten "
+                    "Horizont fuer Normalbetrieb (Zustand 2). Typisch "
+                    "ausserhalb der Heizsaison oder bei sehr "
+                    "gleichmaessigem Strompreisprofil — kein Anreiz "
+                    "fuer eine Speicher-Ueberhoehung."
+                )
+            else:
+                st.caption(" · ".join(parts))
 
         # Preis-Overlay
         if inp is not None:

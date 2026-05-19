@@ -43,8 +43,15 @@ def _fetch_from_open_meteo(
     lat: float, lon: float, date: datetime.date,
     num_steps: int = 96, step_minutes: int = 15,
 ) -> pd.DataFrame:
-    """Holt Wetterdaten von der Open-Meteo API."""
-    end_date = date + datetime.timedelta(days=1)
+    """Holt Wetterdaten von der Open-Meteo API.
+
+    Das End-Datum wird so gewaehlt, dass mindestens ``num_steps`` Schritte
+    der Aufloesung ``step_minutes`` abgedeckt sind — Open-Meteo liefert
+    ``start_date`` und ``end_date`` jeweils inklusive (ein Tag pro Datum).
+    """
+    total_hours = num_steps * step_minutes / 60.0
+    days_needed = max(1, int(np.ceil(total_hours / 24.0)))
+    end_date = date + datetime.timedelta(days=days_needed - 1)
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
@@ -81,24 +88,32 @@ def _fetch_from_open_meteo(
 
 
 def generate_synthetic_weather(
-    date: datetime.date, num_steps: int = 96
+    date: datetime.date, num_steps: int = 96, step_minutes: int = 15,
 ) -> pd.DataFrame:
     """Generiert synthetische Wetterdaten fuer Tests.
 
     Erstellt jahreszeitabhaengige Profile fuer Temperatur, Globalstrahlung,
-    Bewoelkung und Windgeschwindigkeit.
+    Bewoelkung und Windgeschwindigkeit. Funktioniert ueber beliebig viele
+    Tage — das Tagesprofil wird modulo 24h wiederholt, jeder Tag bekommt
+    sein eigenes deterministisches Rauschen.
 
     Args:
-        date: Datum (wird als Seed fuer Reproduzierbarkeit verwendet).
-        num_steps: Anzahl Zeitschritte (Standard: 96 = 15-min fuer 24h).
+        date: Startdatum (wird als Seed-Basis verwendet).
+        num_steps: Anzahl Zeitschritte insgesamt.
+        step_minutes: Zeitschrittlaenge in Minuten (Default 15).
 
     Returns:
         DataFrame mit synthetischen Wetterdaten.
     """
-    hours = np.linspace(0, 24, num_steps, endpoint=False)
-    rng = np.random.default_rng(seed=int(date.strftime("%Y%m%d")))
+    step_h = step_minutes / 60.0
+    hours_abs = np.arange(num_steps) * step_h
+    hours = hours_abs % 24                  # Tagesprofil
+    day_idx = (hours_abs // 24).astype(int)  # 0,0,..0,1,1,..
 
-    # Jahreszeitbestimmung
+    # Jahreszeitbestimmung — relativ zum jeweiligen Tag (date + day_idx).
+    # Beim Tageswechsel kann sich der Monat aendern; wir nehmen die
+    # Monatswerte aus dem Startdatum als gute Naeherung fuer 2-3-tagige
+    # Horizonte (Day-Ahead-MPC).
     month = date.month
     is_summer = month in (5, 6, 7, 8, 9)
     is_winter = month in (11, 12, 1, 2)
@@ -112,7 +127,6 @@ def generate_synthetic_weather(
         temp_base, temp_amp = 10, 6
 
     temperature = temp_base + temp_amp * np.sin((hours - 6) * np.pi / 12)
-    temperature += rng.normal(0, 1, num_steps)
 
     # --- Globalstrahlung (GHI) – Glockenkurve waehrend Tageslicht ---
     sunrise = 7 if is_winter else (5 if is_summer else 6)
@@ -124,18 +138,26 @@ def generate_synthetic_weather(
     ghi = max_ghi * np.exp(-0.5 * ((hours - day_center) / day_width) ** 2)
     ghi = np.where((hours >= sunrise) & (hours <= sunset), ghi, 0)
 
-    # Bewoelkungsreduktion
-    cloud_cover = rng.uniform(10, 60, num_steps)
-    ghi *= (1 - cloud_cover / 200)  # Teilweise Reduktion
-    ghi = np.clip(ghi, 0, 1200)
+    # --- Tagesweise Rausch- und Wolken-Streams (deterministisch) ---
+    base_seed = int(date.strftime("%Y%m%d"))
+    cloud_cover = np.zeros(num_steps)
+    wind_speed = np.zeros(num_steps)
+    temp_noise = np.zeros(num_steps)
+    for d in np.unique(day_idx):
+        mask = day_idx == d
+        rng = np.random.default_rng(seed=base_seed + int(d))
+        cloud_cover[mask] = rng.uniform(10, 60, mask.sum())
+        wind_speed[mask] = rng.uniform(1, 8, mask.sum())
+        temp_noise[mask] = rng.normal(0, 1, mask.sum())
 
-    # --- Windgeschwindigkeit ---
-    wind_speed = rng.uniform(1, 8, num_steps)
+    temperature = temperature + temp_noise
+    ghi *= (1 - cloud_cover / 200)  # Bewoelkungsreduktion
+    ghi = np.clip(ghi, 0, 1200)
 
     # Zeitstempel erzeugen
     timestamps = [
         datetime.datetime.combine(date, datetime.time())
-        + datetime.timedelta(minutes=int(i * 1440 / num_steps))
+        + datetime.timedelta(minutes=int(i * step_minutes))
         for i in range(num_steps)
     ]
 
