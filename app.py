@@ -1373,7 +1373,9 @@ with tab_optimize:
             else:
                 kpi_row3[3].metric("Gesch. Lebensdauer", "-")
 
-        # WP-Einschaltvorgaenge (Verdichter-Schonung — siehe heat_pump.py)
+        # WP-Einschaltvorgaenge (Verdichter-Schonung — siehe heat_pump.py).
+        # Anzeige pro Kalendertag; eine Tagessumme ueber den Horizont waere
+        # irrefuehrend, weil das Limit per Tag, nicht pro Horizont gilt.
         if (
             config.get("heat_pump", {}).get("enabled")
             and getattr(result, "hp_starts_per_day", None)
@@ -1383,14 +1385,13 @@ with tab_optimize:
             )
             days = sorted(result.hp_starts_per_day.keys())
             per_day = [result.hp_starts_per_day[d] for d in days]
-            limit_hit = any(c >= max_starts for c in per_day) if max_starts > 0 else False
             with st.container():
                 st.markdown(
                     "**WP-Einschaltvorgaenge** "
                     "(Schonung des Verdichters — Umschalten Heizkreis ↔ WW "
                     "zaehlt nicht):"
                 )
-                cols = st.columns(max(2, len(days) + 1))
+                cols = st.columns(max(2, len(days)))
                 for i, (d, c) in enumerate(zip(days, per_day)):
                     delta_str = (
                         f"max {max_starts}" if max_starts > 0 else "ohne Limit"
@@ -1399,15 +1400,6 @@ with tab_optimize:
                         d.strftime("%d.%m."), f"{c}", delta=delta_str,
                         delta_color="off",
                     )
-                cols[-1].metric(
-                    "Summe",
-                    f"{result.hp_starts_count}",
-                    delta=(
-                        "Limit erreicht" if limit_hit
-                        else ("im Limit" if max_starts > 0 else "ohne Limit")
-                    ),
-                    delta_color=("inverse" if limit_hit else "normal"),
-                )
 
         # ---- Planungshorizont ----
         # Visualisiert, wie weit die Optimierung in die Zukunft schaut und
