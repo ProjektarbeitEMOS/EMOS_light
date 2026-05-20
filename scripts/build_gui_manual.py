@@ -915,11 +915,12 @@ def sec_emob():
     out.append(field_table([
         ("Mindestreichweite garantieren",
          "Checkbox, Default an",
-         "An: das Modell stellt sicher, dass das Fahrzeug bis zur "
-         "Abfahrt mindestens die angegebene Reichweite hat. Setzt "
-         "voraus, dass Wallbox und Fahrzeug den SOC kommunizieren "
-         "(z. B. via ISO 15118). Aus: keine Garantie, nur Lade-"
-         "Empfehlung über das Strompreis-Perzentil unten."),
+         "An: das Modell setzt ein <b>hartes</b> Ziel-SOC-Constraint "
+         "zur Abfahrtszeit — das Fahrzeug muss mindestens die "
+         "angegebene Reichweite haben. Setzt voraus, dass Wallbox "
+         "und Fahrzeug den SOC kommunizieren (z. B. via ISO 15118). "
+         "Aus: keine Garantie, das Laden wird allein über den "
+         "Preisperzentil-Filter unten gesteuert."),
         ("Mindestreichweite (km)",
          "0–500, Default 150",
          "Garantierte Reichweite zur Abfahrtszeit. Wird über "
@@ -945,14 +946,28 @@ def sec_emob():
          "Anwesenheitsstunden des Fahrzeugs. 100 % = keine "
          "Beschränkung. 25 % = nur in den günstigsten 25 % der "
          "Stunden, die das Auto an der Wallbox steht. Bezugsgröße "
-         "sind die Anwesenheitsstunden, nicht der ganze Tag — so "
-         "sind immer Lade-Slots verfügbar."),
+         "sind die Anwesenheitsstunden, nicht der ganze Tag."),
     ]))
+    out.append(H2("Wie die zwei Strategien zusammenspielen (Mai 2026)"))
     out.append(P(
-        "Wenn Mindestreichweite an + Perzentil < 100 sind beide "
-        "Strategien aktiv: Slots werden vorzugsweise im günstigen "
-        "Perzentil belegt, aber wenn die Reichweite sonst nicht "
-        "garantiert ist, wird auch in teureren Slots geladen."
+        "<b>Mindestreichweite hat Priorität über den Preisfilter.</b> "
+        "Konkret:"
+    ))
+    out.append(P(
+        "• <b>Mindestreichweite AN, Perzentil &lt; 100:</b> Das Ziel-SOC "
+        "ist <i>hart</i>, der Cost-Minimizer wählt ohnehin natürlich die "
+        "günstigsten Stunden zuerst — der Slider ist nur noch "
+        "<i>informativ</i> sichtbar, <b>kein</b> hartes Ladeverbot. "
+        "Damit läuft das Modell auch bei sehr engen Filtern nicht in "
+        "Infeasibility.<br/>"
+        "• <b>Mindestreichweite AUS, Perzentil &lt; 100:</b> Der Slider "
+        "wird als <b>hartes</b> <code>P^WB = 0</code>-Constraint in den "
+        "teuren Stunden durchgesetzt. Ohne Ladepflicht ist das immer "
+        "lösbar.<br/>"
+        "• <b>Beide AN, Setup physikalisch unmöglich</b> (z. B. "
+        "Fahrverbrauch &gt; Akkukapazität): der Solver meldet "
+        "Infeasibility mit klarer Komponenten-Diagnose — die richtige "
+        "Reaktion auf eine unrealistische Konfiguration."
     ))
     out.append(PageBreak())
     return out

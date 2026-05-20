@@ -294,10 +294,8 @@ def test_wallbox_min_range_disabled():
 
 
 def test_wallbox_always_has_soc_variable_with_bounds():
-    """SOC-Variable mit Akku-Obergrenze (max_soc * Kapazitaet) ersetzt
-    seit Mai 2026 das alte ``_max_energy``-Constraint. Untere Grenze
-    ist 0 (Akku kann nicht negativ werden), obere haengt am ``upBound``
-    der LpVariable und ergibt sich aus max_soc."""
+    """SOC-Variable mit physikalischen Bounds: 0 (Akku-Untergrenze) bis
+    max_soc * Kapazitaet (BMS-Obergrenze)."""
     wb = Wallbox("wb1", {**WALLBOX_DEFAULT, "min_range_enabled": True})
     model = pulp.LpProblem("test")
     vars_ = wb.get_optimization_variables(num_steps=96, model=model)
@@ -306,8 +304,7 @@ def test_wallbox_always_has_soc_variable_with_bounds():
     assert len(soc_vars) == 96
     for v in soc_vars:
         assert v.lowBound == 0.0
-        # max_soc ist nicht in WALLBOX_DEFAULT (Default 1.0 in der
-        # Wallbox-__init__); upBound = 1.0 * 60 kWh = 60.
+        # max_soc default 1.0 -> upBound = 1.0 * 60 kWh = 60.
         assert v.upBound == pytest.approx(
             WALLBOX_DEFAULT["ev_battery_capacity_kwh"]
         )

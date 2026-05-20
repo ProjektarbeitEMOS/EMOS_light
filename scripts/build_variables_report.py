@@ -752,6 +752,11 @@ def section_wallbox():
         ("current_soc / target_soc", "0.30 / 0.80",
          "Aktueller SOC bei Optimierungs-Start und Ziel-SOC zur Abfahrt"),
         ("max_soc", "1.0", "Obergrenze des EV-Akkus (Hardware-Schutz)"),
+        ("min_range_enabled", "true",
+         "Schalter fuer das harte Ziel-SOC-Constraint zur Abfahrt"),
+        ("charge_only_below_percentile_pct", "100.0",
+         "Preisperzentil-Filter; bei min_range_enabled nur informativ, "
+         "sonst hartes Ladeverbot in teuren Stunden"),
         ("driving_loss_pct_per_hour", "5.0",
          "Fahrverbrauch waehrend Abwesenheit (% von Kapazitaet/h)"),
         ("arrival_hour / departure_hour", "17 / 7",
@@ -783,7 +788,10 @@ def section_wallbox():
         ("wb_<name>_soc_drain_{t}",
          "SOC^EV,w_{t+1} = SOC^EV,w_t - ℓ^drive   (abwesend, 5%/h-Verbrauch)"),
         ("wb_<name>_target_soc_at_{t_dep}",
-         "SOC^EV,w_{t_dep} ≥ SOC^ziel · E^EV,kap   (an jeder Abfahrt)"),
+         "SOC^EV,w_{t_dep} ≥ SOC^ziel · E^EV,kap   (HART, nur wenn min_range_enabled)"),
+        ("wb_<name>_price_filter_{t}",
+         "P^WB,w_t = 0 fuer t in teure-Stunden-Menge   "
+         "(nur wenn min_range_enabled=False, sonst informativ)"),
     ]))
 
     out.append(H2("Output"))

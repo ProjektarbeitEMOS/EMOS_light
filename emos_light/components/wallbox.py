@@ -216,9 +216,11 @@ class Wallbox(MILPComponent):
                 f"{prefix}_on", num_steps,
             ),
             # SOC pro Zeitschritt — Bound oben durch BMS (max_soc), unten
-            # bei 0. Wenn Abwesenheits-Verlust den SOC unter 0 druecken
-            # wuerde, wird das Problem infeasible — der User muss dann
-            # Akkukapazitaet oder Anwesenheitsfenster anpassen.
+            # bei 0 (physikalisch). Wenn die Konfiguration den Akku
+            # rechnerisch unter 0 druecken wuerde, ist das Setup
+            # unrealistisch und der Solver meldet Infeasibility — der
+            # User muss dann z.B. den Preisperzentil-Filter lockern oder
+            # die Mindestreichweite deaktivieren.
             f"wb_{self.name}_soc": make_var_array(
                 f"{prefix}_soc", num_steps, low=0.0, high=soc_max_kwh,
             ),
@@ -270,8 +272,14 @@ class Wallbox(MILPComponent):
             if not present_t:
                 model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
 
-        # 3) Preisfilter: nur in den guenstigsten X % der Tagesstunden laden
-        if self._allowed_charging_steps is not None:
+        # 3) Preisfilter — nur als hartes power=0-Constraint aktiv, wenn
+        # die Mindestreichweite NICHT erzwungen wird. Mit aktiver
+        # Mindestreichweite hat das Departure-Target Prioritaet (der
+        # Cost-Minimizer waehlt dabei sowieso natuerlich die billigsten
+        # Stunden, selbst wenn ein paar teurere noetig sind, um den
+        # Target zu erreichen). Sonst kann es bei zu engem Filter zu
+        # Infeasibility kommen.
+        if self._allowed_charging_steps is not None and not self.min_range_enabled:
             for t in range(num_steps):
                 if t not in self._allowed_charging_steps:
                     model += (
@@ -309,15 +317,17 @@ class Wallbox(MILPComponent):
                     f"{prefix}_soc_step_{t}",
                 )
 
-        # 5) Ziel-SOC zum Abfahrtszeitpunkt: jede 1->0-Kante in presence
-        # ist eine Abfahrt; soc dort muss >= target * capacity sein. Auch
-        # eine Abfahrt am Schritt 0 (z.B. wenn current_soc bereits am Ziel
-        # ist) ist erfasst, weil soc[0] == initial_soc_kwh — der Solver
-        # meldet dann ggf. Infeasibility, wenn current_soc < target.
+        # 5) Ziel-SOC zum Abfahrtszeitpunkt — HARTES Constraint: jede
+        # 1->0-Kante in presence ist eine Abfahrt, soc[t] muss dort
+        # mind. ``target_soc * cap`` betragen. Bei aktiver Mindest-
+        # reichweite hat dieses Constraint Prioritaet ueber den
+        # Preisperzentil-Filter — d.h. wenn die billigsten X % nicht
+        # ausreichen, wird auch ausserhalb des Filters geladen. Der
+        # Cost-Minimizer waehlt natuerlich trotzdem die guenstigsten
+        # verfuegbaren Stunden.
         if self.min_range_enabled:
             target_soc_kwh = self.target_soc * self.ev_capacity_kwh
             for t in range(num_steps):
-                # Abfahrt zwischen t-1 und t: vorher anwesend, jetzt nicht
                 was_present = presence[t - 1] if t > 0 else True
                 if was_present and not presence[t]:
                     model += (

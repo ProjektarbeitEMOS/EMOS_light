@@ -958,18 +958,55 @@ def build_wallbox():
         "Schritt sind das 0,75 kWh pro Schritt."
     ))
 
-    out.append(H2("7.5 Ziel-SOC zur Abfahrt"))
+    out.append(H2("7.5 Ziel-SOC zur Abfahrt (hartes Constraint)"))
     out.append(P(
         "Statt einer globalen Mindestlademenge wird der Ziel-SOC exakt zur "
-        "Abfahrtszeit erzwungen (jede Praesenz→Absenz-Kante):"
+        "Abfahrtszeit erzwungen (jede Praesenz→Absenz-Kante) — als "
+        "<b>hartes</b> Constraint, nicht ueber Slack-Strafe:"
     ))
     out.append(eq_image(
-        r"\text{SOC}^{\text{EV},w}_{t_{\text{Abfahrt}}} \geq \text{SOC}^{\text{ziel}} \cdot E^{\text{EV,kap}}"
+        r"\text{SOC}^{\text{EV},w}_{t_{\text{Abfahrt}}} \geq \text{SOC}^{\text{ziel}} \cdot E^{\text{EV,kap}}, "
+        r"\quad \text{wenn } \text{min\_range\_enabled} = \text{True}"
     ))
     out.append(P(
-        "Der Ziel-SOC wiederum ergibt sich im Dashboard direkt aus der "
-        "vom Nutzer angegebenen Mindestreichweite und dem Verbrauch in "
-        "kWh/100 km."
+        "Schaltbar ueber den Config-Parameter "
+        "<font face='Courier'>min_range_enabled</font>. Der Ziel-SOC selbst "
+        "ergibt sich im Dashboard direkt aus der vom Nutzer angegebenen "
+        "Mindestreichweite und dem Verbrauch in kWh/100&nbsp;km. Wenn das "
+        "Setup physikalisch unmoeglich ist (z. B. Fahrverbrauch &gt; "
+        "Akku-Kapazitaet), meldet der Solver Infeasibility — das ist "
+        "die richtige Reaktion fuer eine unrealistische Konfiguration."
+    ))
+
+    out.append(H2("7.6 Preisperzentil-Filter (mit Prioritaet)"))
+    out.append(P(
+        "Optional kann der Nutzer ueber "
+        "<font face='Courier'>charge_only_below_percentile_pct</font> die "
+        "Ladezeitpunkte auf die guenstigsten Stunden im Anwesenheitsfenster "
+        "beschraenken. Damit das Modell nicht in Infeasibility laeuft, "
+        "wenn der Filter zu eng gesetzt ist, gilt folgende "
+        "<b>Prioritaets-Regel</b>:"
+    ))
+    out.append(P(
+        "<b>(a)</b> Wenn <font face='Courier'>min_range_enabled = True</font>: "
+        "der Filter ist nur <i>informativ</i> (UI-Slider sichtbar), aber "
+        "<b>kein</b> hartes Ladeverbot. Begruendung: der Cost-Minimizer "
+        "waehlt ohnehin natuerlich die guenstigsten Stunden zuerst, das "
+        "harte Ziel-SOC-Constraint hat Vorrang vor dem Preisfilter."
+    ))
+    out.append(P(
+        "<b>(b)</b> Wenn <font face='Courier'>min_range_enabled = False</font>: "
+        "der Filter wird als hartes Constraint angewendet — fuer alle "
+        "Schritte t, deren Preis ueber dem Perzentil-Schwellwert liegt, "
+        "gilt"
+    ))
+    out.append(eq_image(
+        r"P^{\text{WB},w}_t = 0 \quad \forall t \in \mathcal{T}^{\text{teuer}}"
+    ))
+    out.append(P(
+        "Damit wird die Optimierung in jedem Fall loesbar bleiben — "
+        "entweder weil die Mindestreichweite die Prioritaet uebernimmt "
+        "oder weil ohne Mindestreichweite keine Ladepflicht besteht."
     ))
     out.append(PageBreak())
     return out

@@ -150,7 +150,8 @@ def test_milp_infeasible_when_driving_loss_exceeds_capacity():
     (soc >= 0) nicht eingehalten werden — der Solver meldet zu Recht
     Infeasibility. Das ist die korrekte Reaktion: das User-Setup ist
     physikalisch unmoeglich (Auto muesste mit negativem Akku zurueck-
-    kommen)."""
+    kommen). Der User muss dann Akkukapazitaet, Abwesenheitsfenster
+    oder Fahrverbrauch anpassen."""
     cfg = _cfg_pv_wb(arrival=18, departure=7)
     cfg["wallboxes"][0]["driving_loss_pct_per_hour"] = 10.0
     _, res = _run(cfg)
