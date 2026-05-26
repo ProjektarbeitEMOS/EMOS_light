@@ -99,6 +99,13 @@ class OptimizationResult:
     savings_eur: Optional[float] = None
     savings_pct: Optional[float] = None
 
+    # Roher MILP-Objective-Wert in EUR, INKLUSIVE aller fiktiven Slack-
+    # Strafkosten und der Alterungskosten. Reine Solver-Steuerungsgroesse
+    # — fuer Debugging und Modell-Diagnose. ``total_cost_eur`` ist davon
+    # bewusst getrennt: dort stehen nur die echten Geldfluesse
+    # (grid_buy_cost - feed_in_revenue), keine virtuellen Strafen.
+    objective_value_eur: Optional[float] = None
+
     # Planungsfenster fuer die Dashboard-Visualisierung:
     # Pro MPC-Iteration (oder einmalig bei Day-Ahead/Baseline) drei Step-
     # Indizes — Anfang des Fensters, Ende des Ausfuehrungsteils, Ende des

@@ -45,6 +45,22 @@ from emos_light.core.types import TimeSeriesInput, OptimizationResult
 
 
 UNMET_HEAT_PENALTY_CT = 500.0
+# Strafkosten in ct/kWh fuer ungedeckten Warmwasserbedarf (Slack hat
+# Einheit kW; multipliziert mit dt_h ergibt kWh, mit P_WW ergibt ct).
+# Begruendung "Projektgruppe Penalty Slacks": WW ist Energie, nicht
+# Temperatur — eigener Tarif, getrennt vom Raumkomfort.
+P_WW = 150.0
+# Strafkosten in ct/kWh fuer T_innen-Unterschreitungen, getrennt nach
+# Komfortzone (bis 0.5 K unter Soll) und Notfallzone (darueber). Beide
+# werden ueber die thermische Kapazitaet C_th in ct/K umgerechnet,
+# damit die K-basierten Slacks auf einer mit ww_slack vergleichbaren
+# Geldeinheit landen.
+P_COMFORT = 100.0
+P_CRITICAL = 300.0
+# EV-Strafkosten fuer Laden in teuren Stunden (Soft-Preisfilter).
+# Hoch genug, dass der Solver teure Stunden nur in echten Engpaessen
+# anrechnet — sonst greift natuerlich der Cost-Minimizer.
+PENALTY_EV_EXPENSIVE = 500.0
 
 
 class EMOSLightOptimizer:
@@ -202,7 +218,6 @@ class EMOSLightOptimizer:
         #     Diese koppeln die Senken an externe Bedarfe oder erlauben
         #     dem Solver, Komfort weich zu verletzen.
         # ============================================================
-        heating_slack = None
         ww_slack = None
         has_ww = self.hot_water_storage and self.hot_water_storage.enabled and has_hp
         has_ufh = self.underfloor_heating and self.underfloor_heating.enabled and has_hp
@@ -265,10 +280,6 @@ class EMOSLightOptimizer:
                     )
 
         if has_ufh:
-            heating_slack = [
-                pulp.LpVariable(f"heating_slack_{t}", 0) for t in range(num_steps)
-            ]
-
             # SG-Ready Zustand 4: Pufferspeicher (= Estrich in EMOS Light)
             # ueberhoeht. PDF: "Heizbetrieb-Abweichung: ... kuenstliche
             # Waermeanforderung ... zur Aufladung des Pufferspeichers auf
@@ -342,28 +353,56 @@ class EMOSLightOptimizer:
             for t in range(num_steps)
         )
 
-        if heating_slack is not None:
-            cost += pulp.lpSum(
-                heating_slack[t] * UNMET_HEAT_PENALTY_CT * dt_h
-                for t in range(num_steps)
-            )
+        # Thermische Slack-Strafen mit physikalisch konsistenter Einheit:
+        # ww_slack ist in kW (multipliziert mit dt_h ergibt kWh, mit P_WW
+        # in ct/kWh ergibt ct). T_innen-Slacks sind in K — wir muessen sie
+        # ueber die thermische Kapazitaet ``C_th`` (kWh/K) in eine vergleich-
+        # bare Geldgroesse umrechnen, sonst dominiert ww_slack das Objective
+        # asymmetrisch (Einheitenproblem siehe Projektgruppe Penalty Slacks).
         if ww_slack is not None:
             cost += pulp.lpSum(
-                ww_slack[t] * UNMET_HEAT_PENALTY_CT * dt_h
+                ww_slack[t] * P_WW * dt_h
                 for t in range(num_steps)
             )
 
         # Komfort-Slacks fuer T_innen (Building MILP-Erweiterung Mai 2026)
         if (
-            "t_innen_slack_low" in variables
+            "t_innen_slack_low_comfort" in variables
+            and "t_innen_slack_low_critical" in variables
             and "t_innen_slack_high" in variables
         ):
+            # C_th: thermische Kapazitaet der Wohnflaeche in kWh/K. Dient
+            # als Konvertierungsfaktor K -> kWh -> ct. Greift dynamisch
+            # auf die Building-Config zu (nicht hardcoded auf Defaults).
+            bcfg = self.building.config if self.building else {}
+            heated_area = float(bcfg.get("heated_area_m2", 150.0))
+            wall_cap_wh = float(bcfg.get("wall_capacity_wh_per_m2_k", 50.0))
+            c_th_kwh_per_k = wall_cap_wh * heated_area / 1000.0
+            cost_comfort_ct_per_k = P_COMFORT * c_th_kwh_per_k
+            cost_critical_ct_per_k = P_CRITICAL * c_th_kwh_per_k
             cost += pulp.lpSum(
-                (variables["t_innen_slack_low"][t]
-                 + variables["t_innen_slack_high"][t])
-                * UNMET_HEAT_PENALTY_CT * dt_h
+                (
+                    variables["t_innen_slack_low_comfort"][t] * cost_comfort_ct_per_k
+                    + variables["t_innen_slack_low_critical"][t] * cost_critical_ct_per_k
+                    + variables["t_innen_slack_high"][t] * UNMET_HEAT_PENALTY_CT
+                ) * dt_h
                 for t in range(num_steps)
             )
+
+        # EV-Soft-Preisfilter: power_expensive_slack[t] ist in kW, mal
+        # dt_h ergibt kWh, mal PENALTY_EV_EXPENSIVE in ct/kWh ergibt ct.
+        # Bei jedem kW Laden in einer teuren Stunde faellt also der
+        # volle Slack-Tarif an — der Solver wird das nur tun, wenn es
+        # zwingend ist (z.B. Departure-Target nicht anders erfuellbar).
+        for wb in self.wallboxes:
+            if not wb.enabled:
+                continue
+            slack_key = f"wb_{wb.name}_power_expensive_slack"
+            if slack_key in variables:
+                cost += pulp.lpSum(
+                    variables[slack_key][t] * dt_h * PENALTY_EV_EXPENSIVE
+                    for t in range(num_steps)
+                )
 
         # Batterie-Alterungskosten (PDF Speichergruppe, Kap. 3+4)
         # Durchsatz (charge + discharge) wird mit c_aging/2 gewichtet,
@@ -439,11 +478,22 @@ class EMOSLightOptimizer:
         # ============================================================
         # Ergebnisse extrahieren
         # ============================================================
+        # Wichtig: ``total_cost_eur`` und ``objective_value_eur`` werden
+        # bewusst getrennt gefuehrt.
+        #   - ``objective_value_eur``: roher MILP-Objective-Wert mit
+        #     ALLEN Slack-Strafen (ww_slack, t_innen-Slacks, EV-Slack)
+        #     plus Alterungskosten. Reine Solver-Steuerungsgroesse.
+        #   - ``total_cost_eur``: wird WEITER UNTEN ueber ``calculate_kpis``
+        #     bottom-up aus ``grid_buy_cost_eur - feed_in_revenue_eur``
+        #     berechnet — enthaelt **keine** fiktiven Strafkosten. Das
+        #     ist die KPI, die im Dashboard als "echte" Geldgroesse
+        #     gezeigt wird (Projektgruppe Penalty Slacks: "man zahlt
+        #     ja nix fuer komfort-verletzungen").
         result = OptimizationResult(
             success=True,
             solver_status=status,
             solve_time_s=solve_time,
-            total_cost_eur=pulp.value(model.objective) / 100.0,
+            objective_value_eur=pulp.value(model.objective) / 100.0,
             grid_buy_kw=np.array([v.varValue or 0.0 for v in grid_buy]),
             grid_sell_kw=np.array([v.varValue or 0.0 for v in grid_sell]),
             timestamps=inp.timestamps,
@@ -455,12 +505,6 @@ class EMOSLightOptimizer:
         # Felder selbst ins Result.
         for c in milp_components:
             c.extract_result(result, variables, num_steps, dt_h)
-
-        # Cross-cutting Anpassung: Alterungskosten werden separat als
-        # battery_aging_cost_eur gefuehrt; total_cost_eur enthaelt nur
-        # die reinen Netzkosten (fairer Vergleich mit der Baseline).
-        if result.battery_aging_cost_eur > 0:
-            result.total_cost_eur -= result.battery_aging_cost_eur
 
         # Day-Ahead-Optimizer plant einmalig ueber den gesamten Horizont —
         # ein einziges Planungsfenster, das den ganzen Eingang abdeckt.

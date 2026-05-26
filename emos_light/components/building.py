@@ -416,9 +416,20 @@ class Building(MILPComponent):
                 Komfortbereich (Komfort kommt aus den Slacks, nicht aus
                 harten Bounds), damit Auskuehlen/Ueberhitzen darstellbar
                 bleibt.
-            t_innen_slack_low[t], t_innen_slack_high[t]:
-                Unterschreitung/Ueberschreitung des Komfortbands in K,
+            t_innen_slack_low_comfort[t]: Unterschreitung in der Komfortzone
+                (bis 0.5 K), milderer Penalty (P_COMFORT).
+            t_innen_slack_low_critical[t]: Unterschreitung darueber hinaus,
+                schaerferer Penalty (P_CRITICAL). Unbeschraenkt.
+            t_innen_slack_high[t]: Ueberschreitung des Komfortbands in K,
                 wird im Optimizer mit UNMET_HEAT_PENALTY_CT bestraft.
+
+        Hintergrund (Projektgruppe Penalty Slacks): die Unterschreitung
+        wird in zwei Zonen unterteilt, weil eine kleine Komfortabweichung
+        (z.B. 0.3 K kuehler als Soll) anders zu bewerten ist als ein
+        deutliches Unterkuehlen (z.B. 2 K). Im Objective werden beide
+        Slacks mit einem ueber die thermische Masse C_th skalierten
+        Penalty multipliziert, damit die K -> ct-Umrechnung physikalisch
+        konsistent ist (analog zu ww_slack in kWh).
         """
         return {
             "t_innen": make_var_array(
@@ -426,8 +437,12 @@ class Building(MILPComponent):
                 low=self.comfort_temp_min_c - 10.0,
                 high=self.comfort_temp_max_c + 10.0,
             ),
-            "t_innen_slack_low": make_var_array(
-                "t_innen_slack_low", num_steps, low=0.0,
+            "t_innen_slack_low_comfort": make_var_array(
+                "t_innen_slack_low_comfort", num_steps,
+                low=0.0, high=0.5,
+            ),
+            "t_innen_slack_low_critical": make_var_array(
+                "t_innen_slack_low_critical", num_steps, low=0.0,
             ),
             "t_innen_slack_high": make_var_array(
                 "t_innen_slack_high", num_steps, low=0.0,
@@ -448,11 +463,18 @@ class Building(MILPComponent):
         # ohne step_minutes auf — wir brauchen es dort fuer dt_h).
         self._step_minutes_cached = step_minutes
         t_innen = variables["t_innen"]
-        slack_low = variables["t_innen_slack_low"]
+        slack_low_comfort = variables["t_innen_slack_low_comfort"]
+        slack_low_critical = variables["t_innen_slack_low_critical"]
         slack_high = variables["t_innen_slack_high"]
         for t in range(len(t_innen)):
+            # Unterschreitung: zwei Zonen — bis 0.5 K Komfortzone,
+            # darueber Notfallzone. Die obere Schranke der Komfort-
+            # Slack-Variable ist 0.5 K (siehe get_optimization_variables),
+            # sodass der Solver bei groesseren Unterschreitungen
+            # automatisch in die teurere Critical-Variable ueberlaeuft.
             model += (
-                t_innen[t] + slack_low[t] >= self.comfort_temp_min_c,
+                t_innen[t] + slack_low_comfort[t] + slack_low_critical[t]
+                >= self.comfort_temp_min_c,
                 f"t_innen_comfort_min_{t}",
             )
             model += (
