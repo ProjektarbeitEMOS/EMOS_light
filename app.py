@@ -1615,6 +1615,19 @@ with tab_optimize:
         fig_el.add_trace(go.Scatter(x=ts, y=-result.grid_sell_kw, name="Einspeisung", line=dict(color="green")), row=1, col=1)
         if len(result.hp_power_kw) > 0:
             fig_el.add_trace(go.Scatter(x=ts, y=result.hp_power_kw, name="WP", line=dict(color="orange")), row=1, col=1)
+            # T-abhaengige Max-Leistung als gestrichelte Hilfslinie
+            # (Mai 2026): zeigt, dass die WP nicht immer 8 kW kann,
+            # sondern nur das, was Kennfeld + Aussentemperatur hergeben.
+            if hasattr(result, "hp_max_power_kw") and len(result.hp_max_power_kw) > 0:
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=result.hp_max_power_kw,
+                        name="WP max (T-abh.)",
+                        line=dict(color="orange", dash="dash", width=1),
+                        opacity=0.6,
+                    ),
+                    row=1, col=1,
+                )
         for wb_name, wb_arr in result.wallbox_power_kw.items():
             fig_el.add_trace(go.Scatter(x=ts, y=wb_arr, name=f"WB {wb_name}", line=dict(color="cyan")), row=1, col=1)
         if inp is not None:

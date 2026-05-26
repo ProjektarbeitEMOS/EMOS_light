@@ -24,8 +24,6 @@ from emos_light.components._milp_helpers import (
     add_min_hold_time,
     add_min_pause_time,
     add_min_run_time,
-    add_mutual_exclusion,
-    add_on_off_power_link,
     make_binary_array,
     make_var_array,
     steps_for_minutes,
@@ -121,6 +119,7 @@ class HeatPump(MILPComponent):
         # Werden in prepare() / set_active_heat_sinks() vom Optimizer gesetzt.
         self._cop_heating: np.ndarray | None = None
         self._cop_dhw: np.ndarray | None = None
+        self._max_electrical_power_kw_t: np.ndarray | None = None
         self._timestamps: list | None = None
         self._active_sinks: set = set()
 
@@ -166,14 +165,60 @@ class HeatPump(MILPComponent):
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _CAPACITY_TABLE)
         return np.clip(cap, 0.0, 20.0)
 
+    def calculate_max_electrical_power(
+        self, outside_temp_c: np.ndarray
+    ) -> np.ndarray:
+        """Max. elektrische Leistung [kW] pro Zeitschritt aus Aussentemperatur.
+
+        Wird aus dem Kennfeld abgeleitet: ``P_el_max = P_th_max / COP``,
+        ausgewertet sowohl fuer den Heizkreis-Vorlauf als auch fuer den
+        WW-Vorlauf. Wir nehmen das **Maximum** beider Werte, damit der
+        Solver bei beiden Senken (FBH oder WW) genuegend Leistungsspiel-
+        raum hat — Splitting auf hp_power_floor / hp_power_ww uebernimmt
+        die feinere Aufteilung, wenn beide aktiv sind.
+
+        Geclippt an die statische ``max_electrical_power_kw``-Konfig —
+        das ist die Hardware-Modulationsobergrenze (z.B. 8 kW bei der
+        Vaillant aroTHERM plus VWL 105/8.1 A). Damit ist die dynamische
+        Berechnung immer eine *tighter* Schranke gegenueber der statischen.
+
+        Returns:
+            np.ndarray gleicher Laenge wie ``outside_temp_c``.
+        """
+        p_th_h = self.calculate_max_thermal_capacity(
+            outside_temp_c, self.flow_temp_heating,
+        )
+        cop_h = self.calculate_cop(outside_temp_c, self.flow_temp_heating)
+        p_el_h = np.divide(
+            p_th_h, cop_h, where=cop_h > 0, out=np.zeros_like(p_th_h, dtype=float),
+        )
+
+        p_th_w = self.calculate_max_thermal_capacity(
+            outside_temp_c, self.flow_temp_dhw,
+        )
+        cop_w = self.calculate_cop(outside_temp_c, self.flow_temp_dhw)
+        p_el_w = np.divide(
+            p_th_w, cop_w, where=cop_w > 0, out=np.zeros_like(p_th_w, dtype=float),
+        )
+
+        p_el_max = np.maximum(p_el_h, p_el_w)
+        return np.minimum(p_el_max, self.max_power_kw)
+
     # ============================================================
     # Setup-Hooks (vom Optimizer aufgerufen)
     # ============================================================
 
     def prepare(self, inp: Any) -> None:
-        """Vorberechnung der COP-Zeitreihen aus der Aussentemperatur."""
+        """Vorberechnung der COP- und max-Leistungs-Zeitreihen aus der
+        Aussentemperatur."""
         self._cop_heating = self.calculate_cop_heating(inp.outside_temp_c)
         self._cop_dhw = self.calculate_cop_dhw(inp.outside_temp_c)
+        # Dynamische maximale elektrische Leistung pro Zeitschritt —
+        # ersetzt die statische ``max_electrical_power_kw`` als bindende
+        # Obergrenze in add_constraints. Cached fuer extract_result.
+        self._max_electrical_power_kw_t = self.calculate_max_electrical_power(
+            inp.outside_temp_c,
+        )
         # Zeitstempel puffern — werden in add_constraints fuer die
         # Tagesgruppierung der max_starts_per_day-Restriktion gebraucht.
         self._timestamps = list(inp.timestamps)
@@ -248,13 +293,28 @@ class HeatPump(MILPComponent):
         min_run_steps = steps_for_minutes(self.min_run_minutes, step_minutes)
         min_pause_steps = steps_for_minutes(self.min_pause_minutes, step_minutes)
 
-        # Modulationsbereich (Min/Max Leistung gekoppelt an on/off)
-        add_on_off_power_link(
-            model, hp_power, hp_on,
-            max_power=self.max_power_kw,
-            min_power=self.min_power_kw,
-            name="hp",
+        # Modulationsbereich mit T-abhaengiger Obergrenze (Mai 2026):
+        # Die maximale elektrische Leistung wird pro Zeitschritt aus dem
+        # Kennfeld berechnet (siehe calculate_max_electrical_power und
+        # prepare). Bei kalten Tagen kann die WP weniger el. ziehen als
+        # die Modulations-Obergrenze ``max_power_kw`` zulaesst, bei sehr
+        # warmen Tagen ebenfalls (geringerer Bedarf, geringerer Output).
+        # Untergrenze: statisch wie zuvor (Mindestleistung beim Einschalten).
+        max_t = (
+            self._max_electrical_power_kw_t
+            if self._max_electrical_power_kw_t is not None
+            else np.full(num_steps, self.max_power_kw)
         )
+        for t in range(num_steps):
+            model += (
+                hp_power[t] <= float(max_t[t]) * hp_on[t],
+                f"hp_max_t_{t}",
+            )
+            if self.min_power_kw > 0:
+                model += (
+                    hp_power[t] >= self.min_power_kw * hp_on[t],
+                    f"hp_min_t_{t}",
+                )
 
         add_min_run_time(model, hp_on, min_run_steps=min_run_steps, name="hp")
         add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
@@ -367,6 +427,16 @@ class HeatPump(MILPComponent):
         result.hp_power_kw = np.array(
             [v.varValue or 0.0 for v in variables["hp_power"]]
         )
+        # Dynamische Max-Leistung pro Zeitschritt (T-abhaengig), damit
+        # das Dashboard die Modulations-Obergrenze als Hilfslinie zeichnen
+        # kann. Wenn prepare() nicht gelaufen ist, fall back zur statischen
+        # Modulationsobergrenze.
+        if self._max_electrical_power_kw_t is not None:
+            result.hp_max_power_kw = np.asarray(
+                self._max_electrical_power_kw_t[:num_steps], dtype=float,
+            )
+        else:
+            result.hp_max_power_kw = np.full(num_steps, self.max_power_kw)
         if self.sg_ready and "hp_sg3" in variables:
             sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
             sg2_vals = np.array(

@@ -44,6 +44,11 @@ class OptimizationResult:
     batt_soc_kwh: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_on: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Maximale el. WP-Leistung pro Zeitschritt — dynamisch aus T_aussen
+    # und Vorlauftemperatur ueber das Kennfeld berechnet. Wird als
+    # Obergrenze fuer hp_power_kw vom Solver eingehalten und dient als
+    # Hilfslinie im Dashboard-Plot (Mai 2026).
+    hp_max_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     wallbox_power_kw: dict = field(default_factory=dict)
     # EV-SOC-Trajektorie pro Wallbox in kWh. Wird vom MILP-Optimizer als
     # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-
