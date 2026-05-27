@@ -47,17 +47,32 @@ _COP_TABLE = np.array([
     [5.29, 4.03, 3.19, 2.51],   # A7
 ])
 
-# Heizleistung thermisch [kW] — fuer Kapazitaetsgrenzen
+# Maximale thermische Heizleistung [kW] im **Modulationsmaximum**
+# (nicht der EN-14511-Betriebspunkt). Diese Werte sind die obere Schranke
+# fuer die thermische Leistung der WP, der Solver entscheidet anhand der
+# Heizlast/Kosten wieviel davon tatsaechlich genutzt wird.
+#
+# Physikalischer Hintergrund: bei waermerer Aussenluft kann der Verdampfer
+# bei hoeherem Druck arbeiten -> hoehere Kaeltemittel-Massendichte ->
+# mehr Enthalpiedurchsatz pro Verdichterumdrehung -> mehr Waerme
+# extrahierbar. Daher steigt P_th_max von A-7 (11.25) ueber A2 (12.48)
+# bis A7 (14.40 kW) — verifiziert anhand des Vaillant-Datenblatts der
+# aroTHERM plus VWL 105/8.1 A.
+#
+# Spalten W45/W55/W65 sind ueber die A-7-Ratios skaliert (≈ +1 % je 10 K
+# VL-Anhebung — Kondensationsdruck-Effekt), da nur die W35-Maxima
+# explizit publiziert sind.
 _CAPACITY_TABLE = np.array([
     # W35    W45    W55    W65
-    [10.58, 10.69, 10.96, 11.06],  # A-7
-    [ 5.82,  7.32,  7.27,  7.50],  # A2  (W65 interpoliert)
-    [ 5.69,  6.08,  5.57,  6.88],  # A7
+    [11.25, 11.37, 11.66, 11.76],  # A-7
+    [12.48, 12.61, 12.93, 13.04],  # A2
+    [14.40, 14.54, 14.92, 15.05],  # A7
 ])
 
-# Heizleistung min/max bei A2/W35 (Modulationsbereich)
-# A2/W35: 4.76 … 12.48 kW, A7/W35: 4.61 … 14.40 kW
-# A-7/W35: max 11.25 kW
+# Minimale thermische Modulation (aus Datenblatt aroTHERM plus VWL 105/8.1 A):
+#   A2/W35: 4.76 kW min,  A7/W35: 4.61 kW min,  A-7/W35: ~4 kW min
+# Wird ueber ``min_electrical_power_kw`` (Default 1.0 kW) im Modell
+# durchgesetzt — bei COP ~4 entspricht das knapp 4 kW thermisch.
 
 # COP-Grenzen fuer Extrapolation
 _COP_MIN = 1.2
