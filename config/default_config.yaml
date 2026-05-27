@@ -63,7 +63,10 @@ heat_pump:
   flow_temp_dhw_c: 55.0
   operating_min_temp_c: -25.0
   operating_max_temp_c: 43.0
-  min_run_time_minutes: 15
+  # WP soll mind. 60 min am Stueck laufen (Prof-Hinweis Mai 2026).
+  # Umschalten zwischen FBH und WW innerhalb dieser Laufphase ist
+  # erlaubt — siehe hp_mode_ww-Constraint in heat_pump.py.
+  min_run_time_minutes: 60
   min_pause_time_minutes: 15
   # Verdichter-Schonung: max. Einschaltvorgaenge OFF->ON pro Kalendertag.
   # Umschalten zwischen Heizkreis und Warmwasser zaehlt nicht.

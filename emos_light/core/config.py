@@ -85,7 +85,15 @@ DEFAULT_CONFIG = {
         "flow_temp_dhw_c": 55.0,
         "operating_min_temp_c": -25.0,
         "operating_max_temp_c": 43.0,
-        "min_run_time_minutes": 15,
+        # Mindestlaufzeit der WP in Minuten nach jedem Einschalten.
+        # Die WP soll mindestens 60 min am Stueck laufen — Hinweis vom
+        # Prof (Mai 2026): kuerzere Phasen sind technisch ungeschickt
+        # (Einschwingzeit Verdichter + Verdampfer, Effizienzeinbussen,
+        # Verdichter-Verschleiss). Innerhalb dieser Laufphase darf der
+        # Solver allerdings ueber ``hp_mode_ww[t]`` zwischen FBH und WW
+        # umschalten — die Restriktion bezieht sich auf hp_on, nicht
+        # auf den Modus.
+        "min_run_time_minutes": 60,
         "min_pause_time_minutes": 15,
         # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
         # Schont den Verdichter — laeuft die WP einmal, darf sie beliebig

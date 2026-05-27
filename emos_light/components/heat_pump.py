@@ -106,7 +106,10 @@ class HeatPump(MILPComponent):
         self.flow_temp_dhw = config.get("flow_temp_dhw_c", 55.0)
         self.operating_min_temp = config.get("operating_min_temp_c", -25.0)
         self.operating_max_temp = config.get("operating_max_temp_c", 43.0)
-        self.min_run_minutes = config.get("min_run_time_minutes", 15)
+        # Mindestlaufzeit nach Einschalten — Default 60 min (Prof-Hinweis
+        # Mai 2026). Innerhalb dieser Zeit darf zwischen FBH und WW
+        # umgeschaltet werden (siehe hp_mode_ww-Constraint).
+        self.min_run_minutes = config.get("min_run_time_minutes", 60)
         self.min_pause_minutes = config.get("min_pause_time_minutes", 15)
         # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
         # Setz auf 0 oder negative Werte, um die Restriktion zu deaktivieren.
