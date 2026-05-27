@@ -523,34 +523,19 @@ with tab_config:
                 config["pv"]["peak_power_kwp"] = total_kwp
 
                 # -------- Ertragsprognose-Modell --------
-                st.info(
-                    "ℹ️ **Hinweis zur Ertragsprognose:** Beide hier waehlbaren "
-                    "Modelle sind **Uebergangsloesungen**, bis die endgueltige "
-                    "Prognose (inkl. Intraday-Messwertkorrektur) feststeht."
-                )
-                _models = {
-                    "perez": "Perez (1990) — anisotrop, Standard",
-                    "isotropic": "Liu & Jordan (1963) — isotrop, alte EMOS",
-                }
-                _current = config["pv"].get("transposition_model", "perez")
-                if _current not in _models:
-                    _current = "perez"
-                _model_keys = list(_models.keys())
-                config["pv"]["transposition_model"] = st.selectbox(
-                    "Transpositionsmodell GHI → POA",
-                    _model_keys,
-                    index=_model_keys.index(_current),
-                    format_func=lambda k: _models[k],
-                    key=_wkey("pv_transposition_model"),
-                    help=(
-                        "Wie wird die horizontale Globalstrahlung (GHI) auf "
-                        "die geneigte Modulflaeche umgerechnet?\n\n"
-                        "• **Perez** beruecksichtigt Zirkumsolar- und "
-                        "Horizont-Helligkeit, ist an klaren Tagen genauer.\n"
-                        "• **Liu & Jordan** rechnet die Diffusstrahlung als "
-                        "gleichmaessig aus der Himmelshalbkugel — robuster, "
-                        "unterschaetzt aber meist."
-                    ),
+                # Modell ist fest auf Perez (1990) anisotrop gestellt — Sieger
+                # aus dem internen Vergleich gegen Liu&Jordan, EMOS_iso und
+                # HTW PVprog (siehe "PV Prognose Tool angepasst/FORECASTS.md":
+                # nRMSE 11.08 % unkalibriert, 8.77 % mit datenbasierter
+                # Kalibrierung k). Kein Selector mehr, damit Anwender nicht
+                # unbeabsichtigt auf das schlechtere isotrope Modell wechseln.
+                config["pv"]["transposition_model"] = "perez"
+                st.caption(
+                    "📡 **Ertragsprognose:** Perez (1990) anisotrop mit "
+                    "Spencer-Sonnenstand und Kasten-Luftmasse — bestes "
+                    "wetterbasiertes Modell aus dem internen Vergleich. "
+                    "Optionale Anlagen-Kalibrierung (`pv.k_calibration`) "
+                    "ueber das Standalone-Tool _PV Prognose Tool angepasst/_."
                 )
 
         with col_batt:

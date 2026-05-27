@@ -55,9 +55,12 @@ DEFAULT_CONFIG = {
         "degradation_pct_per_year": 0.5,
         "age_years": 0,
         "surfaces": [],
-        # Transpositionsmodell GHI -> POA: "perez" (Default) oder
-        # "isotropic" (Liu & Jordan 1963, aus alter EMOS — Uebergangs-
-        # loesung, bis die finale Prognose feststeht).
+        # Transpositionsmodell GHI -> POA. "perez" (1990) ist das
+        # produktiv gesetzte Modell — Sieger im internen Vergleich
+        # gegen Liu&Jordan, EMOS_iso und HTW PVprog (siehe
+        # "PV Prognose Tool angepasst/FORECASTS.md"). UI bietet keinen
+        # Wechsel mehr; "isotropic" kann per YAML noch erzwungen werden,
+        # wenn jemand eine Vergleichsrechnung machen will.
         "transposition_model": "perez",
         # Datenbasierte Kalibrierung (Mai 2026, Standalone-Tool
         # "PV Prognose Tool angepasst/"). 1.0 = unkalibriert.

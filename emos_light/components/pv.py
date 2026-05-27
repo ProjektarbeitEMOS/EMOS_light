@@ -73,8 +73,11 @@ class PVSystem(Component):
         self.temp_coefficient = config.get("temp_coefficient", -0.004)
         self.noct = config.get("noct", 45.0)
         self.albedo = config.get("albedo", 0.2)
-        # Transpositionsmodell GHI -> POA: "perez" (Default, anisotrop)
-        # oder "isotropic" (Liu & Jordan 1963, einfacher, aus alter EMOS).
+        # Transpositionsmodell GHI -> POA: "perez" (1990) ist produktiv
+        # gesetzt — bestes wetterbasiertes Modell aus dem internen
+        # Vergleich (siehe "PV Prognose Tool angepasst/FORECASTS.md").
+        # Die UI bietet keinen Wechsel mehr; "isotropic" (Liu & Jordan
+        # 1963) bleibt im Code als YAML-Override fuer Vergleichsrechnungen.
         self.transposition_model = config.get("transposition_model", "perez")
         # Datenbasierte Kalibrierung (Standalone-Tool "PV Prognose Tool
         # angepasst" liefert k aus Energy-Ratio auf historischen
