@@ -49,6 +49,12 @@ class OptimizationResult:
     # Obergrenze fuer hp_power_kw vom Solver eingehalten und dient als
     # Hilfslinie im Dashboard-Plot (Mai 2026).
     hp_max_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # WP-Modus pro Zeitschritt (Entweder-Oder zwischen FBH und WW —
+    # Projektgruppe Leistungsaufteilung, Mai 2026):
+    #   0 = FBH-Modus (W35-Vorlauf, hoher COP)
+    #   1 = WW-Modus  (W55-Vorlauf, niedriger COP)
+    # Wenn nur eine Senke aktiv ist (z.B. nur Heizung), bleibt das Feld leer.
+    hp_mode_ww: np.ndarray = field(default_factory=lambda: np.array([]))
     wallbox_power_kw: dict = field(default_factory=dict)
     # EV-SOC-Trajektorie pro Wallbox in kWh. Wird vom MILP-Optimizer als
     # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-

@@ -287,8 +287,20 @@ class HeatPump(MILPComponent):
             result["hp_sg3"] = make_binary_array("hp_sg3", num_steps)
             result["hp_sg4"] = make_binary_array("hp_sg4", num_steps)
 
-        # Senken-Split nur wenn mehr als eine Senke aktiv
+        # Senken-Split nur wenn mehr als eine Senke aktiv.
+        # Wichtig (Projektgruppe Leistungsaufteilung, Mai 2026): die WP hat
+        # nur einen Heizkreis + 3-Wege-Ventil, also gibt es eine ECHTE
+        # Entweder-Oder-Entscheidung pro Zeitschritt zwischen FBH und WW
+        # (kein gemischter Betrieb innerhalb eines 15-min-Blocks, weil
+        # die thermische Einschwingzeit bei einem Umschalt-Block schon
+        # mehrere Minuten verbraucht). Die Binaervariable ``hp_mode_ww[t]``
+        # entscheidet: 0 = FBH-Modus (hp_power_ww=0), 1 = WW-Modus
+        # (hp_power_floor=0). COP ist pro Block eindeutig — bei z=0 zaehlt
+        # COP_heating (W35), bei z=1 zaehlt COP_dhw (W55).
         if len(self._active_sinks) > 1:
+            result["hp_mode_ww"] = make_binary_array(
+                "hp_mode_ww", num_steps,
+            )
             if "floor" in self._active_sinks:
                 result["hp_power_floor"] = make_var_array(
                     "hp_power_floor", num_steps, low=0, high=self.max_power_kw,
@@ -404,9 +416,19 @@ class HeatPump(MILPComponent):
             add_min_hold_time(model, sg3, min_hold_steps=min_hold_steps, name="hp_sg3")
             add_min_hold_time(model, sg4, min_hold_steps=min_hold_steps, name="hp_sg4")
 
-        # Senken-Split-Constraint: hp_power = sum(hp_power_<sink>)
-        # Nur wenn mehrere Senken aktiv sind, sonst speist hp_power direkt
-        # die einzige Senke (siehe heat_supply).
+        # Senken-Split + Entweder-Oder-Modus (Mai 2026 — Projektgruppe
+        # Leistungsaufteilung): hp_power[t] = hp_power_floor[t] + hp_power_ww[t]
+        # PLUS Big-M-Constraint, dass pro Zeitschritt genau eine Senke
+        # bedient wird:
+        #
+        #   hp_mode_ww[t] = 0  =>  hp_power_ww[t]    = 0  (FBH-Modus)
+        #   hp_mode_ww[t] = 1  =>  hp_power_floor[t] = 0  (WW-Modus)
+        #
+        # Physikalisch: die WP hat einen Heizkreis + 3-Wege-Ventil. Bei
+        # Umschaltung innerhalb eines 15-min-Blocks geht die Einschwing-
+        # zeit (FBH->WW ~5-15 min, WW->FBH ~2-5 min) verloren, der Block
+        # waere fast nutzlos und der COP unscharf. Mit z_t bleibt der COP
+        # pro Block eindeutig (W35 oder W55).
         if len(self._active_sinks) > 1:
             split_vars = []
             if "hp_power_floor" in variables:
@@ -418,6 +440,24 @@ class HeatPump(MILPComponent):
                     hp_power[t] == sum(v[t] for v in split_vars),
                     f"hp_power_split_{t}",
                 )
+            # Entweder-Oder-Mutex via Big-M
+            mode_ww = variables.get("hp_mode_ww")
+            if (
+                mode_ww is not None
+                and "hp_power_floor" in variables
+                and "hp_power_ww" in variables
+            ):
+                p_floor = variables["hp_power_floor"]
+                p_ww = variables["hp_power_ww"]
+                for t in range(num_steps):
+                    model += (
+                        p_floor[t] <= self.max_power_kw * (1 - mode_ww[t]),
+                        f"hp_mode_floor_{t}",
+                    )
+                    model += (
+                        p_ww[t] <= self.max_power_kw * mode_ww[t],
+                        f"hp_mode_ww_{t}",
+                    )
 
     # ------------------------------------------------------------------
     # Bilanz-Beitraege
@@ -452,6 +492,13 @@ class HeatPump(MILPComponent):
             )
         else:
             result.hp_max_power_kw = np.full(num_steps, self.max_power_kw)
+        # Entweder-Oder-Modus: 1 bei WW-Modus, 0 bei FBH-Modus (nur wenn
+        # beide Senken aktiv sind, sonst bleibt das Feld leer).
+        if "hp_mode_ww" in variables:
+            result.hp_mode_ww = np.array(
+                [int((v.varValue or 0.0) > 0.5)
+                 for v in variables["hp_mode_ww"]]
+            )
         if self.sg_ready and "hp_sg3" in variables:
             sg1_vals = np.array([v.varValue or 0.0 for v in variables["hp_sg1"]])
             sg2_vals = np.array(
