@@ -59,6 +59,12 @@ DEFAULT_CONFIG = {
         # "isotropic" (Liu & Jordan 1963, aus alter EMOS — Uebergangs-
         # loesung, bis die finale Prognose feststeht).
         "transposition_model": "perez",
+        # Datenbasierte Kalibrierung (Mai 2026, Standalone-Tool
+        # "PV Prognose Tool angepasst/"). 1.0 = unkalibriert.
+        # Bei realen Anlagendaten ueblicherweise 0.7..1.0.
+        "k_calibration": 1.0,
+        # AC-Wechselrichter-Limit (kW). None = kein Clipping.
+        "ac_limit_kw": None,
     },
     "battery": {
         "enabled": True,

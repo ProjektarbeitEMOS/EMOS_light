@@ -220,6 +220,16 @@ def load_input_data(
                 "age_years": pv_config.get("age_years", 0),
                 "degradation_pct_per_year": pv_config.get("degradation_pct_per_year", 0.5),
                 "transposition_model": pv_config.get("transposition_model", "perez"),
+                # Datenbasierte Kalibrierung + AC-Limit pro Surface aus
+                # dem PV-Block durchreichen, damit das Multi-Surface-
+                # Layout dieselben Korrekturen wie eine Einzel-Anlage
+                # bekommt. AC-Limit wird hier proportional aufgeteilt.
+                "k_calibration": pv_config.get("k_calibration", 1.0),
+                "ac_limit_kw": _split_ac_limit(
+                    pv_config.get("ac_limit_kw"),
+                    surf.get("kwp", 5.0),
+                    sum(s.get("kwp", 0.0) for s in surfaces) or 1.0,
+                ),
             }
             pv_surf = PVSystem(surf.get("name", "pv"), surf_config)
             pv_generation += pv_surf.estimate_generation(
@@ -337,3 +347,23 @@ def _pad_array(arr: np.ndarray, target_len: int) -> np.ndarray:
     if len(arr) < target_len:
         arr = np.pad(arr, (0, target_len - len(arr)), mode="edge")
     return arr
+
+
+def _split_ac_limit(
+    total_ac_limit_kw: float | None,
+    surface_kwp: float,
+    total_kwp: float,
+) -> float | None:
+    """Verteilt ein globales AC-Limit anteilig auf eine Surface.
+
+    Beispiel: 12 kWp Anlage (8 kWp Sued + 4 kWp Ost) mit 10 kW
+    Wechselrichter-Limit -> Sued bekommt 6.67 kW, Ost 3.33 kW.
+    Vereinfachung: das echte AC-Clipping ist ueber die Summe nicht
+    perfekt durch lineare Aufteilung abbildbar, fuer die Optimierung
+    aber ausreichend nah.
+    """
+    if total_ac_limit_kw in (None, 0, 0.0):
+        return None
+    if total_kwp <= 0:
+        return None
+    return float(total_ac_limit_kw) * float(surface_kwp) / float(total_kwp)

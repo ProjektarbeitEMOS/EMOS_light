@@ -26,6 +26,9 @@ Thumbs.db
 *.csv
 !config/*.yaml
 !data/load_profiles/*.csv
+# PV-Prognose-Tool Benchmark-/Validierungsdaten (eingecheckt, damit
+# evaluate_*.py reproduzierbar laufen kann; nichts generierte Daten).
+!PV Prognose Tool angepasst/data/*.csv
 
 # Streamlit
 .streamlit/

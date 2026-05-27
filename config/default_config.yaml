@@ -28,6 +28,18 @@ household:
 pv:
   enabled: true
   peak_power_kwp: 12.0
+  # Datenbasierte Kalibrierung (k = sum(real) / sum(model) auf historischen
+  # Anlagendaten). Wert wird vom Standalone-Tool unter
+  # "PV Prognose Tool angepasst/" ermittelt (evaluate_best.py schreibt
+  # data/calibration.json). Bei Default 1.0 wird das physikalische
+  # Modell unkalibriert verwendet. Typische Werte 0.7..1.0 — der
+  # Faktor bildet Soiling, Spektral, Verschattung, Inverter-Clipping,
+  # MPPT- und Alterungsverluste ueber die 85 % System-Effizienz hinaus ab.
+  k_calibration: 1.0
+  # AC-Wechselrichter-Limit (kW). null = kein Clipping. Bei DC/AC-Ratio > 1
+  # (PV-Generator groesser als Wechselrichter) wird die Leistung an diesem
+  # Wert gekappt. Wird bei Multi-Surface anteilig pro kWp aufgeteilt.
+  ac_limit_kw: null
   surfaces:
     - name: Sued
       kwp: 8.0
