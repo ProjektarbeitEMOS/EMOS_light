@@ -58,11 +58,13 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         * Bei **aktivem Gebaeudemodell** (``building.enabled = True``,
           seit Mai 2026): Hysterese auf der **Raumlufttemperatur**
           T_innen — startet, wenn T_innen unter (comfort_min + 1 K)
-          faellt, stoppt bei (comfort_max - 1 K). Estrichbilanz wird
-          dann mit dem expliziten Waermestrom Estrich->Raum gefuehrt
-          (MILP-Modell):
-              q_floor_to_room = h*A/1000 * (T_floor[t-1] - T_innen[t-1])
-              C_room * dT_innen/dt = q_floor_to_room - UA/1000 * (T_innen[t-1] - T_aus[t])
+          faellt, stoppt bei (comfort_max - 1 K). Raum/Wand werden mit
+          dem 3-Speicher-Modell (ETH Zuerich, Juni 2026) gefuehrt —
+          identisch zum MILP-Optimizer (siehe Building.heat_demand):
+              q_floor_to_room = h*A/1000 * (T_floor[t-1] - T_innen)
+              C_R * dT_R/dt = q_floor_to_room - G_RW*(T_R - T_W)
+                              - UA_direkt*(T_R - T_aus) + Q_g,R
+              C_W * dT_W/dt = G_RW*(T_R - T_W) - G_WA*(T_W - T_aus)
         * **Ohne Gebaeudemodell** (Fallback, kompatibel zu pre-Mai-2026):
           Hysterese auf der **Estrich-Energie** — 25 % unterhalb T_max
           startet, 95 % stoppt. Estrichbilanz mit linearer Verlustrate.
@@ -186,18 +188,31 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     building_obj = None
     t_innen = 0.0
     c_room_kwh_per_k = 0.0
-    ua_kw_per_k = 0.0
+    # 3-Speicher-Modell (ETH, Juni 2026) — gleiche Groessen wie der MILP.
+    g_rw_kw = 0.0
+    g_wa_kw = 0.0
+    ua_direct_kw = 0.0
+    q_g_r_kw = 0.0
+    c_w_kwh_per_k = 0.0
+    t_wand = 0.0
     t_innen_low = 0.0
     t_innen_high = 0.0
     indoor_temp_all = None
     heat_loss_all = None
     q_floor_to_room_all = None
+    wall_temp_all = None
     if building_active:
         from emos_light.components.building import Building
         building_obj = Building("baseline_building", building_cfg)
         t_innen = building_obj.indoor_temp
-        c_room_kwh_per_k = building_obj.shell_capacity_kwh_per_k
-        ua_kw_per_k = building_obj.ua_w_per_k / 1000.0
+        # 3-Speicher-Modell: Raumknoten nur Luft, Wandmasse separat (T_W).
+        c_room_kwh_per_k = building_obj.room_capacity_kwh_per_k
+        g_rw_kw = building_obj.wall_conductance_rw_w_per_k / 1000.0
+        g_wa_kw = building_obj.wall_conductance_wa_w_per_k / 1000.0
+        ua_direct_kw = building_obj.ua_direct_w_per_k / 1000.0
+        q_g_r_kw = building_obj.internal_gains_w / 1000.0
+        c_w_kwh_per_k = building_obj.wall_capacity_kwh_per_k
+        t_wand = building_obj.initial_wall_temp_c
         # Hysterese-Schwellen auf T_innen: 1 K Sicherheitsband innerhalb
         # des Komfortbands, damit der traege Estrich nicht ueber-/
         # unterschiesst (in einem Schritt fliesst nur wenig Waerme in
@@ -207,6 +222,7 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         indoor_temp_all = np.zeros(num_steps)
         heat_loss_all = np.zeros(num_steps)
         q_floor_to_room_all = np.zeros(num_steps)
+        wall_temp_all = np.zeros(num_steps)
 
     # Hysterese-Zustand: "OFF" | "FLOOR" | "WW"
     hp_state = "OFF"
@@ -281,11 +297,31 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
             #  - Sonst Fallback auf das lineare Verlustratenmodell, das
             #    den Verlust direkt auf die Estrich-Energie bezieht.
             if building_active:
+                # 3-Speicher-Modell: Raumbilanz IMPLIZIT loesen (skalar) —
+                # Estrich-Kopplung, Wandverlust und direkter Verlust auf
+                # T_R_new, Estrich-/Wandtemperatur aus dem Schrittanfang.
+                # Implizit ist noetig, weil die reine Luftkapazitaet eine
+                # Zeitkonstante < 15 min hat (explizit wuerde oszillieren).
+                # q_floor_to_room wird aus T_R_new rueckgerechnet -> Estrich-
+                # und Raumbilanz nutzen denselben Fluss (energiekonsistent).
+                # T_innen wird erst im Raum-Block committet, damit die
+                # Hysterese unten noch den Schrittanfangswert sieht.
                 t_floor_prev = ufh_obj.energy_to_temp(floor_e)
-                q_floor_to_room = (
-                    ufh_obj.h_surface * ufh_obj.area_m2 / 1000.0
-                    * (t_floor_prev - t_innen)
+                t_out_t = float(inp.outside_temp_c[t])
+                tw_prev = t_wand
+                h_a_kw_per_k = ufh_obj.h_surface * ufh_obj.area_m2 / 1000.0
+                denom = (
+                    c_room_kwh_per_k / dt_h
+                    + h_a_kw_per_k + g_rw_kw + ua_direct_kw
                 )
+                t_innen_new = (
+                    c_room_kwh_per_k / dt_h * t_innen
+                    + h_a_kw_per_k * t_floor_prev
+                    + g_rw_kw * tw_prev
+                    + ua_direct_kw * t_out_t
+                    + q_g_r_kw
+                ) / denom
+                q_floor_to_room = h_a_kw_per_k * (t_floor_prev - t_innen_new)
             else:
                 q_floor_to_room = (
                     ufh_obj.loss_rate_per_h * floor_e if ufh_active else 0.0
@@ -355,17 +391,24 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 ww_e = max(0.0, min(ww_e, ww_cap))
                 ww_energy_all[t] = ww_e
 
-            # Raumluft-Bilanz (nur bei aktivem Building) — explizites Euler,
-            # identisches Modell wie der MILP-Optimizer in Building.heat_demand.
+            # Raum-/Wand-Bilanz committen (Raumloesung erfolgte oben
+            # implizit). Wand explizit, Raum->Wand-Fluss mit T_R_new
+            # (gleicher Ausdruck wie der MILP -> energiekonsistent).
             if building_active:
-                q_loss = ua_kw_per_k * (
-                    t_innen - float(inp.outside_temp_c[t])
+                if c_w_kwh_per_k > 0:
+                    t_wand = tw_prev + dt_h / c_w_kwh_per_k * (
+                        g_rw_kw * (t_innen_new - tw_prev)
+                        - g_wa_kw * (tw_prev - t_out_t)
+                    )
+                t_innen = t_innen_new
+                # Gesamtverlust an Aussenluft = direkter Pfad + Wandpfad
+                # (Wandpfad mit T_W am Schrittanfang, konsistent zum MILP).
+                heat_loss_all[t] = (
+                    ua_direct_kw * (t_innen - t_out_t)
+                    + g_wa_kw * (tw_prev - t_out_t)
                 )
-                t_innen = t_innen + (
-                    q_floor_to_room - q_loss
-                ) * dt_h / c_room_kwh_per_k
                 indoor_temp_all[t] = t_innen
-                heat_loss_all[t] = q_loss
+                wall_temp_all[t] = t_wand
                 q_floor_to_room_all[t] = q_floor_to_room
 
         elif hp_enabled and cop_heating is not None:
@@ -509,6 +552,8 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         result.indoor_temp_c = indoor_temp_all
         result.heat_loss_kw = heat_loss_all
         result.q_floor_to_room_kw = q_floor_to_room_all
+        if wall_temp_all is not None:
+            result.wall_temp_c = wall_temp_all
 
     # Baseline plant nicht in die Zukunft — der gesamte simulierte Bereich
     # wird ohne Lookahead Schritt fuer Schritt abgefahren. Damit das
