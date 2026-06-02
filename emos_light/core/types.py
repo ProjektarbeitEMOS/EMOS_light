@@ -71,8 +71,11 @@ class OptimizationResult:
 
     # Thermische Fahrplaene — Raum (Innentemperatur, MILP-Zustandsvariable)
     indoor_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
-    # Waermeverlust des Raumes an die Aussenluft, UA*(T_innen-T_aus)/1000 [kW]
+    # Gesamter Waermeverlust des Raumes an die Aussenluft [kW]:
+    # direkter Pfad (Fenster+Dach+Lueftung) + Wandpfad (ueber T_W).
     heat_loss_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Wandtemperatur T_W (3-Speicher-Modell ETH, Juni 2026) [°C]
+    wall_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Thermische Fahrplaene — Warmwasserspeicher
     ww_storage_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))

@@ -1821,6 +1821,14 @@ with tab_optimize:
                 x=ts, y=result.indoor_temp_c, name="T_innen",
                 line=dict(color="tomato", width=2),
             ), row=row_idx, col=1)
+            # Wandtemperatur T_W (3-Speicher-Modell, ETH Juni 2026) — der
+            # traege Speicher zwischen Raum und Aussenluft. Nur vorhanden,
+            # wenn der Wandknoten aktiv ist.
+            if len(result.wall_temp_c) > 0:
+                fig_th.add_trace(go.Scatter(
+                    x=ts, y=result.wall_temp_c, name="T_Wand",
+                    line=dict(color="sienna", width=1, dash="dot"),
+                ), row=row_idx, col=1)
             fig_th.add_hline(
                 y=comfort_min, line_dash="dash", line_color="gray",
                 annotation_text=f"Komfort min {comfort_min:.0f} C",
