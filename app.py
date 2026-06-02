@@ -434,6 +434,56 @@ with tab_config:
             "Einspeiseverguetung (ct/kWh)", 0.0, 99.0, float(general["feed_in_tariff_ct_kwh"]), 0.1,
         )
 
+    # §14a EnWG — Netzdrosselung (Testszenario)
+    _par14a_container = st.container(key=_wkey("par14a_section"))
+    with _par14a_container, st.expander("§14a Netzdrosselung (Test)", expanded=False):
+        par14a = config.setdefault("par14a", {})
+        par14a["enabled"] = st.checkbox(
+            "Netzdrosselung simulieren",
+            value=bool(par14a.get("enabled", False)),
+            help="Simuliert eine §14a-EnWG-Dimmung: der Netzbetreiber "
+                 "begrenzt im gewaehlten Zeitfenster die Summe der "
+                 "steuerbaren Lasten (Waermepumpe, Wallbox) auf eine "
+                 "reduzierte Leistung. Nur zum Testen der Funktion.",
+        )
+        par14a_on = bool(par14a["enabled"])
+        pc1, pc2, pc3 = st.columns(3)
+        par14a["curtailment_kw"] = pc1.number_input(
+            "Drossel-Leistung (kW)", 0.0, 30.0,
+            float(par14a.get("curtailment_kw", 4.2)), 0.1,
+            help="Obergrenze fuer die Summe der steuerbaren Lasten "
+                 "waehrend der Drosselung. §14a-Mindestwert: 4,2 kW.",
+            disabled=not par14a_on,
+        )
+        par14a["curtail_start_hour"] = int(pc2.number_input(
+            "Beginn (Uhr)", 0, 23,
+            int(par14a.get("curtail_start_hour", 17)), 1,
+            disabled=not par14a_on,
+        ))
+        par14a["curtail_end_hour"] = int(pc3.number_input(
+            "Ende (Uhr)", 0, 24,
+            int(par14a.get("curtail_end_hour", 20)), 1,
+            disabled=not par14a_on,
+        ))
+        if par14a_on:
+            s, e = par14a["curtail_start_hour"], par14a["curtail_end_hour"]
+            if s == e:
+                st.warning(
+                    "Beginn = Ende: kein Drosselfenster aktiv "
+                    "(die Drosselung greift dann nicht)."
+                )
+            else:
+                fenster = (
+                    f"{s:02d}:00–{e:02d}:00 Uhr" if s < e
+                    else f"{s:02d}:00–24:00 + 00:00–{e:02d}:00 Uhr"
+                )
+                st.caption(
+                    f"⚡ Drosselung auf **{par14a['curtailment_kw']:.1f} kW** "
+                    f"im Fenster **{fenster}** (taeglich). "
+                    "Betrifft Waermepumpe und Wallbox; Komfort darf der "
+                    "Solver dafuer weich verletzen (Slack)."
+                )
+
     # Stromtarif
     _tariff_container = st.container(key=_wkey("tariff_section"))
     with _tariff_container, st.expander("Dynamischer Stromtarif", expanded=False):

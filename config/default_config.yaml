@@ -22,6 +22,17 @@ tariff:
   monthly_base_fee_eur: 5.99
   monthly_grid_fee_eur: 10.0
 
+# §14a EnWG — Netzdrosselung (Testszenario). Wenn enabled, begrenzt der
+# Netzbetreiber im Zeitfenster [curtail_start_hour, curtail_end_hour) die
+# Summe der steuerbaren Lasten (Waermepumpe, Wallbox) auf curtailment_kw
+# (Mindestwert nach §14a: 4,2 kW). start > end laeuft ueber Mitternacht.
+par14a:
+  enabled: false
+  curtailment_kw: 4.2
+  num_devices: 1
+  curtail_start_hour: 17
+  curtail_end_hour: 20
+
 household:
   annual_consumption_kwh: 4500
 
