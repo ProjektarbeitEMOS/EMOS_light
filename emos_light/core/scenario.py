@@ -338,7 +338,37 @@ def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
         max_grid_power_kw=general.get("max_grid_power_kw", 30.0),
         par14a_enabled=config.get("par14a", {}).get("enabled", False),
         par14a_curtailment_kw=config.get("par14a", {}).get("curtailment_kw", 4.2),
+        par14a_curtailed_steps=_par14a_curtailed_steps(config, data["timestamps"]),
     )
+
+
+def _par14a_curtailed_steps(config: dict, timestamps: list) -> list[int]:
+    """Step-Indizes, in denen der Netzbetreiber nach §14a EnWG drosselt.
+
+    Das Drosselfenster ist ueber die Stunden [start, end) definiert
+    (lokale Uhrzeit, taeglich wiederkehrend ueber den Horizont).
+    ``start == end`` => kein Fenster; ``start > end`` laeuft ueber
+    Mitternacht (z.B. 22 -> 6). Liefert eine leere Liste, wenn §14a
+    deaktiviert ist — dann greift der Drossel-Constraint im Optimizer
+    gar nicht.
+    """
+    par14a = config.get("par14a", {})
+    if not par14a.get("enabled", False):
+        return []
+    start_h = float(par14a.get("curtail_start_hour", 17))
+    end_h = float(par14a.get("curtail_end_hour", 20))
+    if start_h == end_h:
+        return []
+    steps: list[int] = []
+    for i, ts in enumerate(timestamps):
+        h = ts.hour + ts.minute / 60.0
+        if start_h < end_h:
+            in_window = start_h <= h < end_h
+        else:  # Fenster ueber Mitternacht
+            in_window = h >= start_h or h < end_h
+        if in_window:
+            steps.append(i)
+    return steps
 
 
 def _pad_array(arr: np.ndarray, target_len: int) -> np.ndarray:

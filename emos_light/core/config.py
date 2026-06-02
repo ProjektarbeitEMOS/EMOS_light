@@ -36,6 +36,11 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "curtailment_kw": 4.2,
         "num_devices": 1,
+        # Testszenario: Zeitfenster (Stunde, lokal), in dem der
+        # Netzbetreiber die steuerbaren Lasten drosselt. Bei start == end
+        # ist kein Fenster aktiv; start > end laeuft ueber Mitternacht.
+        "curtail_start_hour": 17,
+        "curtail_end_hour": 20,
     },
     "household": {
         "annual_consumption_kwh": 4500,
