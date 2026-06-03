@@ -1,0 +1,50 @@
+name: no_pv_no_flex_baseline_like
+description: >
+  Minimalfall ohne PV, Batterie, Waermepumpe und Wallbox. Das Szenario
+  prueft, ob EMOS einen reinen Haushaltslastfall stabil und nachvollziehbar
+  berechnet.
+date: 2026-04-15
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh: 35
+  pv_generation_kw: 0
+  household_load_kw: 1.0
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 15
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: pv_energy_zero
+    metric: pv_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001
+  - type: metric
+    name: grid_buy_roughly_household_load
+    metric: grid_buy_total_kwh
+    op: "=="
+    value: 24
+    tolerance: 0.1
+  - type: metric
+    name: no_grid_sell
+    metric: grid_sell_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001

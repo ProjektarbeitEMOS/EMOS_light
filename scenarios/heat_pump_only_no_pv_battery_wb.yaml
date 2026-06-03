@@ -1,0 +1,66 @@
+name: heat_pump_only_no_pv_battery_wb
+description: >
+  Waermepumpe mit Gebaeude und Warmwasser, aber ohne PV, Batterie und
+  Wallbox. Das Szenario prueft den thermischen Betrieb ohne elektrische
+  Flexibilitaetskomponenten.
+date: 2026-02-05
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: true
+  hot_water_storage: true
+  fresh_water_station: true
+  underfloor_heating: true
+  building: true
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  heat_pump:
+    max_starts_per_day: 8
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 38
+    windows:
+      - start: "02:00"
+        end: "05:00"
+        value: 30
+      - start: "18:00"
+        end: "21:00"
+        value: 55
+  pv_generation_kw: 0
+  household_load_kw: 0.8
+  outside_temp_c: -5
+  heating_demand_kw: 2.5
+  hot_water_demand_kw:
+    default: 0
+    windows:
+      - start: "06:00"
+        end: "08:00"
+        value: 1.8
+      - start: "18:00"
+        end: "20:00"
+        value: 1.3
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: pv_energy_zero
+    metric: pv_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001
+  - type: metric
+    name: hp_energy_positive
+    metric: hp_total_kwh
+    op: ">"
+    value: 3
+  - type: metric
+    name: hp_starts_limit
+    metric: hp_starts_count
+    op: "<="
+    value: 8

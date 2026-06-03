@@ -1,0 +1,67 @@
+name: battery_negative_prices
+description: >
+  Negative Strompreise in der Nacht. Die Batterie soll in den guenstigen
+  Stunden laden und spaeter bei hohen Preisen wieder entladen.
+date: 2026-02-15
+mode: milp
+components:
+  pv: false
+  battery: true
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  battery:
+    capacity_kwh: 12.0
+    max_charge_power_kw: 5.0
+    max_discharge_power_kw: 5.0
+    min_soc: 0.10
+    max_soc: 0.90
+    initial_soc: 0.20
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 34
+    windows:
+      - start: "01:00"
+        end: "05:00"
+        value: -8
+      - start: "18:00"
+        end: "22:00"
+        value: 58
+  pv_generation_kw: 0
+  household_load_kw:
+    default: 0.7
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 2.2
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 8
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: window_sum
+    name: battery_charges_when_prices_negative
+    field: batt_charge_kw
+    start: "01:00"
+    end: "05:00"
+    op: ">"
+    value: 1.0
+  - type: window_sum
+    name: battery_discharges_during_evening_peak
+    field: batt_discharge_kw
+    start: "18:00"
+    end: "22:00"
+    op: ">"
+    value: 1.0
+  - type: no_simultaneous_battery
+    name: no_charge_discharge_overlap
+    tolerance: 0.0001

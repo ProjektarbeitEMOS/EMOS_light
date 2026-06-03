@@ -1,0 +1,93 @@
+name: grid_limit_full_house
+description: >
+  Vollhaus mit begrenzter Netzanschlussleistung. Dieses Szenario prueft,
+  ob EMOS flexible Lasten so plant, dass das Netzlimit eingehalten wird.
+date: 2026-03-10
+mode: milp
+components:
+  pv: true
+  battery: true
+  heat_pump: true
+  hot_water_storage: true
+  fresh_water_station: true
+  underfloor_heating: true
+  building: true
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 6.0
+  battery:
+    capacity_kwh: 8.0
+    max_charge_power_kw: 3.0
+    max_discharge_power_kw: 3.0
+    initial_soc: 0.70
+  wallboxes:
+    - name: Wallbox 1
+      enabled: true
+      max_power_kw: 7.4
+      min_power_kw: 1.4
+      phases: 1
+      ev_battery_capacity_kwh: 50.0
+      current_soc: 0.45
+      target_soc: 0.65
+      arrival_hour: 18
+      departure_hour: 7
+      charging_efficiency: 0.92
+      min_range_enabled: true
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 36
+    windows:
+      - start: "00:00"
+        end: "05:00"
+        value: 28
+      - start: "18:00"
+        end: "22:00"
+        value: 55
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "15:00"
+        value: 4
+  household_load_kw:
+    default: 0.8
+    windows:
+      - start: "18:00"
+        end: "21:00"
+        value: 2.5
+  outside_temp_c: 0
+  heating_demand_kw: 2.0
+  hot_water_demand_kw:
+    default: 0
+    windows:
+      - start: "06:00"
+        end: "08:00"
+        value: 1.5
+      - start: "18:00"
+        end: "20:00"
+        value: 1.0
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: series_max
+    name: grid_buy_respects_limit
+    field: grid_buy_kw
+    op: "<="
+    value: 6.0
+    tolerance: 0.01
+  - type: ev_soc_at_departure
+    name: ev_reaches_target_at_departure
+    wallbox: Wallbox 1
+    departure_hour: 7
+    unit: soc
+    op: ">="
+    value: 0.65
+    tolerance: 0.2
+  - type: metric
+    name: hp_starts_limit
+    metric: hp_starts_count
+    op: "<="
+    value: 8

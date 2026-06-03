@@ -1,0 +1,63 @@
+name: ev_negative_prices
+description: >
+  E-Auto ist ueber Nacht angeschlossen und nachts sind die Strompreise negativ.
+  Die Wallbox soll bevorzugt im guenstigen Fenster laden und den Ziel-SOC
+  bis zur Abfahrt erreichen.
+date: 2026-01-15
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  wallboxes:
+    - name: Wallbox 1
+      enabled: true
+      max_power_kw: 11.0
+      min_power_kw: 1.4
+      phases: 3
+      ev_battery_capacity_kwh: 60.0
+      current_soc: 0.20
+      target_soc: 0.70
+      departure_hour: 7
+      arrival_hour: 18
+      charging_efficiency: 0.92
+      min_range_enabled: true
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 42
+    windows:
+      - start: "01:00"
+        end: "05:00"
+        value: -5
+  pv_generation_kw: 0
+  household_load_kw: 0.7
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 10
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: window_sum
+    name: ev_charges_in_negative_price_window
+    field: wallbox_power_kw.Wallbox 1
+    start: "01:00"
+    end: "05:00"
+    op: ">"
+    value: 10.0
+  - type: ev_soc_at_departure
+    name: ev_reaches_target_at_departure
+    wallbox: Wallbox 1
+    departure_hour: 7
+    unit: soc
+    op: ">="
+    value: 0.70
+    tolerance: 0.2

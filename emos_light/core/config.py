@@ -36,11 +36,6 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "curtailment_kw": 4.2,
         "num_devices": 1,
-        # Testszenario: Zeitfenster (Stunde, lokal), in dem der
-        # Netzbetreiber die steuerbaren Lasten drosselt. Bei start == end
-        # ist kein Fenster aktiv; start > end laeuft ueber Mitternacht.
-        "curtail_start_hour": 17,
-        "curtail_end_hour": 20,
     },
     "household": {
         "annual_consumption_kwh": 4500,
@@ -182,29 +177,6 @@ DEFAULT_CONFIG = {
         "wall_capacity_wh_per_m2_k": 50.0,
         "volume_factor": 3.1,
         "heat_loss_coefficient_w_per_k": None,
-        # ------------------------------------------------------------------
-        # 3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026)
-        # Wand als eigener thermischer Zustand T_W zwischen Raum und Aussen
-        # (Traegheit Aussenwand). Korrekturen K1 (Q_WP direkt), K2 (Heizwasser
-        # quasistationaer eliminiert), K3 (Fenster/Lueftung direkt, nur die
-        # opake Wand laeuft ueber die traege Masse). Siehe building.py-Doku.
-        # ------------------------------------------------------------------
-        # Waermeuebergangszahlen der Wand (Gebaeudegruppe). k_RW raumseitig,
-        # k_WA aussenseitig. Werte sind Oberflaechen-Filmkoeffizienten; ihr
-        # Verhaeltnis bestimmt die Aufteilung der Wandkapazitaet, die
-        # Magnitude wird per ``wall_anchor_to_u_value`` an die Daemmung
-        # (u_value_wall) gekoppelt (sonst U_eff ~ 2.27 -> Wand ~10x zu leck).
-        "wall_k_rw_w_m2_k": 2.5,
-        "wall_k_wa_w_m2_k": 25.0,
-        # True: Reihen-U der Wand = u_value_wall (physikalisch konsistent zu
-        # Fenster/Dach), k_RW:k_WA nur als Aufteilungsverhaeltnis. False:
-        # rohe k-Werte der Gebaeudegruppe (fuer Vergleichsrechnungen).
-        "wall_anchor_to_u_value": True,
-        # Anfangstemperatur der Wandmasse (None -> indoor_temp_c).
-        "initial_wall_temp_c": None,
-        # Konstante interne + solare Gewinne Q_g,R an die Raumluft in W
-        # (VDI 4655 / Nutzereingabe). Default 0 = keine Gewinne modelliert.
-        "internal_gains_w": 0.0,
         # ------------------------------------------------------------------
         # Direkte Geometrie + U-Werte (Gebaeudegruppe, EMOS-Light Mai 2026)
         # Wenn gesetzt, werden diese Werte benutzt — sonst fallback auf

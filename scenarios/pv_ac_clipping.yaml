@@ -1,0 +1,72 @@
+name: pv_ac_clipping
+description: >
+  Hohe PV-Erzeugung bei begrenztem Wechselrichter. Dieses Szenario prueft,
+  ob ein vorgegebener PV-Verlauf mit AC-Limit wirtschaftlich verarbeitet
+  wird und keine unplausiblen Netzfluesse entstehen.
+date: 2026-06-21
+mode: milp
+components:
+  pv: true
+  battery: true
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 30.0
+  pv:
+    enabled: true
+    peak_power_kwp: 15.0
+    ac_limit_kw: 8.0
+  battery:
+    capacity_kwh: 10.0
+    max_charge_power_kw: 5.0
+    max_discharge_power_kw: 5.0
+    initial_soc: 0.30
+    min_soc: 0.10
+    max_soc: 0.90
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 32
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 50
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "09:00"
+        end: "16:00"
+        value: 8
+  household_load_kw:
+    default: 0.9
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 2.0
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 25
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: pv_total_positive
+    metric: pv_total_kwh
+    op: ">"
+    value: 40
+  - type: series_max
+    name: battery_soc_below_max
+    field: batt_soc_kwh
+    op: "<="
+    value: 9.0
+    tolerance: 0.01
+  - type: no_simultaneous_battery
+    name: no_charge_discharge_overlap
+    tolerance: 0.0001

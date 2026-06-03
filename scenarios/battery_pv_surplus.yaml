@@ -1,0 +1,81 @@
+name: battery_pv_surplus
+description: >
+  PV-Ueberschuss am Mittag. Die Batterie soll laden, SOC-Grenzen einhalten
+  und niemals gleichzeitig laden und entladen.
+date: 2026-06-15
+mode: milp
+components:
+  pv: true
+  battery: true
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  battery:
+    capacity_kwh: 10.0
+    max_charge_power_kw: 5.0
+    max_discharge_power_kw: 5.0
+    min_soc: 0.10
+    max_soc: 0.90
+    initial_soc: 0.20
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 34
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 55
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "15:00"
+        value: 9
+  household_load_kw:
+    default: 0.8
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 2.5
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 20
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: series_min
+    name: battery_soc_above_min
+    field: batt_soc_kwh
+    op: ">="
+    value: 1.0
+    tolerance: 0.01
+  - type: series_max
+    name: battery_soc_below_max
+    field: batt_soc_kwh
+    op: "<="
+    value: 9.0
+    tolerance: 0.01
+  - type: no_simultaneous_battery
+    name: no_charge_discharge_overlap
+    tolerance: 0.0001
+  - type: window_sum
+    name: battery_charges_at_noon
+    field: batt_charge_kw
+    start: "10:00"
+    end: "15:00"
+    op: ">"
+    value: 1.0
+  - type: window_sum
+    name: battery_discharges_evening
+    field: batt_discharge_kw
+    start: "18:00"
+    end: "22:00"
+    op: ">"
+    value: 1.0

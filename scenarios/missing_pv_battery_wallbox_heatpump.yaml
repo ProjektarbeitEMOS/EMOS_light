@@ -1,0 +1,59 @@
+name: missing_pv_battery_wallbox_heatpump
+description: >
+  Nur Haushaltslast, keine PV, keine Batterie, keine Wallbox und keine
+  Waermepumpe. Dieser Minimalfall prueft, ob EMOS bei fehlenden Haupt-
+  komponenten trotzdem reibungslos laeuft.
+date: 2026-04-15
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 34
+    windows:
+      - start: "18:00"
+        end: "21:00"
+        value: 48
+  pv_generation_kw: 0
+  household_load_kw:
+    default: 0.7
+    windows:
+      - start: "18:00"
+        end: "21:00"
+        value: 2.0
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 15
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: pv_energy_zero
+    metric: pv_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001
+  - type: metric
+    name: grid_buy_energy_positive
+    metric: grid_buy_total_kwh
+    op: ">"
+    value: 15
+  - type: metric
+    name: no_grid_sell
+    metric: grid_sell_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001

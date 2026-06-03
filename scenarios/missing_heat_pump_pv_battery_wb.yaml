@@ -1,0 +1,83 @@
+name: missing_heat_pump_pv_battery_wb
+description: >
+  Haus mit PV, Batterie und Wallbox, aber ohne Waermepumpe und ohne
+  thermische Komponenten. Das Szenario prueft den rein elektrischen Betrieb
+  mit Mobilitaet.
+date: 2026-05-18
+mode: milp
+components:
+  pv: true
+  battery: true
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  battery:
+    capacity_kwh: 8.0
+    initial_soc: 0.40
+    min_soc: 0.10
+    max_soc: 0.90
+  wallboxes:
+    - name: Wallbox 1
+      enabled: true
+      max_power_kw: 11.0
+      min_power_kw: 1.4
+      phases: 3
+      ev_battery_capacity_kwh: 60.0
+      current_soc: 0.35
+      target_soc: 0.70
+      arrival_hour: 18
+      departure_hour: 7
+      charging_efficiency: 0.92
+      min_range_enabled: true
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 35
+    windows:
+      - start: "12:00"
+        end: "15:00"
+        value: 24
+      - start: "18:00"
+        end: "22:00"
+        value: 50
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "16:00"
+        value: 7
+  household_load_kw:
+    default: 0.8
+    windows:
+      - start: "18:00"
+        end: "21:00"
+        value: 2.0
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 18
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: heat_pump_energy_zero
+    metric: hp_total_kwh
+    op: "=="
+    value: 0
+    tolerance: 0.001
+  - type: ev_soc_at_departure
+    name: ev_target_without_heat_pump
+    wallbox: Wallbox 1
+    departure_hour: 7
+    unit: soc
+    op: ">="
+    value: 0.70
+    tolerance: 0.2
+  - type: no_simultaneous_battery
+    name: no_charge_discharge_overlap
+    tolerance: 0.0001

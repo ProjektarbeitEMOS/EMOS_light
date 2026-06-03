@@ -11,7 +11,7 @@ Physik:
 Energiebilanz:
     E(t) = E(t-1) + q_floor_in(t)*dt - q_floor_to_room(t)*dt
 
-    q_floor_to_room = h_surface * A_floor / 1000 * (T_floor[t-1] − T_R_ref)
+    q_floor_to_room = h_surface * A_floor / 1000 * (T_floor[t-1] − T_innen[t-1])
 
 Seit der MILP-Erweiterung Mai 2026 (siehe Building) ist T_innen eine
 eigene Zustandsvariable des Solvers. Das frueher hier benutzte
@@ -20,12 +20,6 @@ damit — die Waerme, die der Boden abgibt, fliesst nun explizit in den
 Raum-Bilanzknoten ("room"-Senke). Existiert keine aktive Raum-Senke
 (z.B. weil Building deaktiviert ist), faellt das Modul auf das alte
 Verlustmodell zurueck.
-
-Im 3-Speicher-Modell (ETH Zuerich, Juni 2026 — Wandknoten ``t_wand``
-aktiv) ist T_R_ref = T_innen[t] (Raum implizit, stabil bei kleiner
-Luftkapazitaet); im alten 1-Knoten-Modell T_R_ref = T_innen[t-1]
-(explizit). Der Estrich selbst bleibt in beiden Faellen explizit
-(T_floor[t-1]).
 
 Alle Relationen bleiben linear → MILP-kompatibel.
 """
@@ -205,37 +199,27 @@ class UnderfloorHeating(MILPComponent):
         if self._room_sink_active and "ufh_q_floor_to_room" in variables:
             q_to_room = variables["ufh_q_floor_to_room"]
             t_innen = variables.get("t_innen")
-            # Diskretisierung des Raum->Estrich-Kopplungsterms:
-            #   q_floor_to_room[t] = h*A/1000 * (T_floor[t-1] - T_R_ref)
-            # Der Estrich (langsam) ist immer explizit (T_floor[t-1] linear
-            # in E_floor[t-1]). Fuer die Raumtemperatur haengt es vom Modell
-            # ab: im 3-Speicher-Modell (Wandknoten ``t_wand`` vorhanden) ist
-            # der Raum IMPLIZIT (T_R[t]) — noetig, weil die reine Luftkapazi-
-            # taet eine Zeitkonstante < 15 min hat und explizites Euler sonst
-            # oszilliert. Ohne Wandknoten (altes 1-Knoten-Modell) bleibt es
-            # beim expliziten T_R[t-1].
-            implicit_room = "t_wand" in variables
+            # Kopplung: T_floor[t-1] linear in E_floor[t-1]
+            #   T_floor_prev = floor_temp_min + E_floor[t-1] / C_floor_per_k
+            # q_floor_to_room[t] = h*A/1000 * (T_floor_prev - T_innen_prev)
             h_a_per_kw_per_k = self.h_surface * self.area_m2 / 1000.0
             for t in range(len(floor_energy)):
                 if t == 0:
                     t_floor_prev = self.initial_temp
+                    t_innen_prev = self.initial_indoor_temp_c
                 else:
                     # T_floor = temp_min + E/C ; ausgedrueckt ueber Variablen
                     t_floor_prev = (
                         self.temp_min
                         + floor_energy[t - 1] / self.capacity_kwh_per_k
                     )
-                if t_innen is None:
-                    t_innen_ref = self.initial_indoor_temp_c
-                elif implicit_room:
-                    t_innen_ref = t_innen[t]           # Raum implizit
-                elif t == 0:
-                    t_innen_ref = self.initial_indoor_temp_c
-                else:
-                    t_innen_ref = t_innen[t - 1]        # Raum explizit
+                    t_innen_prev = (
+                        t_innen[t - 1] if t_innen is not None
+                        else self.initial_indoor_temp_c
+                    )
                 model += (
                     q_to_room[t]
-                    == h_a_per_kw_per_k * (t_floor_prev - t_innen_ref),
+                    == h_a_per_kw_per_k * (t_floor_prev - t_innen_prev),
                     f"ufh_q_to_room_link_{t}",
                 )
 

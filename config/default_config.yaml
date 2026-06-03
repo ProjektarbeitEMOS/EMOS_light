@@ -22,17 +22,6 @@ tariff:
   monthly_base_fee_eur: 5.99
   monthly_grid_fee_eur: 10.0
 
-# §14a EnWG — Netzdrosselung (Testszenario). Wenn enabled, begrenzt der
-# Netzbetreiber im Zeitfenster [curtail_start_hour, curtail_end_hour) die
-# Summe der steuerbaren Lasten (Waermepumpe, Wallbox) auf curtailment_kw
-# (Mindestwert nach §14a: 4,2 kW). start > end laeuft ueber Mitternacht.
-par14a:
-  enabled: false
-  curtailment_kw: 4.2
-  num_devices: 1
-  curtail_start_hour: 17
-  curtail_end_hour: 20
-
 household:
   annual_consumption_kwh: 4500
 
@@ -156,16 +145,6 @@ building:
   wall_capacity_wh_per_m2_k: 50.0
   volume_factor: 3.1
   heat_loss_coefficient_w_per_k: null
-  # 3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026): die Wand
-  # wird als eigener traeger Zustand T_W zwischen Raum und Aussenluft
-  # gefuehrt. k_RW/k_WA = Wand-Uebergangszahlen der Gebaeudegruppe;
-  # wall_anchor_to_u_value=true koppelt deren Reihen-U an u_value_wall
-  # (physikalisch konsistent — rohe Werte waeren ~10x zu leck).
-  wall_k_rw_w_m2_k: 2.5
-  wall_k_wa_w_m2_k: 25.0
-  wall_anchor_to_u_value: true
-  initial_wall_temp_c: null        # null -> indoor_temp_c
-  internal_gains_w: 0.0            # konstante interne+solare Gewinne Q_g,R [W]
 
 heat_demand:
   annual_heating_kwh: 5250

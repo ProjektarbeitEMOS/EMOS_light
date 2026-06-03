@@ -1,0 +1,44 @@
+name: ev_impossible_departure
+description: >
+  Bewusst unmoeglicher EV-Fall: sehr kleiner Anschlusszeitraum, niedrige
+  Ladeleistung und hoher Ziel-SOC. Der Test soll zeigen, ob das Modell den
+  Fall sauber als nicht loesbar erkennt, statt ein still falsches Ergebnis
+  zu liefern.
+date: 2026-02-10
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  wallboxes:
+    - name: Wallbox 1
+      enabled: true
+      max_power_kw: 3.7
+      min_power_kw: 1.4
+      phases: 1
+      ev_battery_capacity_kwh: 80.0
+      current_soc: 0.05
+      target_soc: 0.95
+      departure_hour: 7
+      arrival_hour: 6
+      charging_efficiency: 0.90
+      min_range_enabled: true
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh: 35
+  pv_generation_kw: 0
+  household_load_kw: 0.5
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 10
+checks:
+  - type: success
+    name: impossible_case_is_detected
+    expected: false

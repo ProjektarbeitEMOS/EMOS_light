@@ -1,0 +1,67 @@
+name: mpc_price_shift
+description: >
+  MPC-Lauf mit guenstigem Mittagsfenster und teurer Abendspitze. Das
+  Szenario prueft, ob der rollierende Modus laeuft und Planungsfenster
+  erzeugt.
+date: 2026-06-10
+mode: mpc
+mpc:
+  horizon_hours: 6
+  execute_hours: 1
+components:
+  pv: true
+  battery: true
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  battery:
+    capacity_kwh: 8.0
+    initial_soc: 0.30
+    min_soc: 0.10
+    max_soc: 0.90
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 36
+    windows:
+      - start: "11:00"
+        end: "15:00"
+        value: 22
+      - start: "18:00"
+        end: "22:00"
+        value: 60
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "16:00"
+        value: 6
+  household_load_kw:
+    default: 0.8
+    windows:
+      - start: "18:00"
+        end: "22:00"
+        value: 2.5
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 20
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: no_simultaneous_battery
+    name: no_charge_discharge_overlap
+    tolerance: 0.0001
+  - type: window_sum
+    name: battery_used_in_evening
+    field: batt_discharge_kw
+    start: "18:00"
+    end: "22:00"
+    op: ">"
+    value: 0.5

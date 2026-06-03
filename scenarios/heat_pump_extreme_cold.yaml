@@ -1,0 +1,56 @@
+name: heat_pump_extreme_cold
+description: >
+  Sehr kalter Tag mit hohem Heizbedarf. Das Szenario prueft, ob die
+  Waermepumpe bei harter Last noch eine Loesung findet und die Komfort-
+  temperatur nicht stark absinkt.
+date: 2026-01-25
+mode: milp
+components:
+  pv: false
+  battery: false
+  heat_pump: true
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: true
+  building: true
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  heat_pump:
+    max_electrical_power_kw: 8.0
+    max_starts_per_day: 8
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 39
+    windows:
+      - start: "18:00"
+        end: "21:00"
+        value: 60
+  pv_generation_kw: 0
+  household_load_kw: 0.8
+  outside_temp_c: -14
+  heating_demand_kw: 3.8
+  hot_water_demand_kw: 0
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: hp_starts_limit
+    metric: hp_starts_count
+    op: "<="
+    value: 8
+  - type: metric
+    name: heat_pump_energy_positive
+    metric: hp_total_kwh
+    op: ">"
+    value: 5
+  - type: series_min
+    name: indoor_temp_not_critical
+    field: indoor_temp_c
+    op: ">="
+    value: 20.0
+    tolerance: 0.2

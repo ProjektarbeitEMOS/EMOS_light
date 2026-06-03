@@ -1,0 +1,72 @@
+name: warm_water_morning_evening
+description: >
+  Warmwasserbedarf morgens und abends. EMOS soll den Speicher so betreiben,
+  dass Komforttemperaturen nicht unterschritten werden.
+date: 2026-05-12
+mode: milp
+components:
+  pv: true
+  battery: false
+  heat_pump: true
+  hot_water_storage: true
+  fresh_water_station: true
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+  hot_water_storage:
+    initial_temperature_c: 50.0
+    min_temperature_c: 40.0
+    max_temperature_c: 60.0
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh:
+    default: 34
+    windows:
+      - start: "11:00"
+        end: "15:00"
+        value: 25
+      - start: "18:00"
+        end: "21:00"
+        value: 50
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "15:00"
+        value: 5
+  household_load_kw: 0.7
+  heating_demand_kw: 0
+  hot_water_demand_kw:
+    default: 0
+    windows:
+      - start: "06:00"
+        end: "08:00"
+        value: 2.5
+      - start: "18:00"
+        end: "21:00"
+        value: 2.0
+  outside_temp_c: 12
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: series_min
+    name: warm_water_above_minimum
+    field: ww_storage_temp_c
+    op: ">="
+    value: 39.5
+    tolerance: 0.2
+  - type: series_max
+    name: warm_water_below_maximum
+    field: ww_storage_temp_c
+    op: "<="
+    value: 60.5
+    tolerance: 0.2
+  - type: metric
+    name: heat_pump_used_for_hot_water
+    metric: hp_total_kwh
+    op: ">"
+    value: 0.5

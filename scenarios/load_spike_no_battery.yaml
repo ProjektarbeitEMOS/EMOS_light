@@ -1,0 +1,52 @@
+name: load_spike_no_battery
+description: >
+  Hohe Haushaltslast am Abend ohne Batterie. Das Szenario prueft den
+  einfachen elektrischen Bilanzfall und ob der Netzbezug die Lastspitze
+  plausibel abbildet.
+date: 2026-04-05
+mode: milp
+components:
+  pv: true
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh: 35
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "15:00"
+        value: 3
+  household_load_kw:
+    default: 0.6
+    windows:
+      - start: "18:00"
+        end: "20:00"
+        value: 6.0
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 15
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: series_max
+    name: evening_grid_buy_reflects_load_spike
+    field: grid_buy_kw
+    op: ">="
+    value: 5.5
+  - type: metric
+    name: grid_buy_energy_positive
+    metric: grid_buy_total_kwh
+    op: ">"
+    value: 8

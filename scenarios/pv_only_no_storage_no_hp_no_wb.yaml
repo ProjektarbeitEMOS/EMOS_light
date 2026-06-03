@@ -1,0 +1,47 @@
+name: pv_only_no_storage_no_hp_no_wb
+description: >
+  Nur PV und Haushaltslast, keine Batterie, keine Wallbox und keine
+  Waermepumpe. Das Szenario prueft, ob PV direkt Last deckt und Ueberschuss
+  eingespeist wird.
+date: 2026-06-12
+mode: milp
+components:
+  pv: true
+  battery: false
+  heat_pump: false
+  hot_water_storage: false
+  fresh_water_station: false
+  underfloor_heating: false
+  building: false
+config_overrides:
+  general:
+    optimization_horizon_hours: 24
+    max_grid_power_kw: 20.0
+  wallboxes: []
+  electric_vehicles: []
+input_overrides:
+  prices_ct_kwh: 34
+  pv_generation_kw:
+    default: 0
+    windows:
+      - start: "10:00"
+        end: "15:00"
+        value: 5
+  household_load_kw: 0.8
+  heating_demand_kw: 0
+  hot_water_demand_kw: 0
+  outside_temp_c: 22
+checks:
+  - type: success
+    name: optimization_success
+    expected: true
+  - type: metric
+    name: pv_energy_positive
+    metric: pv_total_kwh
+    op: ">"
+    value: 20
+  - type: metric
+    name: grid_sell_expected_without_storage
+    metric: grid_sell_total_kwh
+    op: ">"
+    value: 5
