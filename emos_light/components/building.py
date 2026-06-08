@@ -643,18 +643,26 @@ class Building(MILPComponent):
         Penalty multipliziert, damit die K -> ct-Umrechnung physikalisch
         konsistent ist (analog zu ww_slack in kWh).
         """
+        # Obergrenzen grosszuegig: im Sommer/Hitze laeuft die Wand gegen
+        # die Aussenluft (T_W -> ~T_A), und der Raum kann ohne aktive
+        # Kuehlung ueber den Komfortpunkt steigen. Ein zu enges
+        # comfort_max+10 (~34 °C) macht den Solver bei T_aussen ≳ 38 °C
+        # infeasible (die Wandbilanz ist eine Gleichung ohne Schlupf).
+        # +35 K deckt jede realistische Hitzeperiode ab; die Schranke
+        # bindet im Normalbetrieb nie (Komfort kommt aus Slacks/Lueftung).
+        t_hi = self.comfort_temp_max_c + 35.0
         return {
             "t_innen": make_var_array(
                 "t_innen", num_steps,
                 low=self.comfort_temp_min_c - 10.0,
-                high=self.comfort_temp_max_c + 10.0,
+                high=t_hi,
             ),
             # Wandtemperatur T_W (3-Speicher-Modell). Generoes bebounded —
-            # die Wand kann bis nahe Aussenluft auskuehlen.
+            # die Wand kann bis nahe Aussenluft auskuehlen oder aufheizen.
             "t_wand": make_var_array(
                 "t_wand", num_steps,
                 low=self.design_temp - 10.0,
-                high=self.comfort_temp_max_c + 10.0,
+                high=t_hi,
             ),
             "t_innen_slack_low_comfort": make_var_array(
                 "t_innen_slack_low_comfort", num_steps,
