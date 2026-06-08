@@ -50,6 +50,9 @@ def _winter_cfg() -> dict:
     cfg["building"]["comfort_temp_min_c"] = 20.0
     cfg["building"]["comfort_temp_max_c"] = 24.0
     cfg["building"]["indoor_temp_c"] = 21.0
+    # Solare/interne Gewinne aus -> reine Heizbilanz (q_to_room ≈ UA·ΔT).
+    cfg["building"]["solar_gains_enabled"] = False
+    cfg["building"]["internal_gains_w_per_m2"] = 0.0
     # Haushalt klein — wir wollen die Heizenergie isoliert sehen.
     cfg["household"]["annual_consumption_kwh"] = 1000
     cfg["household"]["load_profile_id"] = ""

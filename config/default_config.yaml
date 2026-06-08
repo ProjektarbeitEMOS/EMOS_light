@@ -165,7 +165,14 @@ building:
   wall_k_wa_w_m2_k: 25.0
   wall_anchor_to_u_value: true
   initial_wall_temp_c: null        # null -> indoor_temp_c
-  internal_gains_w: 0.0            # konstante interne+solare Gewinne Q_g,R [W]
+  # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
+  #   Q_g,R = g · A_Fenster · DNI · cos(theta) + internal_gains_w_per_m2 · A
+  # Q_g,B (Estrich) = 0 (mit Prof. Brueckl bestaetigt).
+  solar_gains_enabled: true        # solaren Fenstergewinn rechnen
+  window_g_value: 0.7              # g-Wert (Gesamtenergiedurchlass)
+  window_azimuth_deg: 180.0        # Fensterausrichtung (180 = Sued)
+  internal_gains_w_per_m2: 5.0     # DIN V 4108: Personen + Geraete
+  internal_gains_w: 0.0            # zusaetzlicher absoluter Offset [W]
 
 heat_demand:
   annual_heating_kwh: 5250

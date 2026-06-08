@@ -132,10 +132,26 @@ class Building(MILPComponent):
         self.initial_wall_temp_c = (
             float(_iwt) if _iwt is not None else self.indoor_temp
         )
-        # Konstante interne + solare Gewinne Q_g,R an die Raumluft [W].
-        # Default 0 = keine Gewinne (Solargewinne ueber GHI sind ein
-        # spaeterer Ausbau; siehe heat_demand). VDI 4655 / Nutzereingabe.
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
+        #   Q_g,R = g·A_Fenster·DNI·cos(theta) + q_int·A_Wohn   (Q_g,B = 0).
+        # Der solare Anteil wird in :meth:`compute_room_gain_w` aus dem
+        # Sonnenstand berechnet; hier nur die Parameter + der konstante
+        # interne Anteil.
+        self.solar_gains_enabled = bool(config.get("solar_gains_enabled", True))
+        self.window_g_value = float(config.get("window_g_value", 0.7))
+        self.window_azimuth_deg = float(config.get("window_azimuth_deg", 180.0))
+        self.internal_gains_w_per_m2 = float(
+            config.get("internal_gains_w_per_m2", 5.0)
+        )
+        # Zusaetzlicher absoluter Offset [W] (Default 0).
         self.internal_gains_w = float(config.get("internal_gains_w", 0.0))
+        # Konstanter interner Gewinn (DIN V 4108: q_int·A_Wohn + Offset) [W].
+        self.internal_gain_w_const = (
+            self.internal_gains_w_per_m2 * self.heated_area_m2
+            + self.internal_gains_w
+        )
+        # Vorberechnete Q_g,R-Zeitreihe [W] — von prepare() aus inp gefuellt.
+        self._q_g_r_w: np.ndarray | None = None
 
         # ------------------------------------------------------------------
         # Direkte Geometrie + U-Werte (Gebaeudegruppe, Mai 2026)
@@ -518,8 +534,91 @@ class Building(MILPComponent):
         return "room"
 
     def prepare(self, inp: Any) -> None:
-        """Aussentemperatur-Zeitreihe fuer Verlustterm puffern."""
+        """Aussentemperatur und Raumgewinne Q_g,R fuer den Solver puffern."""
         self._t_aus = np.asarray(inp.outside_temp_c, dtype=float)
+        n = len(self._t_aus)
+        # Q_g,R: bevorzugt die in scenario.build_time_series_input vorbe-
+        # rechnete Zeitreihe (enthaelt den Sonnenstand-abhaengigen Solar-
+        # anteil). Fehlt sie (z.B. Optimizer ohne Wetterkontext), nur den
+        # konstanten internen Anteil ansetzen.
+        rg = getattr(inp, "room_gain_w", None)
+        if rg is not None and len(rg) >= n and n > 0:
+            self._q_g_r_w = np.asarray(rg[:n], dtype=float)
+        else:
+            self._q_g_r_w = np.full(n, self.internal_gain_w_const, dtype=float)
+
+    def compute_room_gain_w(
+        self,
+        timestamps: list,
+        ghi_w_m2: np.ndarray | None,
+        dni_w_m2: np.ndarray | None,
+        latitude: float | None,
+        longitude: float | None,
+    ) -> np.ndarray:
+        """Berechnet Q_g,R (solar + intern) als Zeitreihe in W.
+
+        Solarer Fenstergewinn nach der Gebaeudegruppe (Juni 2026):
+
+            Q_solar = g · A_Fenster · DNI · cos(theta)
+            cos(theta) = max(0, cos(gamma_S) · cos(alpha_S − alpha_E))
+
+        mit gamma_S = Sonnenhoehe, alpha_S = Sonnenazimut, alpha_E =
+        Fensterazimut (beide in EMOS-Konvention 0=N, 90=O, 180=S, 270=W —
+        gleiche Konvention fuer beide, daher ohne das Minus aus dem
+        Gebaeudegruppen-Dokument, das nur deren Azimut-Offset ausglich).
+        Modelliert den **direkten** Strahleinfall (Beam); der Diffusanteil
+        wird vernachlaessigt. DNI kommt aus den Wetterdaten, sonst aus der
+        DISC-Zerlegung der GHI. Dazu der konstante interne Anteil
+        (DIN V 4108).
+        """
+        import math
+
+        n = len(timestamps)
+        internal = float(self.internal_gain_w_const)
+        gains = np.full(n, internal, dtype=float)
+        if (
+            not self.solar_gains_enabled
+            or ghi_w_m2 is None
+            or latitude is None
+            or longitude is None
+            or n == 0
+            or len(ghi_w_m2) < n
+        ):
+            return gains
+
+        from emos_light.data.solar import (
+            solar_position,
+            detect_timezone_offset,
+            _disc_decomposition,
+        )
+
+        ghi = np.asarray(ghi_w_m2, dtype=float)
+        dni_in = (
+            np.asarray(dni_w_m2, dtype=float) if dni_w_m2 is not None else None
+        )
+        tz = detect_timezone_offset(timestamps[0].date())
+        elevation, azimuth = solar_position(timestamps, latitude, longitude, tz)
+        doy = timestamps[0].timetuple().tm_yday
+        g = self.window_g_value
+        a_win = self.window_area_m2
+        az_e = self.window_azimuth_deg
+
+        for i in range(n):
+            elev = float(elevation[i])
+            if elev <= 0.0:
+                continue
+            cos_inc = math.cos(math.radians(elev)) * math.cos(
+                math.radians(float(azimuth[i]) - az_e)
+            )
+            if cos_inc <= 0.0:
+                continue
+            if dni_in is not None and i < len(dni_in) and dni_in[i] > 0:
+                dni = float(dni_in[i])
+            else:
+                cos_zenith = math.sin(math.radians(elev))
+                dni, _ = _disc_decomposition(float(ghi[i]), cos_zenith, doy)
+            gains[i] += g * a_win * dni * cos_inc
+        return gains
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt T_innen-Zustandsvariable plus Komfort-Slacks.
@@ -566,6 +665,17 @@ class Building(MILPComponent):
             ),
             "t_innen_slack_high": make_var_array(
                 "t_innen_slack_high", num_steps, low=0.0,
+            ),
+            # Freie Lueftung / Fensteroeffnen [kW]: laesst den Raum ueber-
+            # schuessige Waerme kostenfrei abgeben. Noetig, wenn ein starker
+            # Solargewinn (Q_g,R kann an grossen Suedfenstern zweistellige
+            # kW erreichen) die Verluste deutlich uebersteigt — sonst wuerde
+            # T_innen ueber jede Schranke steigen und das Modell infeasible.
+            # Physikalisch: Bewohner oeffnet die Fenster, wenn es zu warm
+            # wird. Unbestraft (Lueften kostet nichts); der Solver lueftet
+            # daher nur den Ueberschuss oberhalb des Komfortbands weg.
+            "room_heat_dump": make_var_array(
+                "room_heat_dump", num_steps, low=0.0,
             ),
         }
 
@@ -633,6 +743,12 @@ class Building(MILPComponent):
     # Bilanz-Beitraege fuer die Raum-Senke
     # ------------------------------------------------------------------
 
+    def _room_gain_w_at(self, t: int) -> float:
+        """Q_g,R [W] im Schritt t (aus prepare; Fallback: interner Anteil)."""
+        if self._q_g_r_w is not None and t < len(self._q_g_r_w):
+            return float(self._q_g_r_w[t])
+        return float(self.internal_gain_w_const)
+
     def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
         """Demand-Seite der Raum-Energiebilanz fuer Phase E.
 
@@ -667,13 +783,17 @@ class Building(MILPComponent):
         c_room = self.room_capacity_kwh_per_k                 # nur Luft [kWh/K]
         g_rw_kw = self.wall_conductance_rw_w_per_k / 1000.0   # [kW/K]
         ua_direct_kw = self.ua_direct_w_per_k / 1000.0        # [kW/K]
-        q_g_r_kw = self.internal_gains_w / 1000.0             # [kW]
+        q_g_r_kw = self._room_gain_w_at(t) / 1000.0           # [kW]
         tw_prev = self.initial_wall_temp_c if t == 0 else t_wand[t - 1]
+        # Freie Lueftung gibt ueberschuessige Waerme ab (room_heat_dump >= 0).
+        dump = variables.get("room_heat_dump")
+        dump_t = dump[t] if dump is not None else 0.0
         return (
             c_room * (t_innen[t] - t_in_prev) / dt_h
             + g_rw_kw * (t_innen[t] - tw_prev)
             + ua_direct_kw * (t_innen[t] - t_aus_t)
             - q_g_r_kw
+            + dump_t
         )
 
     # add_constraints wird vom Optimizer aufgerufen — wir nutzen den
@@ -714,6 +834,10 @@ class Building(MILPComponent):
             prev = np.concatenate(([self.indoor_temp], t_innen_vals[:-1]))
             ua_kw_per_k = self.ua_w_per_k / 1000.0
             result.heat_loss_kw = ua_kw_per_k * (prev - t_aus)
+
+        # Q_g,R (solar + intern) als Diagnose-Fahrplan [kW].
+        if self._q_g_r_w is not None:
+            result.room_gain_kw = self._q_g_r_w[:num_steps] / 1000.0
 
     def calculate_hot_water_demand(
         self, date: datetime.date, num_steps: int = 96,

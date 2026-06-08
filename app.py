@@ -1941,6 +1941,12 @@ with tab_optimize:
                 x=ts, y=result.heat_loss_kw, name="Q Verlust (Raum -> Aussen)",
                 line=dict(color="dimgray", width=1.5, dash="dot"),
             ), row=row_idx, col=1)
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026)
+        if len(result.room_gain_kw) > 0:
+            fig_th.add_trace(go.Scatter(
+                x=ts, y=result.room_gain_kw, name="Q Gewinn (solar + intern)",
+                line=dict(color="goldenrod", width=1.5),
+            ), row=row_idx, col=1)
 
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))
         st.plotly_chart(fig_th, use_container_width=True)

@@ -80,6 +80,10 @@ def _winter_cfg() -> dict:
     cfg["electric_vehicles"] = []
     cfg["household"]["annual_consumption_kwh"] = 1000
     cfg["household"]["load_profile_id"] = ""
+    # Gewinne aus, damit die WP-Last hoch genug bleibt, dass der §14a-Cap
+    # im Fenster wirklich bindet (sonst senken die Gewinne die WP-Last).
+    cfg["building"]["solar_gains_enabled"] = False
+    cfg["building"]["internal_gains_w_per_m2"] = 0.0
     return cfg
 
 
