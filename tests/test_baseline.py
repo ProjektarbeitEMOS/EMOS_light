@@ -38,6 +38,9 @@ def _cfg_room_winter() -> dict:
     cfg["building"]["indoor_temp_c"] = 21.0
     cfg["building"]["comfort_temp_min_c"] = 20.0
     cfg["building"]["comfort_temp_max_c"] = 24.0
+    # Solare/interne Gewinne aus -> isolierte Heizbilanz (q_to_room ≈ Verlust).
+    cfg["building"]["solar_gains_enabled"] = False
+    cfg["building"]["internal_gains_w_per_m2"] = 0.0
     return cfg
 
 

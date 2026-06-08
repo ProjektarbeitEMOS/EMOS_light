@@ -192,7 +192,8 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
     g_rw_kw = 0.0
     g_wa_kw = 0.0
     ua_direct_kw = 0.0
-    q_g_r_kw = 0.0
+    q_g_r_const_kw = 0.0
+    room_gain_w_arr = None
     c_w_kwh_per_k = 0.0
     t_wand = 0.0
     t_innen_low = 0.0
@@ -210,7 +211,11 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
         g_rw_kw = building_obj.wall_conductance_rw_w_per_k / 1000.0
         g_wa_kw = building_obj.wall_conductance_wa_w_per_k / 1000.0
         ua_direct_kw = building_obj.ua_direct_w_per_k / 1000.0
-        q_g_r_kw = building_obj.internal_gains_w / 1000.0
+        # Q_g,R (solar + intern): bevorzugt die vorberechnete Zeitreihe aus
+        # inp (gleich wie der MILP), sonst der konstante interne Anteil.
+        q_g_r_const_kw = building_obj.internal_gain_w_const / 1000.0
+        if len(inp.room_gain_w) >= num_steps and num_steps > 0:
+            room_gain_w_arr = np.asarray(inp.room_gain_w, dtype=float)
         c_w_kwh_per_k = building_obj.wall_capacity_kwh_per_k
         t_wand = building_obj.initial_wall_temp_c
         # Hysterese-Schwellen auf T_innen: 1 K Sicherheitsband innerhalb
@@ -310,6 +315,10 @@ def run_baseline(inp: TimeSeriesInput, config: dict) -> OptimizationResult:
                 t_out_t = float(inp.outside_temp_c[t])
                 tw_prev = t_wand
                 h_a_kw_per_k = ufh_obj.h_surface * ufh_obj.area_m2 / 1000.0
+                q_g_r_kw = (
+                    float(room_gain_w_arr[t]) / 1000.0
+                    if room_gain_w_arr is not None else q_g_r_const_kw
+                )
                 denom = (
                     c_room_kwh_per_k / dt_h
                     + h_a_kw_per_k + g_rw_kw + ua_direct_kw

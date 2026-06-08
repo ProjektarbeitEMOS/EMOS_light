@@ -303,6 +303,7 @@ def load_input_data(
         "spot_prices": spot_prices,
         "temp": temp,
         "ghi": ghi,
+        "dni": dni,
         "wind_speed": wind_speed,
         "pv_generation": pv_generation,
         "household_load": household_load,
@@ -325,6 +326,21 @@ def load_input_data(
 def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
     """Erstellt TimeSeriesInput aus Config und geladenen Daten."""
     general = config.get("general", {})
+
+    # Q_g,R (solare + interne Raumgewinne, Gebaeudegruppe Juni 2026)
+    # vorberechnen, solange das Gebaeudemodell aktiv ist. Die Berechnung
+    # liegt im Building (kennt Fensterflaeche/g-Wert/Azimut); hier wird sie
+    # nur mit den Wetterdaten (Sonnenstand via lat/lon/timestamps, DNI/GHI)
+    # gefuettert und als Zeitreihe durchgereicht.
+    room_gain_w = np.array([])
+    bcfg = config.get("building", {})
+    if bcfg.get("enabled", False):
+        _gain_building = Building("gain_calc", bcfg)
+        room_gain_w = _gain_building.compute_room_gain_w(
+            data["timestamps"], data.get("ghi"), data.get("dni"),
+            data.get("lat"), data.get("lon"),
+        )
+
     return TimeSeriesInput(
         prices_ct_kwh=data["prices"],
         pv_generation_kw=data["pv_generation"],
@@ -339,6 +355,7 @@ def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
         par14a_enabled=config.get("par14a", {}).get("enabled", False),
         par14a_curtailment_kw=config.get("par14a", {}).get("curtailment_kw", 4.2),
         par14a_curtailed_steps=_par14a_curtailed_steps(config, data["timestamps"]),
+        room_gain_w=room_gain_w,
     )
 
 

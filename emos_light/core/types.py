@@ -26,6 +26,10 @@ class TimeSeriesInput:
     par14a_curtailment_kw: float = 4.2
     par14a_curtailed_steps: list = field(default_factory=list)
 
+    # Vorberechnete solare + interne Raumgewinne Q_g,R [W] pro Step
+    # (Gebaeudegruppe Juni 2026). Leeres Array -> keine Gewinne modelliert.
+    room_gain_w: np.ndarray = field(default_factory=lambda: np.array([]))
+
 
 @dataclass
 class OptimizationResult:
@@ -76,6 +80,8 @@ class OptimizationResult:
     heat_loss_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     # Wandtemperatur T_W (3-Speicher-Modell ETH, Juni 2026) [°C]
     wall_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Solare + interne Raumgewinne Q_g,R [kW] (Gebaeudegruppe Juni 2026)
+    room_gain_kw: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Thermische Fahrplaene — Warmwasserspeicher
     ww_storage_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))

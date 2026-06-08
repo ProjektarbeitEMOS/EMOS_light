@@ -202,8 +202,17 @@ DEFAULT_CONFIG = {
         "wall_anchor_to_u_value": True,
         # Anfangstemperatur der Wandmasse (None -> indoor_temp_c).
         "initial_wall_temp_c": None,
-        # Konstante interne + solare Gewinne Q_g,R an die Raumluft in W
-        # (VDI 4655 / Nutzereingabe). Default 0 = keine Gewinne modelliert.
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
+        #   Q_g,R = g · A_Fenster · DNI · cos(theta) + q_int · A_Wohn
+        # cos(theta) = max(0, cos(Sonnenhoehe)·cos(Sonnenazimut − Fenster-
+        # azimut)) — direkter Strahleinfall auf das vertikale Fenster
+        # (Beam; Diffusanteil vernachlaessigt). Q_g,B (Estrich) = 0
+        # (mit Prof. Brueckl bestaetigt).
+        "solar_gains_enabled": True,        # solaren Fenstergewinn rechnen
+        "window_g_value": 0.7,              # g-Wert (Gesamtenergiedurchlass)
+        "window_azimuth_deg": 180.0,        # Fensterausrichtung (180=Sued)
+        "internal_gains_w_per_m2": 5.0,     # DIN V 4108: Personen+Geraete
+        # Zusaetzlicher konstanter absoluter Gewinn-Offset [W] (Default 0).
         "internal_gains_w": 0.0,
         # ------------------------------------------------------------------
         # Direkte Geometrie + U-Werte (Gebaeudegruppe, EMOS-Light Mai 2026)
