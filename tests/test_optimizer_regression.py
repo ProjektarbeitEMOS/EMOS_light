@@ -59,9 +59,12 @@ EXPECTED = {
         # max-Tabelle, Entweder-Oder-Modus FBH/WW, min_run_time 60 min,
         # neue Penalty-Slack-Tarife). WP laeuft jetzt mind. 60 min am
         # Stueck, dafuer mit hoeherer thermischer Leistung pro Slot.
+        # hp_kwh 2026-06-08 nachgezogen (4.28 -> 4.08): der Code-Review-Fix
+        # der modus-spezifischen WP-Kennfeld-Kapazitaet (kein Ueberliefern
+        # von FBH-Waerme mehr) senkt die noetige WP-Energie leicht.
         "cost_eur":   6.1067,
         "obj_eur":    7.0695,
-        "hp_kwh":     4.28,
+        "hp_kwh":     4.08,
     },
 }
 

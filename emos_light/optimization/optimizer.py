@@ -269,18 +269,17 @@ class EMOSLightOptimizer:
                 )
                 delta_cap_3 = vol_factor * self.heat_pump.sg_temp_raise_3
                 delta_cap_4 = vol_factor * self.heat_pump.sg_temp_raise_4
-                # Hard-Bound der Variable lockern, sonst dominiert das
-                # ``high=capacity_kwh`` aus ThermalStorage die SG-Constraint
-                # und der WW-Boost waere unwirksam (analog zum FBH-Pfad
-                # unten). sg3/sg4 sind ein-aus (sg1..sg4 summieren zu 1),
-                # daher ist der maximale Offset max(delta_3, delta_4).
-                ww_max_extra = (
-                    delta_cap_3 if sg4 is None
-                    else max(delta_cap_3, delta_cap_4)
-                )
-                ww_new_high = self.hot_water_storage.capacity_kwh + ww_max_extra
-                for v in variables[f"{prefix}_energy_kwh"]:
-                    v.upBound = ww_new_high
+                # BEKANNTER BUG (Code-Review Juni 2026): die harte Variablen-
+                # Obergrenze ``high=capacity_kwh`` aus ThermalStorage wird hier
+                # NICHT gelockert (anders als im FBH-Pfad unten) — der WW-Boost
+                # ist daher praktisch unwirksam. Das Lockern (v.upBound =
+                # capacity + max(delta_3, delta_4)) wurde getestet, macht das
+                # MILP aber spuerbar schwerer: der Solver ueberlaedt den WW-
+                # Speicher dann ueber sg3/sg4, was wegen der Standby-Verluste
+                # TEURER ist (hp_ww 4.25 -> 4.52 EUR), aber faelschlich als
+                # "Optimal" zurueckkommt. Ein sauberer Fix braucht eine bessere
+                # Formulierung (Boost nur bei echter Waermeanforderung / engere
+                # Schranken), nicht nur das Lockern der Bound -> bewusst offen.
                 for t in range(num_steps):
                     extra = delta_cap_3 * sg3[t]
                     if sg4 is not None:

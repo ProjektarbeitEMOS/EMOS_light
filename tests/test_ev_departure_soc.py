@@ -145,6 +145,25 @@ def test_milp_custom_loss_rate_respected():
     )
 
 
+def test_milp_feasible_when_absent_at_horizon_start():
+    """Regression (Code-Review Juni 2026): startet das Auto ABWESEND
+    (presence[0] = False, z.B. Tagschema anwesend 2..20 Uhr) und unter
+    Ziel-SOC, darf am Horizontstart KEINE Schein-Abfahrt erzwungen werden.
+    Frueher initialisierte die Departure-Logik ``was_present`` bei t=0 mit
+    True und verlangte dadurch faelschlich ``soc[0] >= target`` → der
+    Solver wurde infeasible. Jetzt mit ``presence[0]`` initialisiert."""
+    cfg = _cfg_pv_wb(arrival=2, departure=20)  # absent nur 0..2 + 20..24
+    inp, res = _run(cfg)
+    assert res.success, f"darf nicht infeasible sein: {res.solver_status}"
+    soc = res.ev_soc_kwh["wb1"]
+    target_kwh = 0.80 * 60.0
+    dep_step = 20 * 4  # echte Abfahrt 20:00
+    assert soc[dep_step] >= target_kwh - 0.01, (
+        f"SOC bei echter Abfahrt 20:00 = {soc[dep_step]:.2f} kWh, "
+        f"erwartet >= {target_kwh:.2f} kWh"
+    )
+
+
 def test_milp_infeasible_when_driving_loss_exceeds_capacity():
     """Bei 10 %/h * 11 h = 110 % Kapazitaetsverlust kann der Akku-Bound
     (soc >= 0) nicht eingehalten werden — der Solver meldet zu Recht
