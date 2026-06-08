@@ -90,6 +90,11 @@ class Wallbox(MILPComponent):
         phase_limits = self.PHASE_LIMITS.get(self.phases, self.PHASE_LIMITS[3])
         self.max_power_kw = min(self.max_power_kw, phase_limits["max_kw"])
         self.min_power_kw = max(self.min_power_kw, phase_limits["min_kw"])
+        # Defensive: bei untypischer Kombination (z.B. 3-phasig mit sehr
+        # kleiner max_power_kw) darf min nicht ueber max steigen — sonst
+        # koppelt add_on_off_power_link (power<=max*on & power>=min*on)
+        # zu on==0, die Wallbox koennte nie laden.
+        self.min_power_kw = min(self.min_power_kw, self.max_power_kw)
 
     # ------------------------------------------------------------------
     # Setup-Hook fuer preisgesteuerte Ladestrategie
@@ -276,7 +281,7 @@ class Wallbox(MILPComponent):
         )
 
         # 2) EV-Anwesenheit: ausserhalb der Anwesenheit hart auf 0
-        steps_per_hour = 60 // step_minutes
+        steps_per_hour = max(1, 60 // step_minutes)
         presence: list[bool] = []
         for t in range(num_steps):
             hour = (t // steps_per_hour) % 24
@@ -361,7 +366,11 @@ class Wallbox(MILPComponent):
         if self.min_range_enabled:
             target_soc_kwh = self.target_soc * self.ev_capacity_kwh
             for t in range(num_steps):
-                was_present = presence[t - 1] if t > 0 else True
+                # Bei t=0 gibt es keine "vorherige" Anwesenheit -> mit
+                # presence[0] initialisieren, sonst entsteht eine Schein-
+                # Abfahrt am Horizontstart: startet das Auto abwesend und
+                # unter Ziel-SOC, waere soc[0] >= target sofort infeasible.
+                was_present = presence[t - 1] if t > 0 else presence[0]
                 if was_present and not presence[t]:
                     model += (
                         soc[t] >= target_soc_kwh,

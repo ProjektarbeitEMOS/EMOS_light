@@ -138,6 +138,10 @@ class HeatPump(MILPComponent):
         self._cop_heating: np.ndarray | None = None
         self._cop_dhw: np.ndarray | None = None
         self._max_electrical_power_kw_t: np.ndarray | None = None
+        # Modus-spezifische el. Maxima (W35 / W55) — bilden die physikalische
+        # Kennfeld-Kapazitaet pro Senke ab (siehe add_constraints).
+        self._p_el_floor_t: np.ndarray | None = None
+        self._p_el_ww_t: np.ndarray | None = None
         self._timestamps: list | None = None
         self._active_sinks: set = set()
 
@@ -183,25 +187,23 @@ class HeatPump(MILPComponent):
                          _OUTDOOR_TEMPS, _FLOW_TEMPS, _CAPACITY_TABLE)
         return np.clip(cap, 0.0, 20.0)
 
-    def calculate_max_electrical_power(
+    def calculate_max_electrical_power_per_mode(
         self, outside_temp_c: np.ndarray
-    ) -> np.ndarray:
-        """Max. elektrische Leistung [kW] pro Zeitschritt aus Aussentemperatur.
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Max. elektrische Leistung [kW] je Betriebsmodus (FBH / WW).
 
-        Wird aus dem Kennfeld abgeleitet: ``P_el_max = P_th_max / COP``,
-        ausgewertet sowohl fuer den Heizkreis-Vorlauf als auch fuer den
-        WW-Vorlauf. Wir nehmen das **Maximum** beider Werte, damit der
-        Solver bei beiden Senken (FBH oder WW) genuegend Leistungsspiel-
-        raum hat — Splitting auf hp_power_floor / hp_power_ww uebernimmt
-        die feinere Aufteilung, wenn beide aktiv sind.
+        Aus dem Kennfeld: ``P_el_max = P_th_max / COP`` — getrennt fuer den
+        Heizkreis-Vorlauf (W35) und den WW-Vorlauf (W55), jeweils geclippt
+        an die statische Hardware-Obergrenze ``max_electrical_power_kw``.
 
-        Geclippt an die statische ``max_electrical_power_kw``-Konfig —
-        das ist die Hardware-Modulationsobergrenze (z.B. 8 kW bei der
-        Vaillant aroTHERM plus VWL 105/8.1 A). Damit ist die dynamische
-        Berechnung immer eine *tighter* Schranke gegenueber der statischen.
+        Wichtig: die beiden Werte muessen **modus-spezifisch** angewandt
+        werden. Wuerde man (wie frueher) das Maximum beider als gemeinsamen
+        Cap nehmen, koennte der Solver im FBH-Modus die hohe W35-COP mit dem
+        groesseren WW-Modus-Cap multiplizieren und damit mehr FBH-Waerme
+        liefern, als das Kennfeld bei W35 physikalisch hergibt.
 
         Returns:
-            np.ndarray gleicher Laenge wie ``outside_temp_c``.
+            (p_el_floor, p_el_ww), beide gleicher Laenge wie outside_temp_c.
         """
         p_th_h = self.calculate_max_thermal_capacity(
             outside_temp_c, self.flow_temp_heating,
@@ -218,9 +220,23 @@ class HeatPump(MILPComponent):
         p_el_w = np.divide(
             p_th_w, cop_w, where=cop_w > 0, out=np.zeros_like(p_th_w, dtype=float),
         )
+        cap = self.max_power_kw
+        return np.minimum(p_el_h, cap), np.minimum(p_el_w, cap)
 
-        p_el_max = np.maximum(p_el_h, p_el_w)
-        return np.minimum(p_el_max, self.max_power_kw)
+    def calculate_max_electrical_power(
+        self, outside_temp_c: np.ndarray
+    ) -> np.ndarray:
+        """Hardware-Huellkurve der el. Leistung [kW] (Maximum beider Modi).
+
+        Nur als Anzeige-/Hilfslinie (Dashboard) und als loser Gesamt-Cap
+        gedacht — die *bindende* Modulationsobergrenze wird in
+        :meth:`add_constraints` **modus-spezifisch** gesetzt (siehe
+        :meth:`calculate_max_electrical_power_per_mode`).
+        """
+        p_el_floor, p_el_ww = self.calculate_max_electrical_power_per_mode(
+            outside_temp_c,
+        )
+        return np.maximum(p_el_floor, p_el_ww)
 
     # ============================================================
     # Setup-Hooks (vom Optimizer aufgerufen)
@@ -234,8 +250,11 @@ class HeatPump(MILPComponent):
         # Dynamische maximale elektrische Leistung pro Zeitschritt —
         # ersetzt die statische ``max_electrical_power_kw`` als bindende
         # Obergrenze in add_constraints. Cached fuer extract_result.
-        self._max_electrical_power_kw_t = self.calculate_max_electrical_power(
-            inp.outside_temp_c,
+        self._p_el_floor_t, self._p_el_ww_t = (
+            self.calculate_max_electrical_power_per_mode(inp.outside_temp_c)
+        )
+        self._max_electrical_power_kw_t = np.maximum(
+            self._p_el_floor_t, self._p_el_ww_t,
         )
         # Zeitstempel puffern — werden in add_constraints fuer die
         # Tagesgruppierung der max_starts_per_day-Restriktion gebraucht.
@@ -335,9 +354,26 @@ class HeatPump(MILPComponent):
             if self._max_electrical_power_kw_t is not None
             else np.full(num_steps, self.max_power_kw)
         )
+        p_el_floor = (
+            self._p_el_floor_t if self._p_el_floor_t is not None else max_t
+        )
+        p_el_ww = (
+            self._p_el_ww_t if self._p_el_ww_t is not None else max_t
+        )
+        # Gesamt-Cap modus-spezifisch waehlen: bei GENAU einer aktiven Senke
+        # ist der Cap deren Kennfeld-Maximum (W35 fuer FBH, W55 fuer WW).
+        # Sonst der lose max(beide); die echte physikalische Grenze pro Pfad
+        # setzen dann die Split-Caps weiter unten. Ohne das wuerde die hohe
+        # FBH-COP * (groesseren) WW-Cap mehr Waerme liefern als das Kennfeld.
+        if self._active_sinks == {"floor"}:
+            cap_t = p_el_floor
+        elif self._active_sinks == {"ww"}:
+            cap_t = p_el_ww
+        else:
+            cap_t = max_t
         for t in range(num_steps):
             model += (
-                hp_power[t] <= float(max_t[t]) * hp_on[t],
+                hp_power[t] <= float(cap_t[t]) * hp_on[t],
                 f"hp_max_t_{t}",
             )
             if self.min_power_kw > 0:
@@ -443,6 +479,24 @@ class HeatPump(MILPComponent):
                     hp_power[t] == sum(v[t] for v in split_vars),
                     f"hp_power_split_{t}",
                 )
+            # Physikalische Kennfeld-Kapazitaet je Pfad: W35 fuer FBH, W55
+            # fuer WW. Verhindert, dass der lose Gesamt-Cap zusammen mit der
+            # hohen FBH-COP mehr FBH-Waerme liefert als das Kennfeld bei W35
+            # hergibt (Code-Review Juni 2026).
+            if "hp_power_floor" in variables:
+                pf = variables["hp_power_floor"]
+                for t in range(num_steps):
+                    model += (
+                        pf[t] <= float(p_el_floor[t]),
+                        f"hp_cap_floor_{t}",
+                    )
+            if "hp_power_ww" in variables:
+                pw = variables["hp_power_ww"]
+                for t in range(num_steps):
+                    model += (
+                        pw[t] <= float(p_el_ww[t]),
+                        f"hp_cap_ww_{t}",
+                    )
             # Entweder-Oder-Mutex via Big-M
             mode_ww = variables.get("hp_mode_ww")
             if (
