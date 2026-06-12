@@ -304,6 +304,7 @@ def load_input_data(
         "temp": temp,
         "ghi": ghi,
         "dni": dni,
+        "dhi": dhi,
         "wind_speed": wind_speed,
         "pv_generation": pv_generation,
         "household_load": household_load,
@@ -338,7 +339,7 @@ def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
         _gain_building = Building("gain_calc", bcfg)
         room_gain_w = _gain_building.compute_room_gain_w(
             data["timestamps"], data.get("ghi"), data.get("dni"),
-            data.get("lat"), data.get("lon"),
+            data.get("lat"), data.get("lon"), data.get("dhi"),
         )
 
     return TimeSeriesInput(

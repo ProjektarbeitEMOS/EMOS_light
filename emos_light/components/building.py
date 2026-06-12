@@ -132,14 +132,24 @@ class Building(MILPComponent):
         self.initial_wall_temp_c = (
             float(_iwt) if _iwt is not None else self.indoor_temp
         )
-        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
-        #   Q_g,R = g·A_Fenster·DNI·cos(theta) + q_int·A_Wohn   (Q_g,B = 0).
-        # Der solare Anteil wird in :meth:`compute_room_gain_w` aus dem
-        # Sonnenstand berechnet; hier nur die Parameter + der konstante
-        # interne Anteil.
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe, FINAL Juni 2026):
+        #   Q_g,R = Q_solar,gesamt + q_int·A_Wohn         (Q_g,B = 0)
+        #   Q_solar,gesamt = SUM_i g·A_Fenster,i·(I·cos(theta_i) + 0.5·D)
+        # ueber die vier Fassaden i ∈ {N, O, S, W}; I = Direktstrahlung (DNI),
+        # D = Diffusstrahlung (DHI), cos(theta_i) = Strahleinfall je Fassade.
+        # Berechnung in :meth:`compute_room_gain_w`; hier nur die Parameter.
         self.solar_gains_enabled = bool(config.get("solar_gains_enabled", True))
         self.window_g_value = float(config.get("window_g_value", 0.7))
+        # DEPRECATED (Juni 2026): vor der Vier-Fassaden-Formel hatte das
+        # Modell nur EINE Fensterausrichtung. Wird nicht mehr genutzt, bleibt
+        # fuer Rueckwaertskompatibilitaet lesbar.
         self.window_azimuth_deg = float(config.get("window_azimuth_deg", 180.0))
+        # Aufteilung der Fensterflaeche auf die vier Himmelsrichtungen
+        # (Anteile, Summe ~1). Default: suedbetontes EFH.
+        self.window_orientation_split = dict(config.get(
+            "window_orientation_split",
+            {"north": 0.10, "south": 0.40, "east": 0.25, "west": 0.25},
+        ))
         self.internal_gains_w_per_m2 = float(
             config.get("internal_gains_w_per_m2", 5.0)
         )
@@ -547,6 +557,23 @@ class Building(MILPComponent):
         else:
             self._q_g_r_w = np.full(n, self.internal_gain_w_const, dtype=float)
 
+    @property
+    def window_areas_by_orientation(self) -> dict:
+        """Fensterflaeche je Fassade {EMOS-Azimut_deg: A_i [m2]}.
+
+        Verteilt die Gesamt-Fensterflaeche ``window_area_m2`` ueber
+        ``window_orientation_split`` auf Nord (0deg), Ost (90deg),
+        Sued (180deg), West (270deg).
+        """
+        s = self.window_orientation_split
+        a = self.window_area_m2
+        return {
+            0.0: a * float(s.get("north", 0.0)),
+            90.0: a * float(s.get("east", 0.0)),
+            180.0: a * float(s.get("south", 0.0)),
+            270.0: a * float(s.get("west", 0.0)),
+        }
+
     def compute_room_gain_w(
         self,
         timestamps: list,
@@ -554,22 +581,24 @@ class Building(MILPComponent):
         dni_w_m2: np.ndarray | None,
         latitude: float | None,
         longitude: float | None,
+        dhi_w_m2: np.ndarray | None = None,
     ) -> np.ndarray:
         """Berechnet Q_g,R (solar + intern) als Zeitreihe in W.
 
-        Solarer Fenstergewinn nach der Gebaeudegruppe (Juni 2026):
+        FINALE Formel der Gebaeudegruppe (Juni 2026), summiert ueber die
+        vier Fassaden i in {Nord, Ost, Sued, West}:
 
-            Q_solar = g · A_Fenster · DNI · cos(theta)
-            cos(theta) = max(0, cos(gamma_S) · cos(alpha_S − alpha_E))
+            Q_solar,gesamt = SUM_i g * A_Fenster,i * (I*cos(theta_i) + 0.5*D)
+            cos(theta_i)   = max(0, cos(gamma_S) * cos(alpha_S - alpha_E,i))
 
-        mit gamma_S = Sonnenhoehe, alpha_S = Sonnenazimut, alpha_E =
-        Fensterazimut (beide in EMOS-Konvention 0=N, 90=O, 180=S, 270=W —
-        gleiche Konvention fuer beide, daher ohne das Minus aus dem
-        Gebaeudegruppen-Dokument, das nur deren Azimut-Offset ausglich).
-        Modelliert den **direkten** Strahleinfall (Beam); der Diffusanteil
-        wird vernachlaessigt. DNI kommt aus den Wetterdaten, sonst aus der
-        DISC-Zerlegung der GHI. Dazu der konstante interne Anteil
-        (DIN V 4108).
+        mit I = Direktstrahlung (DNI), D = Diffusstrahlung (DHI), gamma_S =
+        Sonnenhoehe, alpha_S = Sonnenazimut, alpha_E,i = Fassadenazimut
+        (EMOS-Konvention 0=N, 90=O, 180=S, 270=W — gleiche Konvention fuer
+        Sonne und Fenster, daher ohne das Minus aus dem Gebaeudegruppen-
+        Dokument, das nur deren Azimut-Offset ausglich). 0.5*D ist der
+        Diffusanteil auf eine vertikale Flaeche (Sichtfaktor 0.5 zum Himmel).
+        I/D kommen aus den Wetterdaten, sonst aus der DISC-Zerlegung der GHI.
+        Dazu der konstante interne Anteil (DIN V 4108).
         """
         import math
 
@@ -596,28 +625,46 @@ class Building(MILPComponent):
         dni_in = (
             np.asarray(dni_w_m2, dtype=float) if dni_w_m2 is not None else None
         )
+        dhi_in = (
+            np.asarray(dhi_w_m2, dtype=float) if dhi_w_m2 is not None else None
+        )
+        # API-Strahlung nur nutzen, wenn der Datensatz auch einen echten
+        # Diffusanteil liefert. Synthetisches Wetter setzt DNI/DHI auf 0 —
+        # dann ueber die DISC-Zerlegung der GHI dekomponieren (liefert
+        # konsistent Beam UND Diffus), statt mit DHI=0 den Diffusanteil
+        # stillschweigend zu verlieren.
+        have_api = (
+            dni_in is not None and dhi_in is not None
+            and len(dni_in) >= n and len(dhi_in) >= n
+            and float(np.nanmax(dhi_in)) > 0.0
+        )
         tz = detect_timezone_offset(timestamps[0].date())
         elevation, azimuth = solar_position(timestamps, latitude, longitude, tz)
         doy = timestamps[0].timetuple().tm_yday
         g = self.window_g_value
-        a_win = self.window_area_m2
-        az_e = self.window_azimuth_deg
+        # Fensterflaeche je Fassade {EMOS-Azimut: A_i}
+        areas = self.window_areas_by_orientation
 
         for i in range(n):
             elev = float(elevation[i])
             if elev <= 0.0:
                 continue
-            cos_inc = math.cos(math.radians(elev)) * math.cos(
-                math.radians(float(azimuth[i]) - az_e)
-            )
-            if cos_inc <= 0.0:
-                continue
-            if dni_in is not None and i < len(dni_in) and dni_in[i] > 0:
-                dni = float(dni_in[i])
+            # Direkt-/Diffusstrahlung fuer diesen Schritt (API oder DISC)
+            if have_api:
+                dni, dhi = float(dni_in[i]), float(dhi_in[i])
             else:
                 cos_zenith = math.sin(math.radians(elev))
-                dni, _ = _disc_decomposition(float(ghi[i]), cos_zenith, doy)
-            gains[i] += g * a_win * dni * cos_inc
+                dni, dhi = _disc_decomposition(float(ghi[i]), cos_zenith, doy)
+            cos_elev = math.cos(math.radians(elev))
+            diffuse = 0.5 * dhi                 # Sichtfaktor 0.5 zum Himmel
+            az_s = float(azimuth[i])
+            for az_e, area in areas.items():
+                if area <= 0.0:
+                    continue
+                cos_inc = cos_elev * math.cos(math.radians(az_s - az_e))
+                if cos_inc < 0.0:
+                    cos_inc = 0.0              # Strahl von hinten -> kein Beam
+                gains[i] += g * area * (dni * cos_inc + diffuse)
         return gains
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:

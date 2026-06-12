@@ -210,7 +210,13 @@ DEFAULT_CONFIG = {
         # (mit Prof. Brueckl bestaetigt).
         "solar_gains_enabled": True,        # solaren Fenstergewinn rechnen
         "window_g_value": 0.7,              # g-Wert (Gesamtenergiedurchlass)
-        "window_azimuth_deg": 180.0,        # Fensterausrichtung (180=Sued)
+        # FINAL (Juni 2026): Summe ueber 4 Fassaden mit Beam (DNI) +
+        # 0.5*Diffus (DHI). Aufteilung der Fensterflaeche auf die
+        # Himmelsrichtungen (Anteile, Summe ~1; suedbetontes EFH-Default).
+        "window_orientation_split": {
+            "north": 0.10, "south": 0.40, "east": 0.25, "west": 0.25,
+        },
+        "window_azimuth_deg": 180.0,        # DEPRECATED (ersetzt durch Split)
         "internal_gains_w_per_m2": 5.0,     # DIN V 4108: Personen+Geraete
         # Zusaetzlicher konstanter absoluter Gewinn-Offset [W] (Default 0).
         "internal_gains_w": 0.0,
