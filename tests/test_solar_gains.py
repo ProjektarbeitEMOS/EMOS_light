@@ -1,8 +1,9 @@
-"""Tests fuer die solaren + internen Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026).
+"""Tests fuer die solaren + internen Raumgewinne Q_g,R (Gebaeudegruppe, FINAL).
 
-    Q_g,R = g · A_Fenster · DNI · cos(theta) + q_int · A_Wohn
-    cos(theta) = max(0, cos(Sonnenhoehe)·cos(Sonnenazimut − Fensterazimut))
+    Q_g,R = SUM_i g * A_Fenster,i * (I*cos(theta_i) + 0.5*D) + q_int * A_Wohn
+    cos(theta_i) = max(0, cos(Sonnenhoehe) * cos(Sonnenazimut - Fassadenazimut))
 
+ueber die vier Fassaden i in {N, O, S, W}; I = DNI, D = DHI.
 Q_g,B (Estrich) = 0 (mit Prof. Brueckl bestaetigt) — wird hier nicht gesetzt.
 """
 
@@ -48,7 +49,8 @@ def weather():
 def _gain(building_cfg: dict, data: dict) -> np.ndarray:
     b = Building("b", building_cfg)
     return b.compute_room_gain_w(
-        data["timestamps"], data["ghi"], data["dni"], data["lat"], data["lon"]
+        data["timestamps"], data["ghi"], data["dni"],
+        data["lat"], data["lon"], data["dhi"],
     )
 
 
@@ -64,17 +66,29 @@ def test_internal_gain_at_night(weather):
     assert gain[8] == pytest.approx(internal, abs=1.0)   # Schritt 8 = 02:00
 
 
-def test_south_window_beats_north(weather):
-    """Suedfenster bekommt deutlich mehr direkten Strahl als Nordfenster."""
+def test_south_beats_north_and_diffuse_on_north(weather):
+    """Sued (Beam + Diffus) > Nord (nur Diffus) > rein intern.
+
+    Im FINALEN Modell bekommt JEDE Fassade den Diffusanteil 0.5*D — auch
+    das Nordfenster (das praktisch keinen direkten Strahl sieht)."""
     bcfg = _april_cfg()["building"]
-    gs = _gain({**bcfg, "window_azimuth_deg": 180.0}, weather)  # Sued
-    gn = _gain({**bcfg, "window_azimuth_deg": 0.0}, weather)    # Nord
-    assert gs.max() > gn.max() + 800.0
-    # Wenn die Sonne im Sueden steht (Suedpeak), bekommt das Nordfenster
-    # keinen direkten Strahl -> nur der interne Anteil. (Bei Sonnenauf-/
-    # untergang im NO/NW kann das Nordfenster sonst etwas abbekommen.)
-    peak = int(gs.argmax())
-    assert gn[peak] == pytest.approx(5.0 * 150.0, abs=50.0)
+    gs = _gain({**bcfg, "window_orientation_split": {"south": 1.0}}, weather)
+    gn = _gain({**bcfg, "window_orientation_split": {"north": 1.0}}, weather)
+    internal = 5.0 * 150.0
+    # Sued klar hoeher (zusaetzlicher Beam-Anteil)
+    assert gs.max() > gn.max() + 500.0
+    # Nord liegt trotzdem ueber dem reinen internen Anteil -> Diffusgewinn
+    assert gn.max() > internal + 50.0
+
+
+def test_diffuse_present_when_solar_on(weather):
+    """Der Diffusanteil 0.5*D ist tagsueber wirksam (nicht nur Beam)."""
+    bcfg = _april_cfg()["building"]
+    # Reines Nordfenster: praktisch kein Beam -> jeder Gewinn ueber dem
+    # internen Anteil ist Diffusstrahlung.
+    gn = _gain({**bcfg, "window_orientation_split": {"north": 1.0}}, weather)
+    internal = 5.0 * 150.0
+    assert (gn - internal).max() > 30.0   # mittags messbarer Diffusgewinn
 
 
 def test_solar_disabled_only_internal(weather):
