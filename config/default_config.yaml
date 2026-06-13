@@ -22,12 +22,35 @@ tariff:
   monthly_base_fee_eur: 5.99
   monthly_grid_fee_eur: 10.0
 
+# §14a EnWG — Netzdrosselung (Testszenario). Wenn enabled, begrenzt der
+# Netzbetreiber im Zeitfenster [curtail_start_hour, curtail_end_hour) die
+# Summe der steuerbaren Lasten (Waermepumpe, Wallbox) auf curtailment_kw
+# (Mindestwert nach §14a: 4,2 kW). start > end laeuft ueber Mitternacht.
+par14a:
+  enabled: false
+  curtailment_kw: 4.2
+  num_devices: 1
+  curtail_start_hour: 17
+  curtail_end_hour: 20
+
 household:
   annual_consumption_kwh: 4500
 
 pv:
   enabled: true
   peak_power_kwp: 12.0
+  # Datenbasierte Kalibrierung (k = sum(real) / sum(model) auf historischen
+  # Anlagendaten). Wert wird vom Standalone-Tool unter
+  # "PV Prognose Tool angepasst/" ermittelt (evaluate_best.py schreibt
+  # data/calibration.json). Bei Default 1.0 wird das physikalische
+  # Modell unkalibriert verwendet. Typische Werte 0.7..1.0 — der
+  # Faktor bildet Soiling, Spektral, Verschattung, Inverter-Clipping,
+  # MPPT- und Alterungsverluste ueber die 85 % System-Effizienz hinaus ab.
+  k_calibration: 1.0
+  # AC-Wechselrichter-Limit (kW). null = kein Clipping. Bei DC/AC-Ratio > 1
+  # (PV-Generator groesser als Wechselrichter) wird die Leistung an diesem
+  # Wert gekappt. Wird bei Multi-Surface anteilig pro kWp aufgeteilt.
+  ac_limit_kw: null
   surfaces:
     - name: Sued
       kwp: 8.0
@@ -63,7 +86,10 @@ heat_pump:
   flow_temp_dhw_c: 55.0
   operating_min_temp_c: -25.0
   operating_max_temp_c: 43.0
-  min_run_time_minutes: 15
+  # WP soll mind. 60 min am Stueck laufen (Prof-Hinweis Mai 2026).
+  # Umschalten zwischen FBH und WW innerhalb dieser Laufphase ist
+  # erlaubt — siehe hp_mode_ww-Constraint in heat_pump.py.
+  min_run_time_minutes: 60
   min_pause_time_minutes: 15
   # Verdichter-Schonung: max. Einschaltvorgaenge OFF->ON pro Kalendertag.
   # Umschalten zwischen Heizkreis und Warmwasser zaehlt nicht.
@@ -130,6 +156,30 @@ building:
   wall_capacity_wh_per_m2_k: 50.0
   volume_factor: 3.1
   heat_loss_coefficient_w_per_k: null
+  # 3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026): die Wand
+  # wird als eigener traeger Zustand T_W zwischen Raum und Aussenluft
+  # gefuehrt. k_RW/k_WA = Wand-Uebergangszahlen der Gebaeudegruppe;
+  # wall_anchor_to_u_value=true koppelt deren Reihen-U an u_value_wall
+  # (physikalisch konsistent — rohe Werte waeren ~10x zu leck).
+  wall_k_rw_w_m2_k: 2.5
+  wall_k_wa_w_m2_k: 25.0
+  wall_anchor_to_u_value: true
+  initial_wall_temp_c: null        # null -> indoor_temp_c
+  # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
+  #   Q_g,R = g · A_Fenster · DNI · cos(theta) + internal_gains_w_per_m2 · A
+  # Q_g,B (Estrich) = 0 (mit Prof. Brueckl bestaetigt).
+  solar_gains_enabled: true        # solaren Fenstergewinn rechnen
+  window_g_value: 0.7              # g-Wert (Gesamtenergiedurchlass)
+  # FINAL (Juni 2026): Summe ueber 4 Fassaden, Beam (DNI) + 0.5*Diffus (DHI).
+  # Aufteilung der Fensterflaeche auf die Himmelsrichtungen (Summe ~1):
+  window_orientation_split:
+    north: 0.10
+    south: 0.40
+    east: 0.25
+    west: 0.25
+  window_azimuth_deg: 180.0        # DEPRECATED (ersetzt durch Split oben)
+  internal_gains_w_per_m2: 5.0     # DIN V 4108: Personen + Geraete
+  internal_gains_w: 0.0            # zusaetzlicher absoluter Offset [W]
 
 heat_demand:
   annual_heating_kwh: 5250

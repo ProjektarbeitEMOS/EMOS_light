@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Ost",
+    "kwp": 9.0,
+    "tilt_deg": 30.0,
+    "azimuth_deg": 90.0
+  },
+  {
+    "name": "West",
+    "kwp": 9.5,
+    "tilt_deg": 30.0,
+    "azimuth_deg": 270.0
+  }
+]

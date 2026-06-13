@@ -216,6 +216,10 @@ class MPCController:
                 s - start for s in full_input.par14a_curtailed_steps
                 if start <= s < end
             ],
+            room_gain_w=(
+                full_input.room_gain_w[start:end]
+                if len(full_input.room_gain_w) else full_input.room_gain_w
+            ),
         )
 
     def _update_initial_conditions(

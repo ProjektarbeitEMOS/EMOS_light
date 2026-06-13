@@ -1,0 +1,20 @@
+Algorithmus zur Umsetzung der prognosebasierten Batterieladung für
+PV-Speichersysteme mit messwertbasierten PV- und Lastprognosen
+
+Autoren: J. Bergner, J. Weniger, T. Tjaden,
+Forschungsgruppe Solarspeichersysteme,
+Hochschule für Technik und Wirtschaft HTW Berlin
+
+Version 1.1 (5/2016)
+- In der Unterfunktion prog4ld wurde die Zeile 601:
+
+P_ldf(t,:)=g1.*repmat(P_ld15(t-1),tf_prog*4,1)+g2.*P_ld(t-96:t-37);
+
+durch folgende Zeile ersetzt:
+
+P_ldf(t,:)=g1.*repmat(P_ld15(t-1),tf_prog*4,1)+g2.*P_ld15(t-96:t-37);
+
+Dadurch wird die 15-minütige Zeitreihe der Last des vorangegangenen Tages 
+korrekt berücksichtigt. 
+
+

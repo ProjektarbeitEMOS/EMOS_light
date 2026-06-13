@@ -1,0 +1,26 @@
+{
+  "k": 0.8444126657214579,
+  "bias_w": 0.0,
+  "n_samples": 242,
+  "rmse_w": 2421.6163916721557,
+  "method": "energy_ratio",
+  "clearness_edges": null,
+  "clearness_k": null,
+  "system_efficiency_effective": 0.7177507658632392,
+  "surfaces": [
+    {
+      "name": "Ost",
+      "kwp": 9.0,
+      "tilt_deg": 30.0,
+      "azimuth_deg": 90.0
+    },
+    {
+      "name": "West",
+      "kwp": 9.5,
+      "tilt_deg": 30.0,
+      "azimuth_deg": 270.0
+    }
+  ],
+  "latitude": 48.52,
+  "longitude": 13.3
+}

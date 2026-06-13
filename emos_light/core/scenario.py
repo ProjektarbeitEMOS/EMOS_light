@@ -220,6 +220,16 @@ def load_input_data(
                 "age_years": pv_config.get("age_years", 0),
                 "degradation_pct_per_year": pv_config.get("degradation_pct_per_year", 0.5),
                 "transposition_model": pv_config.get("transposition_model", "perez"),
+                # Datenbasierte Kalibrierung + AC-Limit pro Surface aus
+                # dem PV-Block durchreichen, damit das Multi-Surface-
+                # Layout dieselben Korrekturen wie eine Einzel-Anlage
+                # bekommt. AC-Limit wird hier proportional aufgeteilt.
+                "k_calibration": pv_config.get("k_calibration", 1.0),
+                "ac_limit_kw": _split_ac_limit(
+                    pv_config.get("ac_limit_kw"),
+                    surf.get("kwp", 5.0),
+                    sum(s.get("kwp", 0.0) for s in surfaces) or 1.0,
+                ),
             }
             pv_surf = PVSystem(surf.get("name", "pv"), surf_config)
             pv_generation += pv_surf.estimate_generation(
@@ -293,6 +303,8 @@ def load_input_data(
         "spot_prices": spot_prices,
         "temp": temp,
         "ghi": ghi,
+        "dni": dni,
+        "dhi": dhi,
         "wind_speed": wind_speed,
         "pv_generation": pv_generation,
         "household_load": household_load,
@@ -315,6 +327,21 @@ def load_input_data(
 def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
     """Erstellt TimeSeriesInput aus Config und geladenen Daten."""
     general = config.get("general", {})
+
+    # Q_g,R (solare + interne Raumgewinne, Gebaeudegruppe Juni 2026)
+    # vorberechnen, solange das Gebaeudemodell aktiv ist. Die Berechnung
+    # liegt im Building (kennt Fensterflaeche/g-Wert/Azimut); hier wird sie
+    # nur mit den Wetterdaten (Sonnenstand via lat/lon/timestamps, DNI/GHI)
+    # gefuettert und als Zeitreihe durchgereicht.
+    room_gain_w = np.array([])
+    bcfg = config.get("building", {})
+    if bcfg.get("enabled", False):
+        _gain_building = Building("gain_calc", bcfg)
+        room_gain_w = _gain_building.compute_room_gain_w(
+            data["timestamps"], data.get("ghi"), data.get("dni"),
+            data.get("lat"), data.get("lon"), data.get("dhi"),
+        )
+
     return TimeSeriesInput(
         prices_ct_kwh=data["prices"],
         pv_generation_kw=data["pv_generation"],
@@ -328,7 +355,38 @@ def build_time_series_input(config: dict, data: dict) -> TimeSeriesInput:
         max_grid_power_kw=general.get("max_grid_power_kw", 30.0),
         par14a_enabled=config.get("par14a", {}).get("enabled", False),
         par14a_curtailment_kw=config.get("par14a", {}).get("curtailment_kw", 4.2),
+        par14a_curtailed_steps=_par14a_curtailed_steps(config, data["timestamps"]),
+        room_gain_w=room_gain_w,
     )
+
+
+def _par14a_curtailed_steps(config: dict, timestamps: list) -> list[int]:
+    """Step-Indizes, in denen der Netzbetreiber nach §14a EnWG drosselt.
+
+    Das Drosselfenster ist ueber die Stunden [start, end) definiert
+    (lokale Uhrzeit, taeglich wiederkehrend ueber den Horizont).
+    ``start == end`` => kein Fenster; ``start > end`` laeuft ueber
+    Mitternacht (z.B. 22 -> 6). Liefert eine leere Liste, wenn §14a
+    deaktiviert ist — dann greift der Drossel-Constraint im Optimizer
+    gar nicht.
+    """
+    par14a = config.get("par14a", {})
+    if not par14a.get("enabled", False):
+        return []
+    start_h = float(par14a.get("curtail_start_hour", 17))
+    end_h = float(par14a.get("curtail_end_hour", 20))
+    if start_h == end_h:
+        return []
+    steps: list[int] = []
+    for i, ts in enumerate(timestamps):
+        h = ts.hour + ts.minute / 60.0
+        if start_h < end_h:
+            in_window = start_h <= h < end_h
+        else:  # Fenster ueber Mitternacht
+            in_window = h >= start_h or h < end_h
+        if in_window:
+            steps.append(i)
+    return steps
 
 
 def _pad_array(arr: np.ndarray, target_len: int) -> np.ndarray:
@@ -337,3 +395,23 @@ def _pad_array(arr: np.ndarray, target_len: int) -> np.ndarray:
     if len(arr) < target_len:
         arr = np.pad(arr, (0, target_len - len(arr)), mode="edge")
     return arr
+
+
+def _split_ac_limit(
+    total_ac_limit_kw: float | None,
+    surface_kwp: float,
+    total_kwp: float,
+) -> float | None:
+    """Verteilt ein globales AC-Limit anteilig auf eine Surface.
+
+    Beispiel: 12 kWp Anlage (8 kWp Sued + 4 kWp Ost) mit 10 kW
+    Wechselrichter-Limit -> Sued bekommt 6.67 kW, Ost 3.33 kW.
+    Vereinfachung: das echte AC-Clipping ist ueber die Summe nicht
+    perfekt durch lineare Aufteilung abbildbar, fuer die Optimierung
+    aber ausreichend nah.
+    """
+    if total_ac_limit_kw in (None, 0, 0.0):
+        return None
+    if total_kwp <= 0:
+        return None
+    return float(total_ac_limit_kw) * float(surface_kwp) / float(total_kwp)

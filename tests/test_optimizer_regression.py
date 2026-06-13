@@ -35,8 +35,12 @@ EXPECTED = {
         "throughput": 9.10,   # ch + dis in kWh
     },
     "hp_ww": {
-        "cost_eur":   4.5170,
-        "hp_kwh":     2.81,
+        # Aktualisiert 2026-05-27: min_run_time_minutes 15 -> 60 (Prof-Hinweis,
+        # WP muss mind. 60 min am Stueck laufen). Plus _CAPACITY_TABLE auf
+        # Modulationsmaximum -> hoehere thermische Output je Lauf-Slot,
+        # daher weniger Gesamtlaufzeit noetig, niedrigere Kosten.
+        "cost_eur":   4.2459,
+        "hp_kwh":     1.77,
         "ww_end_kwh": 4.95,
     },
     "hp_ufh": {
@@ -51,13 +55,16 @@ EXPECTED = {
         "wb_kwh":    32.6,
     },
     "full": {
-        # Aktualisiert 2026-05-19: EV-Modell strikter (Ziel-SOC zur Abfahrt
-        # + 5 %/h Fahrverbrauch waehrend Abwesenheit). Der Solver kann das
-        # Laden nicht mehr an das Horizont-Ende schieben, daher leicht
-        # hoehere Netzkosten beim Full-House-Szenario.
-        "cost_eur":   5.9246,
-        "obj_eur":    6.8264,
-        "hp_kwh":     2.78,
+        # Aktualisiert 2026-05-27: Mai-2026-Modellaenderungen (Modulations-
+        # max-Tabelle, Entweder-Oder-Modus FBH/WW, min_run_time 60 min,
+        # neue Penalty-Slack-Tarife). WP laeuft jetzt mind. 60 min am
+        # Stueck, dafuer mit hoeherer thermischer Leistung pro Slot.
+        # hp_kwh 2026-06-08 nachgezogen (4.28 -> 4.08): der Code-Review-Fix
+        # der modus-spezifischen WP-Kennfeld-Kapazitaet (kein Ueberliefern
+        # von FBH-Waerme mehr) senkt die noetige WP-Energie leicht.
+        "cost_eur":   6.1067,
+        "obj_eur":    7.0695,
+        "hp_kwh":     4.08,
     },
 }
 

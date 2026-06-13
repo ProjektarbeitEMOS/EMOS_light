@@ -38,6 +38,9 @@ def _cfg_room_winter() -> dict:
     cfg["building"]["indoor_temp_c"] = 21.0
     cfg["building"]["comfort_temp_min_c"] = 20.0
     cfg["building"]["comfort_temp_max_c"] = 24.0
+    # Solare/interne Gewinne aus -> isolierte Heizbilanz (q_to_room ≈ Verlust).
+    cfg["building"]["solar_gains_enabled"] = False
+    cfg["building"]["internal_gains_w_per_m2"] = 0.0
     return cfg
 
 
@@ -183,21 +186,27 @@ def test_baseline_room_mode_balance_consistent():
 
 
 def test_baseline_room_mode_heat_loss_formula():
-    """heat_loss_kw[t] muss exakt UA·(T_innen[t-1]-T_aus[t])/1000 sein
-    (gleiche explizite-Euler-Konvention wie der MILP-Optimizer)."""
+    """heat_loss_kw[t] = direkter Verlust (Fenster+Dach+Lueftung, auf
+    T_innen[t]) + Wandpfad (auf T_W[t-1]) — 3-Speicher-Modell (ETH,
+    Juni 2026), konsistent zum MILP-Optimizer (Building.extract_result)."""
     cfg = _cfg_room_winter()
     inp = _input_for(cfg)
     res = run_baseline(inp, cfg)
 
     from emos_light.components.building import Building
     b = Building("test", cfg["building"])
-    ua_kw_per_k = b.ua_w_per_k / 1000.0
+    ua_direct_kw = b.ua_direct_w_per_k / 1000.0
+    g_wa_kw = b.wall_conductance_wa_w_per_k / 1000.0
 
-    # prev = [initial, T_innen[0], T_innen[1], ...]
-    prev = np.concatenate(([b.indoor_temp], res.indoor_temp_c[:-1]))
-    expected = ua_kw_per_k * (prev - inp.outside_temp_c[: len(prev)])
+    # Wandpfad mit T_W am Schrittanfang: prev = [T_W_init, T_W[0], ...].
+    wall_prev = np.concatenate(([b.initial_wall_temp_c], res.wall_temp_c[:-1]))
+    t_aus = inp.outside_temp_c[: len(res.indoor_temp_c)]
+    expected = (
+        ua_direct_kw * (res.indoor_temp_c - t_aus)
+        + g_wa_kw * (wall_prev - t_aus)
+    )
     assert np.allclose(res.heat_loss_kw, expected, atol=1e-6), (
-        "heat_loss_kw weicht von UA·(T_innen_prev - T_aus)/1000 ab"
+        "heat_loss_kw weicht vom 3-Speicher-Verlust (direkt + Wandpfad) ab"
     )
 
 

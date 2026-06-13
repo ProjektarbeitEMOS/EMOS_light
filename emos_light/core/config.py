@@ -36,6 +36,11 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "curtailment_kw": 4.2,
         "num_devices": 1,
+        # Testszenario: Zeitfenster (Stunde, lokal), in dem der
+        # Netzbetreiber die steuerbaren Lasten drosselt. Bei start == end
+        # ist kein Fenster aktiv; start > end laeuft ueber Mitternacht.
+        "curtail_start_hour": 17,
+        "curtail_end_hour": 20,
     },
     "household": {
         "annual_consumption_kwh": 4500,
@@ -55,10 +60,19 @@ DEFAULT_CONFIG = {
         "degradation_pct_per_year": 0.5,
         "age_years": 0,
         "surfaces": [],
-        # Transpositionsmodell GHI -> POA: "perez" (Default) oder
-        # "isotropic" (Liu & Jordan 1963, aus alter EMOS — Uebergangs-
-        # loesung, bis die finale Prognose feststeht).
+        # Transpositionsmodell GHI -> POA. "perez" (1990) ist das
+        # produktiv gesetzte Modell — Sieger im internen Vergleich
+        # gegen Liu&Jordan, EMOS_iso und HTW PVprog (siehe
+        # "PV Prognose Tool angepasst/FORECASTS.md"). UI bietet keinen
+        # Wechsel mehr; "isotropic" kann per YAML noch erzwungen werden,
+        # wenn jemand eine Vergleichsrechnung machen will.
         "transposition_model": "perez",
+        # Datenbasierte Kalibrierung (Mai 2026, Standalone-Tool
+        # "PV Prognose Tool angepasst/"). 1.0 = unkalibriert.
+        # Bei realen Anlagendaten ueblicherweise 0.7..1.0.
+        "k_calibration": 1.0,
+        # AC-Wechselrichter-Limit (kW). None = kein Clipping.
+        "ac_limit_kw": None,
     },
     "battery": {
         "enabled": True,
@@ -85,7 +99,15 @@ DEFAULT_CONFIG = {
         "flow_temp_dhw_c": 55.0,
         "operating_min_temp_c": -25.0,
         "operating_max_temp_c": 43.0,
-        "min_run_time_minutes": 15,
+        # Mindestlaufzeit der WP in Minuten nach jedem Einschalten.
+        # Die WP soll mindestens 60 min am Stueck laufen — Hinweis vom
+        # Prof (Mai 2026): kuerzere Phasen sind technisch ungeschickt
+        # (Einschwingzeit Verdichter + Verdampfer, Effizienzeinbussen,
+        # Verdichter-Verschleiss). Innerhalb dieser Laufphase darf der
+        # Solver allerdings ueber ``hp_mode_ww[t]`` zwischen FBH und WW
+        # umschalten — die Restriktion bezieht sich auf hp_on, nicht
+        # auf den Modus.
+        "min_run_time_minutes": 60,
         "min_pause_time_minutes": 15,
         # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
         # Schont den Verdichter — laeuft die WP einmal, darf sie beliebig
@@ -160,6 +182,44 @@ DEFAULT_CONFIG = {
         "wall_capacity_wh_per_m2_k": 50.0,
         "volume_factor": 3.1,
         "heat_loss_coefficient_w_per_k": None,
+        # ------------------------------------------------------------------
+        # 3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026)
+        # Wand als eigener thermischer Zustand T_W zwischen Raum und Aussen
+        # (Traegheit Aussenwand). Korrekturen K1 (Q_WP direkt), K2 (Heizwasser
+        # quasistationaer eliminiert), K3 (Fenster/Lueftung direkt, nur die
+        # opake Wand laeuft ueber die traege Masse). Siehe building.py-Doku.
+        # ------------------------------------------------------------------
+        # Waermeuebergangszahlen der Wand (Gebaeudegruppe). k_RW raumseitig,
+        # k_WA aussenseitig. Werte sind Oberflaechen-Filmkoeffizienten; ihr
+        # Verhaeltnis bestimmt die Aufteilung der Wandkapazitaet, die
+        # Magnitude wird per ``wall_anchor_to_u_value`` an die Daemmung
+        # (u_value_wall) gekoppelt (sonst U_eff ~ 2.27 -> Wand ~10x zu leck).
+        "wall_k_rw_w_m2_k": 2.5,
+        "wall_k_wa_w_m2_k": 25.0,
+        # True: Reihen-U der Wand = u_value_wall (physikalisch konsistent zu
+        # Fenster/Dach), k_RW:k_WA nur als Aufteilungsverhaeltnis. False:
+        # rohe k-Werte der Gebaeudegruppe (fuer Vergleichsrechnungen).
+        "wall_anchor_to_u_value": True,
+        # Anfangstemperatur der Wandmasse (None -> indoor_temp_c).
+        "initial_wall_temp_c": None,
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026):
+        #   Q_g,R = g · A_Fenster · DNI · cos(theta) + q_int · A_Wohn
+        # cos(theta) = max(0, cos(Sonnenhoehe)·cos(Sonnenazimut − Fenster-
+        # azimut)) — direkter Strahleinfall auf das vertikale Fenster
+        # (Beam; Diffusanteil vernachlaessigt). Q_g,B (Estrich) = 0
+        # (mit Prof. Brueckl bestaetigt).
+        "solar_gains_enabled": True,        # solaren Fenstergewinn rechnen
+        "window_g_value": 0.7,              # g-Wert (Gesamtenergiedurchlass)
+        # FINAL (Juni 2026): Summe ueber 4 Fassaden mit Beam (DNI) +
+        # 0.5*Diffus (DHI). Aufteilung der Fensterflaeche auf die
+        # Himmelsrichtungen (Anteile, Summe ~1; suedbetontes EFH-Default).
+        "window_orientation_split": {
+            "north": 0.10, "south": 0.40, "east": 0.25, "west": 0.25,
+        },
+        "window_azimuth_deg": 180.0,        # DEPRECATED (ersetzt durch Split)
+        "internal_gains_w_per_m2": 5.0,     # DIN V 4108: Personen+Geraete
+        # Zusaetzlicher konstanter absoluter Gewinn-Offset [W] (Default 0).
+        "internal_gains_w": 0.0,
         # ------------------------------------------------------------------
         # Direkte Geometrie + U-Werte (Gebaeudegruppe, EMOS-Light Mai 2026)
         # Wenn gesetzt, werden diese Werte benutzt — sonst fallback auf

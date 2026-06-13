@@ -26,6 +26,10 @@ class TimeSeriesInput:
     par14a_curtailment_kw: float = 4.2
     par14a_curtailed_steps: list = field(default_factory=list)
 
+    # Vorberechnete solare + interne Raumgewinne Q_g,R [W] pro Step
+    # (Gebaeudegruppe Juni 2026). Leeres Array -> keine Gewinne modelliert.
+    room_gain_w: np.ndarray = field(default_factory=lambda: np.array([]))
+
 
 @dataclass
 class OptimizationResult:
@@ -44,6 +48,17 @@ class OptimizationResult:
     batt_soc_kwh: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_on: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Maximale el. WP-Leistung pro Zeitschritt — dynamisch aus T_aussen
+    # und Vorlauftemperatur ueber das Kennfeld berechnet. Wird als
+    # Obergrenze fuer hp_power_kw vom Solver eingehalten und dient als
+    # Hilfslinie im Dashboard-Plot (Mai 2026).
+    hp_max_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # WP-Modus pro Zeitschritt (Entweder-Oder zwischen FBH und WW —
+    # Projektgruppe Leistungsaufteilung, Mai 2026):
+    #   0 = FBH-Modus (W35-Vorlauf, hoher COP)
+    #   1 = WW-Modus  (W55-Vorlauf, niedriger COP)
+    # Wenn nur eine Senke aktiv ist (z.B. nur Heizung), bleibt das Feld leer.
+    hp_mode_ww: np.ndarray = field(default_factory=lambda: np.array([]))
     wallbox_power_kw: dict = field(default_factory=dict)
     # EV-SOC-Trajektorie pro Wallbox in kWh. Wird vom MILP-Optimizer als
     # explizite Zustandsvariable gefuehrt (Verlust 5 %/h waehrend Abwesen-
@@ -60,8 +75,13 @@ class OptimizationResult:
 
     # Thermische Fahrplaene — Raum (Innentemperatur, MILP-Zustandsvariable)
     indoor_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
-    # Waermeverlust des Raumes an die Aussenluft, UA*(T_innen-T_aus)/1000 [kW]
+    # Gesamter Waermeverlust des Raumes an die Aussenluft [kW]:
+    # direkter Pfad (Fenster+Dach+Lueftung) + Wandpfad (ueber T_W).
     heat_loss_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Wandtemperatur T_W (3-Speicher-Modell ETH, Juni 2026) [°C]
+    wall_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Solare + interne Raumgewinne Q_g,R [kW] (Gebaeudegruppe Juni 2026)
+    room_gain_kw: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Thermische Fahrplaene — Warmwasserspeicher
     ww_storage_temp_c: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -98,6 +118,13 @@ class OptimizationResult:
     baseline_cost_eur: Optional[float] = None
     savings_eur: Optional[float] = None
     savings_pct: Optional[float] = None
+
+    # Roher MILP-Objective-Wert in EUR, INKLUSIVE aller fiktiven Slack-
+    # Strafkosten und der Alterungskosten. Reine Solver-Steuerungsgroesse
+    # — fuer Debugging und Modell-Diagnose. ``total_cost_eur`` ist davon
+    # bewusst getrennt: dort stehen nur die echten Geldfluesse
+    # (grid_buy_cost - feed_in_revenue), keine virtuellen Strafen.
+    objective_value_eur: Optional[float] = None
 
     # Planungsfenster fuer die Dashboard-Visualisierung:
     # Pro MPC-Iteration (oder einmalig bei Day-Ahead/Baseline) drei Step-

@@ -434,6 +434,56 @@ with tab_config:
             "Einspeiseverguetung (ct/kWh)", 0.0, 99.0, float(general["feed_in_tariff_ct_kwh"]), 0.1,
         )
 
+    # §14a EnWG — Netzdrosselung (Testszenario)
+    _par14a_container = st.container(key=_wkey("par14a_section"))
+    with _par14a_container, st.expander("§14a Netzdrosselung (Test)", expanded=False):
+        par14a = config.setdefault("par14a", {})
+        par14a["enabled"] = st.checkbox(
+            "Netzdrosselung simulieren",
+            value=bool(par14a.get("enabled", False)),
+            help="Simuliert eine §14a-EnWG-Dimmung: der Netzbetreiber "
+                 "begrenzt im gewaehlten Zeitfenster die Summe der "
+                 "steuerbaren Lasten (Waermepumpe, Wallbox) auf eine "
+                 "reduzierte Leistung. Nur zum Testen der Funktion.",
+        )
+        par14a_on = bool(par14a["enabled"])
+        pc1, pc2, pc3 = st.columns(3)
+        par14a["curtailment_kw"] = pc1.number_input(
+            "Drossel-Leistung (kW)", 0.0, 30.0,
+            float(par14a.get("curtailment_kw", 4.2)), 0.1,
+            help="Obergrenze fuer die Summe der steuerbaren Lasten "
+                 "waehrend der Drosselung. §14a-Mindestwert: 4,2 kW.",
+            disabled=not par14a_on,
+        )
+        par14a["curtail_start_hour"] = int(pc2.number_input(
+            "Beginn (Uhr)", 0, 23,
+            int(par14a.get("curtail_start_hour", 17)), 1,
+            disabled=not par14a_on,
+        ))
+        par14a["curtail_end_hour"] = int(pc3.number_input(
+            "Ende (Uhr)", 0, 24,
+            int(par14a.get("curtail_end_hour", 20)), 1,
+            disabled=not par14a_on,
+        ))
+        if par14a_on:
+            s, e = par14a["curtail_start_hour"], par14a["curtail_end_hour"]
+            if s == e:
+                st.warning(
+                    "Beginn = Ende: kein Drosselfenster aktiv "
+                    "(die Drosselung greift dann nicht)."
+                )
+            else:
+                fenster = (
+                    f"{s:02d}:00–{e:02d}:00 Uhr" if s < e
+                    else f"{s:02d}:00–24:00 + 00:00–{e:02d}:00 Uhr"
+                )
+                st.caption(
+                    f"⚡ Drosselung auf **{par14a['curtailment_kw']:.1f} kW** "
+                    f"im Fenster **{fenster}** (taeglich). "
+                    "Betrifft Waermepumpe und Wallbox; Komfort darf der "
+                    "Solver dafuer weich verletzen (Slack)."
+                )
+
     # Stromtarif
     _tariff_container = st.container(key=_wkey("tariff_section"))
     with _tariff_container, st.expander("Dynamischer Stromtarif", expanded=False):
@@ -523,34 +573,19 @@ with tab_config:
                 config["pv"]["peak_power_kwp"] = total_kwp
 
                 # -------- Ertragsprognose-Modell --------
-                st.info(
-                    "ℹ️ **Hinweis zur Ertragsprognose:** Beide hier waehlbaren "
-                    "Modelle sind **Uebergangsloesungen**, bis die endgueltige "
-                    "Prognose (inkl. Intraday-Messwertkorrektur) feststeht."
-                )
-                _models = {
-                    "perez": "Perez (1990) — anisotrop, Standard",
-                    "isotropic": "Liu & Jordan (1963) — isotrop, alte EMOS",
-                }
-                _current = config["pv"].get("transposition_model", "perez")
-                if _current not in _models:
-                    _current = "perez"
-                _model_keys = list(_models.keys())
-                config["pv"]["transposition_model"] = st.selectbox(
-                    "Transpositionsmodell GHI → POA",
-                    _model_keys,
-                    index=_model_keys.index(_current),
-                    format_func=lambda k: _models[k],
-                    key=_wkey("pv_transposition_model"),
-                    help=(
-                        "Wie wird die horizontale Globalstrahlung (GHI) auf "
-                        "die geneigte Modulflaeche umgerechnet?\n\n"
-                        "• **Perez** beruecksichtigt Zirkumsolar- und "
-                        "Horizont-Helligkeit, ist an klaren Tagen genauer.\n"
-                        "• **Liu & Jordan** rechnet die Diffusstrahlung als "
-                        "gleichmaessig aus der Himmelshalbkugel — robuster, "
-                        "unterschaetzt aber meist."
-                    ),
+                # Modell ist fest auf Perez (1990) anisotrop gestellt — Sieger
+                # aus dem internen Vergleich gegen Liu&Jordan, EMOS_iso und
+                # HTW PVprog (siehe "PV Prognose Tool angepasst/FORECASTS.md":
+                # nRMSE 11.08 % unkalibriert, 8.77 % mit datenbasierter
+                # Kalibrierung k). Kein Selector mehr, damit Anwender nicht
+                # unbeabsichtigt auf das schlechtere isotrope Modell wechseln.
+                config["pv"]["transposition_model"] = "perez"
+                st.caption(
+                    "📡 **Ertragsprognose:** Perez (1990) anisotrop mit "
+                    "Spencer-Sonnenstand und Kasten-Luftmasse — bestes "
+                    "wetterbasiertes Modell aus dem internen Vergleich. "
+                    "Optionale Anlagen-Kalibrierung (`pv.k_calibration`) "
+                    "ueber das Standalone-Tool _PV Prognose Tool angepasst/_."
                 )
 
         with col_batt:
@@ -1615,6 +1650,19 @@ with tab_optimize:
         fig_el.add_trace(go.Scatter(x=ts, y=-result.grid_sell_kw, name="Einspeisung", line=dict(color="green")), row=1, col=1)
         if len(result.hp_power_kw) > 0:
             fig_el.add_trace(go.Scatter(x=ts, y=result.hp_power_kw, name="WP", line=dict(color="orange")), row=1, col=1)
+            # T-abhaengige Max-Leistung als gestrichelte Hilfslinie
+            # (Mai 2026): zeigt, dass die WP nicht immer 8 kW kann,
+            # sondern nur das, was Kennfeld + Aussentemperatur hergeben.
+            if hasattr(result, "hp_max_power_kw") and len(result.hp_max_power_kw) > 0:
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=result.hp_max_power_kw,
+                        name="WP max (T-abh.)",
+                        line=dict(color="orange", dash="dash", width=1),
+                        opacity=0.6,
+                    ),
+                    row=1, col=1,
+                )
         for wb_name, wb_arr in result.wallbox_power_kw.items():
             fig_el.add_trace(go.Scatter(x=ts, y=wb_arr, name=f"WB {wb_name}", line=dict(color="cyan")), row=1, col=1)
         if inp is not None:
@@ -1823,6 +1871,14 @@ with tab_optimize:
                 x=ts, y=result.indoor_temp_c, name="T_innen",
                 line=dict(color="tomato", width=2),
             ), row=row_idx, col=1)
+            # Wandtemperatur T_W (3-Speicher-Modell, ETH Juni 2026) — der
+            # traege Speicher zwischen Raum und Aussenluft. Nur vorhanden,
+            # wenn der Wandknoten aktiv ist.
+            if len(result.wall_temp_c) > 0:
+                fig_th.add_trace(go.Scatter(
+                    x=ts, y=result.wall_temp_c, name="T_Wand",
+                    line=dict(color="sienna", width=1, dash="dot"),
+                ), row=row_idx, col=1)
             fig_th.add_hline(
                 y=comfort_min, line_dash="dash", line_color="gray",
                 annotation_text=f"Komfort min {comfort_min:.0f} C",
@@ -1884,6 +1940,12 @@ with tab_optimize:
             fig_th.add_trace(go.Scatter(
                 x=ts, y=result.heat_loss_kw, name="Q Verlust (Raum -> Aussen)",
                 line=dict(color="dimgray", width=1.5, dash="dot"),
+            ), row=row_idx, col=1)
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe Juni 2026)
+        if len(result.room_gain_kw) > 0:
+            fig_th.add_trace(go.Scatter(
+                x=ts, y=result.room_gain_kw, name="Q Gewinn (solar + intern)",
+                line=dict(color="goldenrod", width=1.5),
             ), row=row_idx, col=1)
 
         fig_th.update_layout(height=150 * n_thermal_rows + 100, margin=dict(t=40))

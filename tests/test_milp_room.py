@@ -50,6 +50,9 @@ def _winter_cfg() -> dict:
     cfg["building"]["comfort_temp_min_c"] = 20.0
     cfg["building"]["comfort_temp_max_c"] = 24.0
     cfg["building"]["indoor_temp_c"] = 21.0
+    # Solare/interne Gewinne aus -> reine Heizbilanz (q_to_room ≈ UA·ΔT).
+    cfg["building"]["solar_gains_enabled"] = False
+    cfg["building"]["internal_gains_w_per_m2"] = 0.0
     # Haushalt klein — wir wollen die Heizenergie isoliert sehen.
     cfg["household"]["annual_consumption_kwh"] = 1000
     cfg["household"]["load_profile_id"] = ""
@@ -146,6 +149,28 @@ def test_heat_loss_kw_is_populated(winter_run):
     assert res.heat_loss_kw.size == len(res.indoor_temp_c)
     # Im Mittel positiv (Haus verliert Waerme bei -5 °C draussen).
     assert res.heat_loss_kw.mean() > 0
+
+
+def test_wall_temp_between_room_and_outside(winter_run):
+    """3-Speicher-Modell: Wandtemperatur T_W liegt zwischen Aussen und Raum.
+
+    Die Wand ist der traege Speicher zwischen Raumluft und Aussenluft —
+    im stationaeren Mittel muss ihre Temperatur zwischen beiden liegen.
+    """
+    cfg, inp, comps, res = winter_run
+    assert res.success
+    # Wandzustand muss befuellt sein (Wandknoten aktiv).
+    assert res.wall_temp_c.size == len(res.indoor_temp_c)
+
+    n = len(res.wall_temp_c)
+    start = n // 2  # zweite Tageshaelfte (eingeschwungen)
+    t_wall_mean = float(res.wall_temp_c[start:].mean())
+    t_in_mean = float(res.indoor_temp_c[start:].mean())
+    t_out_mean = float(inp.outside_temp_c[start:].mean())
+    assert t_out_mean < t_wall_mean < t_in_mean, (
+        f"T_Wand={t_wall_mean:.2f} nicht zwischen "
+        f"T_aussen={t_out_mean:.2f} und T_innen={t_in_mean:.2f}"
+    )
 
 
 def test_ufh_falls_back_when_building_disabled():

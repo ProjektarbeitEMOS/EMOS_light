@@ -90,6 +90,11 @@ class Wallbox(MILPComponent):
         phase_limits = self.PHASE_LIMITS.get(self.phases, self.PHASE_LIMITS[3])
         self.max_power_kw = min(self.max_power_kw, phase_limits["max_kw"])
         self.min_power_kw = max(self.min_power_kw, phase_limits["min_kw"])
+        # Defensive: bei untypischer Kombination (z.B. 3-phasig mit sehr
+        # kleiner max_power_kw) darf min nicht ueber max steigen — sonst
+        # koppelt add_on_off_power_link (power<=max*on & power>=min*on)
+        # zu on==0, die Wallbox koennte nie laden.
+        self.min_power_kw = min(self.min_power_kw, self.max_power_kw)
 
     # ------------------------------------------------------------------
     # Setup-Hook fuer preisgesteuerte Ladestrategie
@@ -224,6 +229,19 @@ class Wallbox(MILPComponent):
             f"wb_{self.name}_soc": make_var_array(
                 f"{prefix}_soc", num_steps, low=0.0, high=soc_max_kwh,
             ),
+            # Soft-Preisfilter: Slack-Variable fuer das Laden in den
+            # nicht-billigen Stunden. In add_constraints wird:
+            #   power[t] <= power_expensive_slack[t]   waehrend teurer Stunden
+            #   power_expensive_slack[t] == 0          waehrend billiger Stunden
+            # erzwungen — siehe Projektgruppe Penalty Slacks. Im Objective
+            # wird der Slack mit PENALTY_EV_EXPENSIVE bestraft. Damit
+            # vermeidet der Solver mathematisch teure Stunden, kann sie aber
+            # zur Notfall-Ladung (Departure-Target) nutzen, statt direkt
+            # in Infeasibility zu laufen.
+            f"wb_{self.name}_power_expensive_slack": make_var_array(
+                f"{prefix}_power_expensive_slack", num_steps,
+                low=0.0, high=self.max_power_kw,
+            ),
         }
 
     def add_constraints(self, model: Any, variables: dict, step_minutes: int) -> None:
@@ -263,7 +281,7 @@ class Wallbox(MILPComponent):
         )
 
         # 2) EV-Anwesenheit: ausserhalb der Anwesenheit hart auf 0
-        steps_per_hour = 60 // step_minutes
+        steps_per_hour = max(1, 60 // step_minutes)
         presence: list[bool] = []
         for t in range(num_steps):
             hour = (t // steps_per_hour) % 24
@@ -272,20 +290,40 @@ class Wallbox(MILPComponent):
             if not present_t:
                 model += (power[t] == 0, f"{prefix}_ev_absent_{t}")
 
-        # 3) Preisfilter — nur als hartes power=0-Constraint aktiv, wenn
-        # die Mindestreichweite NICHT erzwungen wird. Mit aktiver
-        # Mindestreichweite hat das Departure-Target Prioritaet (der
-        # Cost-Minimizer waehlt dabei sowieso natuerlich die billigsten
-        # Stunden, selbst wenn ein paar teurere noetig sind, um den
-        # Target zu erreichen). Sonst kann es bei zu engem Filter zu
-        # Infeasibility kommen.
-        if self._allowed_charging_steps is not None and not self.min_range_enabled:
+        # 3) Preisfilter als SOFT-Constraint via Slack-Variable
+        # (Projektgruppe Penalty Slacks, Mai 2026):
+        #   - In billigen Stunden (im Perzentil): power_expensive_slack = 0,
+        #     Laden ist "kostenneutral".
+        #   - In teuren Stunden: jedes kW Ladeleistung muss durch
+        #     ``power_expensive_slack[t]`` geroutet werden. Damit
+        #     Laden mathematisch durch PENALTY_EV_EXPENSIVE bestraft wird.
+        # Die harte Departure-Target-Garantie (Block 5) bleibt unangetastet
+        # — der Solver kann teure Stunden zur Notfall-Versorgung nutzen
+        # statt in Infeasibility zu laufen, zahlt aber pro kWh den
+        # vollen Slack-Tarif.
+        power_expensive_slack = variables[
+            f"wb_{self.name}_power_expensive_slack"
+        ]
+        if self._allowed_charging_steps is not None:
             for t in range(num_steps):
-                if t not in self._allowed_charging_steps:
+                if t in self._allowed_charging_steps:
                     model += (
-                        power[t] == 0,
-                        f"{prefix}_price_filter_{t}",
+                        power_expensive_slack[t] == 0,
+                        f"{prefix}_price_slack_zero_{t}",
                     )
+                else:
+                    model += (
+                        power[t] <= power_expensive_slack[t],
+                        f"{prefix}_price_slack_route_{t}",
+                    )
+        else:
+            # Kein Filter aktiv -> Slack ueberall auf 0, damit das
+            # Objective sauber bleibt.
+            for t in range(num_steps):
+                model += (
+                    power_expensive_slack[t] == 0,
+                    f"{prefix}_price_slack_zero_{t}",
+                )
 
         # 4) SOC-Bilanz
         #
@@ -328,7 +366,11 @@ class Wallbox(MILPComponent):
         if self.min_range_enabled:
             target_soc_kwh = self.target_soc * self.ev_capacity_kwh
             for t in range(num_steps):
-                was_present = presence[t - 1] if t > 0 else True
+                # Bei t=0 gibt es keine "vorherige" Anwesenheit -> mit
+                # presence[0] initialisieren, sonst entsteht eine Schein-
+                # Abfahrt am Horizontstart: startet das Auto abwesend und
+                # unter Ziel-SOC, waere soc[0] >= target sofort infeasible.
+                was_present = presence[t - 1] if t > 0 else presence[0]
                 if was_present and not presence[t]:
                     model += (
                         soc[t] >= target_soc_kwh,

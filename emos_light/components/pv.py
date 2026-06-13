@@ -73,9 +73,26 @@ class PVSystem(Component):
         self.temp_coefficient = config.get("temp_coefficient", -0.004)
         self.noct = config.get("noct", 45.0)
         self.albedo = config.get("albedo", 0.2)
-        # Transpositionsmodell GHI -> POA: "perez" (Default, anisotrop)
-        # oder "isotropic" (Liu & Jordan 1963, einfacher, aus alter EMOS).
+        # Transpositionsmodell GHI -> POA: "perez" (1990) ist produktiv
+        # gesetzt — bestes wetterbasiertes Modell aus dem internen
+        # Vergleich (siehe "PV Prognose Tool angepasst/FORECASTS.md").
+        # Die UI bietet keinen Wechsel mehr; "isotropic" (Liu & Jordan
+        # 1963) bleibt im Code als YAML-Override fuer Vergleichsrechnungen.
         self.transposition_model = config.get("transposition_model", "perez")
+        # Datenbasierte Kalibrierung (Standalone-Tool "PV Prognose Tool
+        # angepasst" liefert k aus Energy-Ratio auf historischen
+        # Anlagendaten — typisch 0.7..1.0 bei realen Verlusten ueber
+        # die 85 % System-Effizienz hinaus: Soiling, Spektral,
+        # Verschattung, Inverter-Clipping, MPPT, Alterung). Default 1.0
+        # = keine Kalibrierung. Siehe data/calibration.json im Tool.
+        self.k_calibration = float(config.get("k_calibration", 1.0))
+        # AC-Wechselrichter-Clipping (kW). None = kein Limit (Default).
+        # Wird oft kleiner als DC-Nennleistung dimensioniert ("DC/AC ratio");
+        # in dem Fall begrenzt der Wechselrichter die einspeisbare Leistung.
+        ac_limit_raw = config.get("ac_limit_kw")
+        self.ac_limit_kw: float | None = (
+            float(ac_limit_raw) if ac_limit_raw not in (None, 0, 0.0) else None
+        )
 
     def _degradation_factor(self) -> float:
         """Berechnet den Degradationsfaktor basierend auf dem Anlagenalter."""
@@ -170,6 +187,18 @@ class PVSystem(Component):
         # Degradation anwenden
         power_kw *= self._degradation_factor()
 
+        # Datenbasierte Kalibrierung (k=1.0 = aus). Anwenden VOR dem
+        # AC-Clipping, weil k systematische DC-seitige Verluste abbildet
+        # (Soiling, Modul-Missmatch, Verschattung). Das AC-Limit setzt
+        # dagegen die Wechselrichter-Hardware-Grenze.
+        if self.k_calibration != 1.0:
+            power_kw = power_kw * self.k_calibration
+
+        # AC-Wechselrichter-Clipping (oben gekappt). Realistischer als
+        # einfach durchziehen, wenn DC-Anlage > AC-Wechselrichter.
+        if self.ac_limit_kw is not None:
+            power_kw = np.minimum(power_kw, self.ac_limit_kw)
+
         return np.maximum(power_kw, 0.0)
 
     def _estimate_simple(self, ghi_series: np.ndarray) -> np.ndarray:
@@ -178,4 +207,9 @@ class PVSystem(Component):
         normalized_ghi = ghi_series / ghi_stc
         correction = self._degradation_factor() * self.system_efficiency
         generation_kw = self.peak_power_kwp * normalized_ghi * correction
+        # k + AC-Limit auch im Fallback-Pfad konsistent anwenden.
+        if self.k_calibration != 1.0:
+            generation_kw = generation_kw * self.k_calibration
+        if self.ac_limit_kw is not None:
+            generation_kw = np.minimum(generation_kw, self.ac_limit_kw)
         return np.maximum(generation_kw, 0.0)

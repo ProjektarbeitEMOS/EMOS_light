@@ -4,39 +4,63 @@ Berechnet temperaturabhaengigen Heizwaermebedarf und Warmwasserbedarf
 und stellt seit der MILP-Erweiterung Mai 2026 die Raumlufttemperatur
 T_innen als eigene Zustandsvariable im Solver bereit.
 
-MILP-Erweiterung Mai 2026 — Raum als Zustandsvariable
-=====================================================
+3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026)
+=========================================================
 
-Bis April 2026 wurde die Innentemperatur nicht modelliert; der
-Heizwaermebedarf kam aus :meth:`calculate_heating_demand` als feste
-Zeitreihe in den Solver. Damit "sah" der Solver nur den Estrich, nicht
-aber das eigentliche Komfortziel (T_innen im Band) und nicht die
-Verluste an die Aussenluft.
+Neustrukturierung der Waermebilanz nach der Schweizer Studie. Statt
+einem Raumknoten mit pauschalem UA-Verlust werden drei thermische
+Speicher gefuehrt:
 
-Mit der MILP-Erweiterung uebernimmt der Solver die Raum-Energiebilanz
-explizit:
+    1. Estrich/Fussboden  T_B   (Komponente UnderfloorHeating)
+    2. Raumluft           T_R = t_innen   (diese Komponente)
+    3. Aussenwand         T_W = t_wand    (diese Komponente, NEU)
 
-    C_room · (T_innen[t] − T_innen[t-1]) = (q_floor_to_room[t]
-        − q_loss_outside[t]) · dt
+Das Heizwasser (urspruenglich Speicher 1 der ETH-Studie) wird gemaess
+Korrektur **K2** quasistationaer eliminiert (dT_RL/dt = 0, Zeitkonstante
+≪ 15 min) — uebrig bleibt, dass die WP-Waermeleistung direkt in den
+Estrich fliesst (Korrektur **K1**: ``Q_WP`` ist Entscheidungsvariable,
+nicht das bilineare ``V_WP·T_RL``). Das entspricht exakt dem bisherigen
+``q_floor_in`` von EMOS Light.
+
+Raum-Energiebilanz (Speicher 3, Korrektur **K3**):
+
+    C_R · (T_R[t] − T_R[t-1]) / dt = q_floor_to_room[t]
+        − k_RW·A_W · (T_R[t] − T_W[t-1])      (Verlust ueber traege Wand)
+        − UA_direkt · (T_R[t] − T_A[t])       (Fenster + Dach + Lueftung,
+                                               OHNE Traegheit)
+        + Q_g,R[t]                            (interne + solare Gewinne)
+
+Wand-Energiebilanz (Speicher 4):
+
+    C_W · (T_W[t] − T_W[t-1]) / dt =
+          k_RW·A_W · (T_R[t] − T_W[t-1])      (Raum -> Wand)
+        − k_WA·A_W · (T_W[t-1] − T_A[t])      (Wand -> Aussen)
 
 mit:
 
-    q_floor_to_room[t] = h_surface · A_floor / 1000
-                         · (T_floor[t-1] − T_innen[t-1])       [kW]
-    q_loss_outside[t]  = UA · (T_innen[t-1] − T_aussen[t])
-                         / 1000                                 [kW]
-    C_room             = building.shell_capacity_kwh_per_k     [kWh/K]
-    UA                 = building.ua_w_per_k                   [W/K]
+    C_R       = air_capacity_kwh_per_k          (nur Luft! die Wandmasse
+                sitzt jetzt im T_W-Knoten — kein Doppelzaehlen)
+    C_W       = wall_capacity_kwh_per_k         (DIN EN ISO 13786)
+    UA_direkt = ua_direct_w_per_k               (total_ua − Wandtransmission)
+    k_RW,k_WA = Wand-Uebergangszahlen, an u_value_wall verankert
 
-Diskretisierung: **explizites Euler** — alle Fluesse zum Zeitpunkt t
-werden aus Zustaenden bei t-1 berechnet. Begruendung: bei dt=15 min
-und thermischen Zeitkonstanten τ ≈ 10–100 h (Gebaeudehuelle) gilt
-dt ≪ τ; das explizite Verfahren ist hier numerisch stabil und haelt
-alle Constraints rein affin in den Entscheidungsvariablen
-(LP-Kompatibilitaet). Der "prev"-Wert bei t=0 ist der Initialwert
-:attr:`indoor_temp` (Raumtemperatur *vor* dem ersten Step) — t_innen[0]
-wird **nicht** an indoor_temp festgeklammert, sondern aus der
-Bilanz bei t=0 dynamisch berechnet (vermeidet ueberbestimmten Solver).
+Diskretisierung: Die langsamen Knoten (Estrich τ≈3-4 h, Wand τ≈2-3 h)
+laufen mit **explizitem Euler** (Fluesse aus t-1), der schnelle Raum-
+luftknoten (reine Luft, τ≈Minuten) wird **implizit** gefuehrt
+(Verlust- und Estrich->Raum-Term auf T_R[t]). Implizit-fuer-den-
+schnellen-Knoten ist unbedingt stabil und bleibt linear/LP-kompatibel
+— ohne das wuerde explizites Euler bei dt=15 min oszillieren, weil
+dt > τ_Luft. Der Raum->Wand-Fluss nutzt in beiden Bilanzen denselben
+Ausdruck k_RW·A_W·(T_R[t]−T_W[t-1]) -> energetisch konserviert.
+
+Anmerkung zu den k-Werten: die Gebaeudegruppe gibt k_RW=2.5 und
+k_WA=25 W/(m²·K) an — das sind Oberflaechen-Filmkoeffizienten, deren
+Reihenschaltung U_eff≈2.27 W/(m²·K) ergaebe (Daemmung fehlt, ~10x zu
+leck fuer ein KfW-Haus). Default ``wall_anchor_to_u_value=True`` koppelt
+daher die Reihen-U der Wand an ``u_value_wall`` (physikalisch konsistent
+zu Fenster/Dach) und nutzt nur das *Verhaeltnis* k_RW:k_WA als
+Aufteilung der Wandkapazitaet. Mit ``wall_anchor_to_u_value=False``
+werden die rohen Werte verwendet (Vergleichsrechnungen).
 
 Komfort wird als Soft-Constraint mit Slack umgesetzt:
     T_min_comfort ≤ T_innen[t] + slack_low[t]
@@ -89,6 +113,55 @@ class Building(MILPComponent):
         self.volume_factor = config.get("volume_factor", 3.1)
         # UA-Wert (W/K): optional explizit, sonst automatisch aus Heizlast
         self._ua_w_per_k_config = config.get("heat_loss_coefficient_w_per_k")
+
+        # ------------------------------------------------------------------
+        # 3-Speicher-Modell (ETH Zuerich, Gebaeudegruppe Juni 2026):
+        # Wand als eigener Zustand T_W zwischen Raum und Aussenluft.
+        # ------------------------------------------------------------------
+        # Wand-Uebergangszahlen k (Oberflaechen-Filmkoeffizienten der
+        # Gebaeudegruppe). k_RW raumseitig, k_WA aussenseitig.
+        self.wall_k_rw_w_m2_k = float(config.get("wall_k_rw_w_m2_k", 2.5))
+        self.wall_k_wa_w_m2_k = float(config.get("wall_k_wa_w_m2_k", 25.0))
+        # True: Reihen-U der Wand an u_value_wall ankern (siehe Modul-Doku),
+        # k_RW:k_WA nur als Aufteilungsverhaeltnis. False: rohe k-Werte.
+        self.wall_anchor_to_u_value = bool(
+            config.get("wall_anchor_to_u_value", True)
+        )
+        # Anfangstemperatur der Wandmasse (None -> indoor_temp).
+        _iwt = config.get("initial_wall_temp_c")
+        self.initial_wall_temp_c = (
+            float(_iwt) if _iwt is not None else self.indoor_temp
+        )
+        # Solare + interne Raumgewinne Q_g,R (Gebaeudegruppe, FINAL Juni 2026):
+        #   Q_g,R = Q_solar,gesamt + q_int·A_Wohn         (Q_g,B = 0)
+        #   Q_solar,gesamt = SUM_i g·A_Fenster,i·(I·cos(theta_i) + 0.5·D)
+        # ueber die vier Fassaden i ∈ {N, O, S, W}; I = Direktstrahlung (DNI),
+        # D = Diffusstrahlung (DHI), cos(theta_i) = Strahleinfall je Fassade.
+        # Berechnung in :meth:`compute_room_gain_w`; hier nur die Parameter.
+        self.solar_gains_enabled = bool(config.get("solar_gains_enabled", True))
+        self.window_g_value = float(config.get("window_g_value", 0.7))
+        # DEPRECATED (Juni 2026): vor der Vier-Fassaden-Formel hatte das
+        # Modell nur EINE Fensterausrichtung. Wird nicht mehr genutzt, bleibt
+        # fuer Rueckwaertskompatibilitaet lesbar.
+        self.window_azimuth_deg = float(config.get("window_azimuth_deg", 180.0))
+        # Aufteilung der Fensterflaeche auf die vier Himmelsrichtungen
+        # (Anteile, Summe ~1). Default: suedbetontes EFH.
+        self.window_orientation_split = dict(config.get(
+            "window_orientation_split",
+            {"north": 0.10, "south": 0.40, "east": 0.25, "west": 0.25},
+        ))
+        self.internal_gains_w_per_m2 = float(
+            config.get("internal_gains_w_per_m2", 5.0)
+        )
+        # Zusaetzlicher absoluter Offset [W] (Default 0).
+        self.internal_gains_w = float(config.get("internal_gains_w", 0.0))
+        # Konstanter interner Gewinn (DIN V 4108: q_int·A_Wohn + Offset) [W].
+        self.internal_gain_w_const = (
+            self.internal_gains_w_per_m2 * self.heated_area_m2
+            + self.internal_gains_w
+        )
+        # Vorberechnete Q_g,R-Zeitreihe [W] — von prepare() aus inp gefuellt.
+        self._q_g_r_w: np.ndarray | None = None
 
         # ------------------------------------------------------------------
         # Direkte Geometrie + U-Werte (Gebaeudegruppe, Mai 2026)
@@ -243,6 +316,72 @@ class Building(MILPComponent):
         if delta_design <= 0:
             return 0.0
         return self.design_heating_load_kw * 1000.0 / delta_design
+
+    # ========================================================================
+    # 3-Speicher-Modell: Wandknoten T_W (ETH Zuerich, Juni 2026)
+    # ========================================================================
+
+    @property
+    def wall_node_area_m2(self) -> float:
+        """Wirksame Wandflaeche fuer den T_W-Knoten (Netto-Aussenwand)."""
+        return self.wall_area_net_m2
+
+    @property
+    def room_capacity_kwh_per_k(self) -> float:
+        """Waermekapazitaet des Raumknotens C_R im 3-Speicher-Modell.
+
+        Nur die **Raumluft** — die Wandmasse sitzt jetzt im eigenen
+        T_W-Knoten (:attr:`wall_capacity_kwh_per_k`). Wuerde man hier die
+        Huellkapazitaet (Wand+Luft) nehmen, waere die Wandmasse doppelt
+        gezaehlt.
+        """
+        return self.air_capacity_kwh_per_k
+
+    @property
+    def wall_conductance_rw_w_per_k(self) -> float:
+        """Leitwert Raum -> Wandkern k_RW·A_W [W/K].
+
+        Mit ``wall_anchor_to_u_value`` wird die Reihenschaltung
+        (k_RW, k_WA) so skaliert, dass ihr effektives U dem physikalischen
+        Wand-U-Wert (``u_value_wall``) entspricht — die rohen k-Werte der
+        Gebaeudegruppe sind Oberflaechen-Filme und wuerden die Wand sonst
+        ~10x zu leck machen. Das Verhaeltnis k_RW:k_WA bleibt erhalten.
+        """
+        return self._wall_conductances_w_per_k()[0]
+
+    @property
+    def wall_conductance_wa_w_per_k(self) -> float:
+        """Leitwert Wandkern -> Aussenluft k_WA·A_W [W/K]."""
+        return self._wall_conductances_w_per_k()[1]
+
+    def _wall_conductances_w_per_k(self) -> tuple[float, float]:
+        """(G_RW, G_WA) in W/K fuer die beiden Wand-Halbpfade."""
+        a_w = self.wall_node_area_m2
+        k_rw, k_wa = self.wall_k_rw_w_m2_k, self.wall_k_wa_w_m2_k
+        if k_rw <= 0 or k_wa <= 0 or a_w <= 0:
+            return 0.0, 0.0
+        if self.wall_anchor_to_u_value:
+            # Reihen-U auf u_value_wall ankern, Verhaeltnis k_RW:k_WA als
+            # Aufteilung der Gesamt-Widerstaende beibehalten.
+            r_rw, r_wa = 1.0 / k_rw, 1.0 / k_wa
+            r_total_target = 1.0 / self.u_value_wall  # physikalische Wand
+            scale = r_total_target / (r_rw + r_wa)
+            k_rw_eff = 1.0 / (r_rw * scale)
+            k_wa_eff = 1.0 / (r_wa * scale)
+        else:
+            k_rw_eff, k_wa_eff = k_rw, k_wa
+        return k_rw_eff * a_w, k_wa_eff * a_w
+
+    @property
+    def ua_direct_w_per_k(self) -> float:
+        """Direkter (traegheitsfreier) Verlustleitwert Raum -> Aussen [W/K].
+
+        Alles ausser der opaken Aussenwand: Fenster + Dach/Bodenplatte +
+        Lueftung. Die Wand laeuft im 3-Speicher-Modell ueber den traegen
+        T_W-Knoten und ist hier daher herausgerechnet (Korrektur K3).
+        """
+        wall_transmission = self.wall_area_net_m2 * self.u_value_wall
+        return max(0.0, self.total_ua_w_per_k - wall_transmission)
 
     # ========================================================================
     # Estrich-Kapazitaet (Schicht ueber l·b mit d_Estrich)
@@ -405,8 +544,128 @@ class Building(MILPComponent):
         return "room"
 
     def prepare(self, inp: Any) -> None:
-        """Aussentemperatur-Zeitreihe fuer Verlustterm puffern."""
+        """Aussentemperatur und Raumgewinne Q_g,R fuer den Solver puffern."""
         self._t_aus = np.asarray(inp.outside_temp_c, dtype=float)
+        n = len(self._t_aus)
+        # Q_g,R: bevorzugt die in scenario.build_time_series_input vorbe-
+        # rechnete Zeitreihe (enthaelt den Sonnenstand-abhaengigen Solar-
+        # anteil). Fehlt sie (z.B. Optimizer ohne Wetterkontext), nur den
+        # konstanten internen Anteil ansetzen.
+        rg = getattr(inp, "room_gain_w", None)
+        if rg is not None and len(rg) >= n and n > 0:
+            self._q_g_r_w = np.asarray(rg[:n], dtype=float)
+        else:
+            self._q_g_r_w = np.full(n, self.internal_gain_w_const, dtype=float)
+
+    @property
+    def window_areas_by_orientation(self) -> dict:
+        """Fensterflaeche je Fassade {EMOS-Azimut_deg: A_i [m2]}.
+
+        Verteilt die Gesamt-Fensterflaeche ``window_area_m2`` ueber
+        ``window_orientation_split`` auf Nord (0deg), Ost (90deg),
+        Sued (180deg), West (270deg).
+        """
+        s = self.window_orientation_split
+        a = self.window_area_m2
+        return {
+            0.0: a * float(s.get("north", 0.0)),
+            90.0: a * float(s.get("east", 0.0)),
+            180.0: a * float(s.get("south", 0.0)),
+            270.0: a * float(s.get("west", 0.0)),
+        }
+
+    def compute_room_gain_w(
+        self,
+        timestamps: list,
+        ghi_w_m2: np.ndarray | None,
+        dni_w_m2: np.ndarray | None,
+        latitude: float | None,
+        longitude: float | None,
+        dhi_w_m2: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Berechnet Q_g,R (solar + intern) als Zeitreihe in W.
+
+        FINALE Formel der Gebaeudegruppe (Juni 2026), summiert ueber die
+        vier Fassaden i in {Nord, Ost, Sued, West}:
+
+            Q_solar,gesamt = SUM_i g * A_Fenster,i * (I*cos(theta_i) + 0.5*D)
+            cos(theta_i)   = max(0, cos(gamma_S) * cos(alpha_S - alpha_E,i))
+
+        mit I = Direktstrahlung (DNI), D = Diffusstrahlung (DHI), gamma_S =
+        Sonnenhoehe, alpha_S = Sonnenazimut, alpha_E,i = Fassadenazimut
+        (EMOS-Konvention 0=N, 90=O, 180=S, 270=W — gleiche Konvention fuer
+        Sonne und Fenster, daher ohne das Minus aus dem Gebaeudegruppen-
+        Dokument, das nur deren Azimut-Offset ausglich). 0.5*D ist der
+        Diffusanteil auf eine vertikale Flaeche (Sichtfaktor 0.5 zum Himmel).
+        I/D kommen aus den Wetterdaten, sonst aus der DISC-Zerlegung der GHI.
+        Dazu der konstante interne Anteil (DIN V 4108).
+        """
+        import math
+
+        n = len(timestamps)
+        internal = float(self.internal_gain_w_const)
+        gains = np.full(n, internal, dtype=float)
+        if (
+            not self.solar_gains_enabled
+            or ghi_w_m2 is None
+            or latitude is None
+            or longitude is None
+            or n == 0
+            or len(ghi_w_m2) < n
+        ):
+            return gains
+
+        from emos_light.data.solar import (
+            solar_position,
+            detect_timezone_offset,
+            _disc_decomposition,
+        )
+
+        ghi = np.asarray(ghi_w_m2, dtype=float)
+        dni_in = (
+            np.asarray(dni_w_m2, dtype=float) if dni_w_m2 is not None else None
+        )
+        dhi_in = (
+            np.asarray(dhi_w_m2, dtype=float) if dhi_w_m2 is not None else None
+        )
+        # API-Strahlung nur nutzen, wenn der Datensatz auch einen echten
+        # Diffusanteil liefert. Synthetisches Wetter setzt DNI/DHI auf 0 —
+        # dann ueber die DISC-Zerlegung der GHI dekomponieren (liefert
+        # konsistent Beam UND Diffus), statt mit DHI=0 den Diffusanteil
+        # stillschweigend zu verlieren.
+        have_api = (
+            dni_in is not None and dhi_in is not None
+            and len(dni_in) >= n and len(dhi_in) >= n
+            and float(np.nanmax(dhi_in)) > 0.0
+        )
+        tz = detect_timezone_offset(timestamps[0].date())
+        elevation, azimuth = solar_position(timestamps, latitude, longitude, tz)
+        doy = timestamps[0].timetuple().tm_yday
+        g = self.window_g_value
+        # Fensterflaeche je Fassade {EMOS-Azimut: A_i}
+        areas = self.window_areas_by_orientation
+
+        for i in range(n):
+            elev = float(elevation[i])
+            if elev <= 0.0:
+                continue
+            # Direkt-/Diffusstrahlung fuer diesen Schritt (API oder DISC)
+            if have_api:
+                dni, dhi = float(dni_in[i]), float(dhi_in[i])
+            else:
+                cos_zenith = math.sin(math.radians(elev))
+                dni, dhi = _disc_decomposition(float(ghi[i]), cos_zenith, doy)
+            cos_elev = math.cos(math.radians(elev))
+            diffuse = 0.5 * dhi                 # Sichtfaktor 0.5 zum Himmel
+            az_s = float(azimuth[i])
+            for az_e, area in areas.items():
+                if area <= 0.0:
+                    continue
+                cos_inc = cos_elev * math.cos(math.radians(az_s - az_e))
+                if cos_inc < 0.0:
+                    cos_inc = 0.0              # Strahl von hinten -> kein Beam
+                gains[i] += g * area * (dni * cos_inc + diffuse)
+        return gains
 
     def get_optimization_variables(self, num_steps: int, model: Any) -> dict:
         """Erstellt T_innen-Zustandsvariable plus Komfort-Slacks.
@@ -416,21 +675,62 @@ class Building(MILPComponent):
                 Komfortbereich (Komfort kommt aus den Slacks, nicht aus
                 harten Bounds), damit Auskuehlen/Ueberhitzen darstellbar
                 bleibt.
-            t_innen_slack_low[t], t_innen_slack_high[t]:
-                Unterschreitung/Ueberschreitung des Komfortbands in K,
+            t_innen_slack_low_comfort[t]: Unterschreitung in der Komfortzone
+                (bis 0.5 K), milderer Penalty (P_COMFORT).
+            t_innen_slack_low_critical[t]: Unterschreitung darueber hinaus,
+                schaerferer Penalty (P_CRITICAL). Unbeschraenkt.
+            t_innen_slack_high[t]: Ueberschreitung des Komfortbands in K,
                 wird im Optimizer mit UNMET_HEAT_PENALTY_CT bestraft.
+
+        Hintergrund (Projektgruppe Penalty Slacks): die Unterschreitung
+        wird in zwei Zonen unterteilt, weil eine kleine Komfortabweichung
+        (z.B. 0.3 K kuehler als Soll) anders zu bewerten ist als ein
+        deutliches Unterkuehlen (z.B. 2 K). Im Objective werden beide
+        Slacks mit einem ueber die thermische Masse C_th skalierten
+        Penalty multipliziert, damit die K -> ct-Umrechnung physikalisch
+        konsistent ist (analog zu ww_slack in kWh).
         """
+        # Obergrenzen grosszuegig: im Sommer/Hitze laeuft die Wand gegen
+        # die Aussenluft (T_W -> ~T_A), und der Raum kann ohne aktive
+        # Kuehlung ueber den Komfortpunkt steigen. Ein zu enges
+        # comfort_max+10 (~34 °C) macht den Solver bei T_aussen ≳ 38 °C
+        # infeasible (die Wandbilanz ist eine Gleichung ohne Schlupf).
+        # +35 K deckt jede realistische Hitzeperiode ab; die Schranke
+        # bindet im Normalbetrieb nie (Komfort kommt aus Slacks/Lueftung).
+        t_hi = self.comfort_temp_max_c + 35.0
         return {
             "t_innen": make_var_array(
                 "t_innen", num_steps,
                 low=self.comfort_temp_min_c - 10.0,
-                high=self.comfort_temp_max_c + 10.0,
+                high=t_hi,
             ),
-            "t_innen_slack_low": make_var_array(
-                "t_innen_slack_low", num_steps, low=0.0,
+            # Wandtemperatur T_W (3-Speicher-Modell). Generoes bebounded —
+            # die Wand kann bis nahe Aussenluft auskuehlen oder aufheizen.
+            "t_wand": make_var_array(
+                "t_wand", num_steps,
+                low=self.design_temp - 10.0,
+                high=t_hi,
+            ),
+            "t_innen_slack_low_comfort": make_var_array(
+                "t_innen_slack_low_comfort", num_steps,
+                low=0.0, high=0.5,
+            ),
+            "t_innen_slack_low_critical": make_var_array(
+                "t_innen_slack_low_critical", num_steps, low=0.0,
             ),
             "t_innen_slack_high": make_var_array(
                 "t_innen_slack_high", num_steps, low=0.0,
+            ),
+            # Freie Lueftung / Fensteroeffnen [kW]: laesst den Raum ueber-
+            # schuessige Waerme kostenfrei abgeben. Noetig, wenn ein starker
+            # Solargewinn (Q_g,R kann an grossen Suedfenstern zweistellige
+            # kW erreichen) die Verluste deutlich uebersteigt — sonst wuerde
+            # T_innen ueber jede Schranke steigen und das Modell infeasible.
+            # Physikalisch: Bewohner oeffnet die Fenster, wenn es zu warm
+            # wird. Unbestraft (Lueften kostet nichts); der Solver lueftet
+            # daher nur den Ueberschuss oberhalb des Komfortbands weg.
+            "room_heat_dump": make_var_array(
+                "room_heat_dump", num_steps, low=0.0,
             ),
         }
 
@@ -448,11 +748,45 @@ class Building(MILPComponent):
         # ohne step_minutes auf — wir brauchen es dort fuer dt_h).
         self._step_minutes_cached = step_minutes
         t_innen = variables["t_innen"]
-        slack_low = variables["t_innen_slack_low"]
+        slack_low_comfort = variables["t_innen_slack_low_comfort"]
+        slack_low_critical = variables["t_innen_slack_low_critical"]
         slack_high = variables["t_innen_slack_high"]
+
+        # ------------------------------------------------------------------
+        # Wand-Energiebilanz (Speicher 4), explizites Euler fuer die traege
+        # Wandmasse; der Raum->Wand-Fluss nutzt T_R[t] (gleicher Ausdruck
+        # wie in heat_demand -> energetisch konserviert).
+        #   C_W·(T_W[t]−T_W_prev)/dt = G_RW·(T_R[t]−T_W_prev)
+        #                              − G_WA·(T_W_prev−T_A[t])
+        # ------------------------------------------------------------------
+        t_wand = variables.get("t_wand")
+        if t_wand is not None and self._t_aus is not None:
+            c_w = self.wall_capacity_kwh_per_k             # [kWh/K]
+            g_rw_kw = self.wall_conductance_rw_w_per_k / 1000.0   # [kW/K]
+            g_wa_kw = self.wall_conductance_wa_w_per_k / 1000.0   # [kW/K]
+            dt_h = step_hours(step_minutes)
+            if c_w > 0:
+                for t in range(len(t_wand)):
+                    tw_prev = (
+                        self.initial_wall_temp_c if t == 0 else t_wand[t - 1]
+                    )
+                    t_aus_t = float(self._t_aus[t])
+                    model += (
+                        c_w * (t_wand[t] - tw_prev) / dt_h
+                        == g_rw_kw * (t_innen[t] - tw_prev)
+                        - g_wa_kw * (tw_prev - t_aus_t),
+                        f"t_wand_balance_{t}",
+                    )
+
         for t in range(len(t_innen)):
+            # Unterschreitung: zwei Zonen — bis 0.5 K Komfortzone,
+            # darueber Notfallzone. Die obere Schranke der Komfort-
+            # Slack-Variable ist 0.5 K (siehe get_optimization_variables),
+            # sodass der Solver bei groesseren Unterschreitungen
+            # automatisch in die teurere Critical-Variable ueberlaeuft.
             model += (
-                t_innen[t] + slack_low[t] >= self.comfort_temp_min_c,
+                t_innen[t] + slack_low_comfort[t] + slack_low_critical[t]
+                >= self.comfort_temp_min_c,
                 f"t_innen_comfort_min_{t}",
             )
             model += (
@@ -464,24 +798,58 @@ class Building(MILPComponent):
     # Bilanz-Beitraege fuer die Raum-Senke
     # ------------------------------------------------------------------
 
+    def _room_gain_w_at(self, t: int) -> float:
+        """Q_g,R [W] im Schritt t (aus prepare; Fallback: interner Anteil)."""
+        if self._q_g_r_w is not None and t < len(self._q_g_r_w):
+            return float(self._q_g_r_w[t])
+        return float(self.internal_gain_w_const)
+
     def heat_demand(self, variables: dict, t: int, sink: str) -> Any:
         """Demand-Seite der Raum-Energiebilanz fuer Phase E.
 
-        Liefert C_room·(T_innen[t]−T_innen_prev)/dt + UA·(T_innen_prev−T_aus[t])/1000.
-        Zusammen mit ``heat_supply("room") = q_floor_to_room[t]`` (aus
-        UFH) entsteht die explizite-Euler-Raumbilanz.
+        3-Speicher-Modell (Wandknoten vorhanden): Raum implizit gefuehrt,
+            C_R·(T_R[t]−T_R_prev)/dt + G_RW·(T_R[t]−T_W_prev)
+                + UA_direkt·(T_R[t]−T_A[t]) − Q_g,R
+        zusammen mit ``heat_supply("room") = q_floor_to_room[t]`` (aus UFH).
+
+        Fallback (kein Wandknoten): altes 1-Knoten-Modell mit
+        Huellkapazitaet und pauschalem UA-Verlust (explizit).
         """
         if sink != "room" or self._t_aus is None:
             return 0.0
 
         t_innen = variables["t_innen"]
-        c_room = self.shell_capacity_kwh_per_k        # [kWh/K]
-        ua_kw_per_k = self.ua_w_per_k / 1000.0        # [kW/K]
+        t_wand = variables.get("t_wand")
         dt_h = step_hours(self._step_minutes_cached)
-
-        prev = self.indoor_temp if t == 0 else t_innen[t - 1]
+        t_in_prev = self.indoor_temp if t == 0 else t_innen[t - 1]
         t_aus_t = float(self._t_aus[t])
-        return c_room * (t_innen[t] - prev) / dt_h + ua_kw_per_k * (prev - t_aus_t)
+
+        if t_wand is None:
+            # Fallback: pauschaler UA-Verlust, Huellkapazitaet, explizit.
+            c_room = self.shell_capacity_kwh_per_k
+            ua_kw_per_k = self.ua_w_per_k / 1000.0
+            return (
+                c_room * (t_innen[t] - t_in_prev) / dt_h
+                + ua_kw_per_k * (t_in_prev - t_aus_t)
+            )
+
+        # 3-Speicher-Modell: Raum implizit (Verluste auf T_R[t]),
+        # Wand explizit (T_W_prev).
+        c_room = self.room_capacity_kwh_per_k                 # nur Luft [kWh/K]
+        g_rw_kw = self.wall_conductance_rw_w_per_k / 1000.0   # [kW/K]
+        ua_direct_kw = self.ua_direct_w_per_k / 1000.0        # [kW/K]
+        q_g_r_kw = self._room_gain_w_at(t) / 1000.0           # [kW]
+        tw_prev = self.initial_wall_temp_c if t == 0 else t_wand[t - 1]
+        # Freie Lueftung gibt ueberschuessige Waerme ab (room_heat_dump >= 0).
+        dump = variables.get("room_heat_dump")
+        dump_t = dump[t] if dump is not None else 0.0
+        return (
+            c_room * (t_innen[t] - t_in_prev) / dt_h
+            + g_rw_kw * (t_innen[t] - tw_prev)
+            + ua_direct_kw * (t_innen[t] - t_aus_t)
+            - q_g_r_kw
+            + dump_t
+        )
 
     # add_constraints wird vom Optimizer aufgerufen — wir nutzen den
     # Aufruf, um step_minutes zwischenzuspeichern (heat_demand braucht es).
@@ -490,17 +858,41 @@ class Building(MILPComponent):
     def extract_result(
         self, result: Any, variables: dict, num_steps: int, dt_h: float,
     ) -> None:
-        """Innentemperatur und Verlustleistung in das Ergebnis schreiben."""
+        """Innen-/Wandtemperatur und Verlustleistung in das Ergebnis schreiben."""
         t_innen_vals = np.array(
             [v.varValue or 0.0 for v in variables["t_innen"]]
         )
         result.indoor_temp_c = t_innen_vals
-        if self._t_aus is not None:
-            # Verlust mit dem "prev"-Wert konsistent zum Modell: bei t=0
-            # ist prev = indoor_temp (initial), sonst t_innen[t-1].
+
+        t_wand_var = variables.get("t_wand")
+        t_aus = self._t_aus[:num_steps] if self._t_aus is not None else None
+
+        if t_wand_var is not None:
+            t_wand_vals = np.array([v.varValue or 0.0 for v in t_wand_var])
+            result.wall_temp_c = t_wand_vals
+            if t_aus is not None:
+                # Gesamter Verlust an die Aussenluft = direkter Pfad
+                # (Fenster+Dach+Lueftung, auf T_R[t]) + Wandpfad (Wand ->
+                # Aussen, auf T_W[t-1] konsistent zur Wandbilanz).
+                tw_prev = np.concatenate(
+                    ([self.initial_wall_temp_c], t_wand_vals[:-1])
+                )
+                ua_direct_kw = self.ua_direct_w_per_k / 1000.0
+                g_wa_kw = self.wall_conductance_wa_w_per_k / 1000.0
+                result.heat_loss_kw = (
+                    ua_direct_kw * (t_innen_vals - t_aus)
+                    + g_wa_kw * (tw_prev - t_aus)
+                )
+        elif t_aus is not None:
+            # Fallback (kein Wandknoten): pauschaler UA-Verlust, prev-Wert
+            # konsistent zum 1-Knoten-Modell.
             prev = np.concatenate(([self.indoor_temp], t_innen_vals[:-1]))
             ua_kw_per_k = self.ua_w_per_k / 1000.0
-            result.heat_loss_kw = ua_kw_per_k * (prev - self._t_aus[:num_steps])
+            result.heat_loss_kw = ua_kw_per_k * (prev - t_aus)
+
+        # Q_g,R (solar + intern) als Diagnose-Fahrplan [kW].
+        if self._q_g_r_w is not None:
+            result.room_gain_kw = self._q_g_r_w[:num_steps] / 1000.0
 
     def calculate_hot_water_demand(
         self, date: datetime.date, num_steps: int = 96,
