@@ -602,6 +602,22 @@ def build_heatpump():
         "zu lenken, wenn dort Speicherplatz ist — und teures Nachladen des "
         "WW-Speichers (COP ≈ 2,8) auf waermere Stunden zu legen."
     ))
+    out.append(P(
+        "<b>Entweder-Oder-Modus:</b> die WP hat einen Heizkreis + 3-Wege-Ventil, daher bedient "
+        "sie pro Zeitschritt genau eine Senke (Binärvariable z<sub>t</sub>): z<sub>t</sub>=0 → "
+        "P<sup>HP,WW</sup>=0 (FBH-Modus), z<sub>t</sub>=1 → P<sup>HP,Floor</sup>=0 (WW-Modus). "
+        "Damit ist der COP pro Block eindeutig (W35 oder W55)."
+    ))
+    out.append(P(
+        "<b>Modus-spezifische Kennfeld-Begrenzung (Code-Review-Fix Juni 2026):</b> die thermische "
+        "Leistung je Pfad ist auf die physikalische Kennfeld-Kapazität bei der jeweiligen "
+        "Vorlauftemperatur begrenzt. Sonst könnte die hohe FBH-COP mit dem (größeren) WW-"
+        "Leistungs-Cap mehr FBH-Wärme liefern, als das Kennfeld bei W35 hergibt:"
+    ))
+    out.append(eq_image(
+        r"\dot{Q}^{\text{Floor,in}}_t \leq P^{\text{th,max}}_{\text{W35}}(T^{\text{aussen}}_t), "
+        r"\quad \dot{Q}^{\text{WW,in}}_t \leq P^{\text{th,max}}_{\text{W55}}(T^{\text{aussen}}_t)"
+    ))
 
     out.append(H2("5.5 Mindestlauf- und Mindestpausenzeiten und Cycling-Limit"))
     out.append(P(
@@ -721,9 +737,9 @@ def build_thermal_storages():
     out.append(P(
         "Bei 150 m² Wohnflaeche, 65 mm Estrich, 2000 kg/m³, "
         "c<sub>p</sub> = 1000 J/(kg·K) und 6 K Komfortband (20–26 °C) ergeben "
-        "sich rund 32 kWh nutzbarer Speicher. Optional kann die Gebaeudemasse "
-        "(Wand, Luft) ueber einen Zusatzterm in C<sup>Estrich</sup><sub>Σ</sub> "
-        "addiert werden (Lumped-Capacitance)."
+        "sich rund 32 kWh nutzbarer Speicher. Im 3-Speicher-Modell sind Wand "
+        "und Luft NICHT mehr im Estrich gebündelt, sondern eigene Knoten "
+        "(T<sub>wand</sub> §6.3, Raumluft §6.2)."
     ))
     out.append(P("<b>Variablen:</b>"))
     out.append(eq_image(
@@ -732,9 +748,10 @@ def build_thermal_storages():
         r"\dot{Q}^{\text{Floor}\to\text{Raum}}_t \geq 0"
     ))
     out.append(P(
-        "<b>Energiebilanz mit aktivem Gebäude (Mai 2026):</b> Der Wärme"
-        "strom Estrich → Raum ist eine separate MILP-Variable, die gleich"
-        "zeitig die Raumluftbilanz (§6.3) speist:"
+        "<b>Energiebilanz (Korrektur K1/K2):</b> die WP-Wärmeleistung fließt direkt in den "
+        "Estrich (Q<sup>Floor,in</sup> = Q<sub>WP</sub>; das Heizwasser ist quasistationär "
+        "eliminiert, keine Bilinearität). Der Wärmestrom Estrich → Raum ist eine separate "
+        "MILP-Variable, die gleichzeitig die Raumluftbilanz (§6.2) speist:"
     ))
     out.append(eq_image(
         r"E^{\text{Floor}}_t = E^{\text{Floor}}_{t-1} + "
@@ -742,63 +759,105 @@ def build_thermal_storages():
     ))
     out.append(eq_image(
         r"\dot{Q}^{\text{Floor}\to\text{Raum}}_t = "
-        r"\frac{h_{\text{oberfl}} \cdot A}{1000} \cdot "
-        r"(T^{\text{Floor}}_{t-1} - T^{\text{innen}}_{t-1})"
+        r"\frac{k_{\text{BR}} \cdot A_{\text{B}}}{1000} \cdot "
+        r"(T^{\text{Floor}}_{t-1} - T^{\text{innen}}_t)"
     ))
     out.append(P(
-        "Die Kopplung ist affin in den Variablen (Vorzeitschritt-Werte) "
-        "und bleibt damit MILP-konform. <b>Fallback ohne Gebäude:</b> "
-        "Wenn die Building-Komponente nicht aktiv ist, fällt das Modell "
+        "Estrich-Temperatur am Vorzeitschritt (träger Knoten, explizit), Raumtemperatur am "
+        "aktuellen Schritt (impliziter Euler, §6.2) — beides affin und MILP-konform. "
+        "<b>Fallback ohne Gebäude:</b> ist die Building-Komponente nicht aktiv, fällt das Modell "
         "auf die alte Verlustraten-Bilanz "
         r"E_t = E_{t-1} + Q_{\text{in}} \Delta t - \lambda E_{t-1} \Delta t "
-        "zurück, mit λ = h·A/(C<sub>Σ</sub>·1000). In diesem Modus IST "
-        "die Selbstentladung die (implizite) Raumheizung — beide Modelle "
-        "sind physikalisch äquivalent, nur explizit vs. implizit."
+        "zurück (λ = h·A/(C<sub>Σ</sub>·1000)); dann IST die Selbstentladung die implizite "
+        "Raumheizung (T<sub>innen</sub> dort explizit aus t-1)."
     ))
 
-    out.append(H2("6.2 Raumluftbilanz (seit Mai 2026)"))
+    out.append(H2("6.2 Raumluftbilanz (3-Speicher-Modell, impliziter Euler)"))
     out.append(P(
-        "Mit aktiver Building-Komponente ist die Raumlufttemperatur "
-        "<b>T<sub>innen</sub></b> eine eigene MILP-Zustandsvariable. "
-        "Das Modell wird explizit zweistufig: Estrich (§6.1) speichert, "
-        "Raum verliert über die Hülle. Damit lässt sich die Optimierung "
-        "auch im Winter ohne implizite λ-Approximation rechnen."
+        "Die Raumlufttemperatur <b>T<sub>innen</sub> (T<sub>R</sub>)</b> ist eine MILP-Zustands"
+        "variable. Im 3-Speicher-Modell (ETH Zürich, Juni 2026) verliert der Raum Wärme über "
+        "die <b>träge Außenwand</b> (§6.3) UND <b>direkt</b> (Fenster/Dach/Lüftung); dazu kommen "
+        "solare + interne Gewinne Q<sub>g,R</sub> (§6.4)."
     ))
-    out.append(P("<b>Variablen:</b>"))
+    out.append(P("<b>Variablen</b> (Slacks und Lüftung ≥ 0):"))
     out.append(eq_image(
-        r"T^{\text{innen}}_t \in [T^{\min}_{\text{komf}}-10,\ T^{\max}_{\text{komf}}+10], \quad"
-        r"s^{\text{low}}_t,\ s^{\text{high}}_t \geq 0"
+        r"s^{\text{low,k}}_t,\ s^{\text{low,c}}_t,\ s^{\text{high}}_t,\ "
+        r"\dot{Q}^{\text{dump}}_t \geq 0"
     ))
-    out.append(P("<b>Energiebilanz</b> (explizites Euler, affin in den Variablen):"))
+    out.append(P("<b>Energiebilanz Raumluft</b> (C<sup>room</sup> = nur Luft, impliziter Euler):"))
     out.append(eq_image(
-        r"C^{\text{room}} \cdot (T^{\text{innen}}_t - T^{\text{innen}}_{t-1}) = "
-        r"(\dot{Q}^{\text{Floor}\to\text{Raum}}_t - \dot{Q}^{\text{Verlust}}_t) \cdot \Delta t"
+        r"C^{\text{room}}\,\frac{T^{\text{innen}}_t - T^{\text{innen}}_{t-1}}{\Delta t} = "
+        r"\dot{Q}^{\text{Floor}\to\text{Raum}}_t - \dot{Q}^{\text{R}\to\text{W}}_t "
+        r"- \dot{Q}^{\text{direkt}}_t + Q^{\text{g,R}}_t - \dot{Q}^{\text{dump}}_t"
     ))
     out.append(eq_image(
-        r"\dot{Q}^{\text{Verlust}}_t = \frac{UA}{1000} \cdot "
-        r"(T^{\text{innen}}_{t-1} - T^{\text{aussen}}_t)"
-    ))
-    out.append(P(
-        "Die transmissions- und lüftungsbedingte UA-Konstante kommt aus "
-        "den Gebäude-Geometrie- und U-Wert-Eingaben (Gebäudegruppe-PDF "
-        "Mai 2026). Auch hier sorgt die Auswertung am Vorzeitschritt "
-        "dafür, dass die rechte Seite linear in T<sub>innen,t-1</sub> "
-        "bleibt — kein Bilinear-Term."
-    ))
-    out.append(P("<b>Komfortband als Soft-Constraint:</b>"))
-    out.append(eq_image(
-        r"T^{\text{innen}}_t + s^{\text{low}}_t \geq T^{\min}_{\text{komf}}, \quad"
-        r"T^{\text{innen}}_t - s^{\text{high}}_t \leq T^{\max}_{\text{komf}}"
+        r"\dot{Q}^{\text{R}\to\text{W}}_t = \frac{k_{\text{RW}}A_{\text{W}}}{1000}"
+        r"(T^{\text{innen}}_t - T^{\text{wand}}_{t-1}),\quad "
+        r"\dot{Q}^{\text{direkt}}_t = \frac{UA_{\text{direkt}}}{1000}"
+        r"(T^{\text{innen}}_t - T^{\text{aussen}}_t)"
     ))
     out.append(P(
-        "Default-Komfortband 21–24 °C (konfigurierbar). Die Slack-"
-        "Variablen werden in der Zielfunktion mit "
-        "<b>500 ct/kWh</b> bestraft (UNMET_HEAT_PENALTY_CT, Abschnitt 8.2) "
-        "— weit über jedem realen Strompreis, sodass das Komfortband nur "
-        "verletzt wird, wenn das Problem sonst infeasible wäre."
+        "Die Verlust- und Estrich→Raum-Terme greifen auf T<sub>innen,t</sub> zu (impliziter "
+        "Euler): C<sup>room</sup> enthält NUR die Luft (Wandmasse sitzt im T<sub>wand</sub>-"
+        "Knoten), die Zeitkonstante liegt im Minutenbereich — explizit würde oszillieren, "
+        "implizit ist unbedingt stabil und bleibt linear. Q<sup>dump</sup> ist eine freie "
+        "(unbestrafte) Lüftung gegen sommerliche Überhitzung. Die trägen Knoten Estrich und "
+        "Wand bleiben explizit (Zustand bei t-1)."
+    ))
+    out.append(P("<b>Komfortband als Soft-Constraint</b> (Unterschreitung zweistufig):"))
+    out.append(eq_image(
+        r"T^{\text{innen}}_t + s^{\text{low,k}}_t + s^{\text{low,c}}_t \geq T^{\min}_{\text{komf}}, "
+        r"\quad T^{\text{innen}}_t - s^{\text{high}}_t \leq T^{\max}_{\text{komf}}"
+    ))
+    out.append(P(
+        "s<sup>low,k</sup> (bis 0,5 K, milder Penalty P_COMFORT) und s<sup>low,c</sup> (darüber, "
+        "P_CRITICAL) trennen kleine von großen Komfortabweichungen; beide werden über die "
+        "thermische Kapazität C<sub>th</sub> in ct/kWh umgerechnet, s<sup>high</sup> mit "
+        "UNMET_HEAT_PENALTY_CT = 500 ct/kWh (Abschnitt 8.2)."
     ))
 
-    out.append(H2("6.3 Warmwasser-Pufferspeicher (Zwei-Zonen-Modell)"))
+    out.append(H2("6.3 Wandbilanz (Speicher T_wand, NEU — Korrektur K3)"))
+    out.append(P(
+        "Die Außenwand ist der neue träge Speicher zwischen Raum und Außenluft. Sie nimmt "
+        "Wärme vom Raum auf und gibt sie verzögert nach außen ab — explizites Euler (langsamer "
+        "Knoten); der Raum→Wand-Fluss ist identisch zu Q<sup>R→W</sup> oben (energiekonsistent)."
+    ))
+    out.append(eq_image(
+        r"C^{\text{wand}}\,\frac{T^{\text{wand}}_t - T^{\text{wand}}_{t-1}}{\Delta t} = "
+        r"\frac{k_{\text{RW}}A_{\text{W}}}{1000}(T^{\text{innen}}_t - T^{\text{wand}}_{t-1}) "
+        r"- \frac{k_{\text{WA}}A_{\text{W}}}{1000}(T^{\text{wand}}_{t-1} - T^{\text{aussen}}_t)"
+    ))
+    out.append(P(
+        "k<sub>RW</sub> (raumseitig) und k<sub>WA</sub> (außenseitig) sind Oberflächen-Filme; "
+        "ihre Reihen-U wird an den physikalischen Wand-U-Wert verankert (sonst U<sub>eff</sub> "
+        "≈ 2,27 W/(m²K), ~10× zu leck). Das Verhältnis k<sub>RW</sub>:k<sub>WA</sub> = 1:10 "
+        "bleibt als Aufteilung. UA<sub>direkt</sub> = Fenster + Dach + Lüftung (ohne opake Wand); "
+        "der stationäre Gesamtverlust bleibt UA<sub>direkt</sub> + U<sub>Wand</sub>·A<sub>Wand</sub>."
+    ))
+
+    out.append(H2("6.4 Solare + interne Gewinne Q_g,R (Eingangszeitreihe)"))
+    out.append(P(
+        "Q<sub>g,R</sub> ist KEINE Solver-Variable, sondern wird vor der Optimierung aus dem "
+        "Sonnenstand berechnet und als Zeitreihe in die Raumbilanz eingespeist (bleibt damit "
+        "linear). Summe über die vier Fassaden — direkter Strahl (DNI) über den Einfallswinkel "
+        "plus halber Diffusanteil (DHI) — plus konstante interne Gewinne:"
+    ))
+    out.append(eq_image(
+        r"Q^{\text{g,R}}_t = \sum_{i \in \{N,O,S,W\}} g\,A_{\text{F},i}\,"
+        r"(I_t\,\cos\theta_{i,t} + 0.5\,D_t) + q_{\text{int}}\,A_{\text{Wohn}}"
+    ))
+    out.append(eq_image(
+        r"\cos\theta_{i,t} = \max\!\left(0,\ \cos\gamma^{\text{S}}_t\,"
+        r"\cos(\alpha^{\text{S}}_t - \alpha^{\text{E}}_i)\right)"
+    ))
+    out.append(P(
+        "g = 0,7 (Gesamtenergiedurchlass), q<sub>int</sub> = 5 W/m² (DIN V 4108); I = DNI, "
+        "D = DHI (aus den Wetterdaten, sonst DISC-Zerlegung der GHI); γ<sup>S</sup> = "
+        "Sonnenhöhe, α<sup>S</sup> = Sonnenazimut, α<sup>E</sup><sub>i</sub> = Fassadenazimut. "
+        "Q<sub>g,B</sub> (Estrich) = 0 (mit Prof. Brückl bestätigt)."
+    ))
+
+    out.append(H2("6.5 Warmwasser-Pufferspeicher (Zwei-Zonen-Modell)"))
     out.append(P(
         "Der Speicher wird als ideal geschichtet modelliert: heisse Zone "
         "oben (T<sub>max</sub>), kalte Zone unten (T<sub>min</sub>). Die "
@@ -841,7 +900,7 @@ def build_thermal_storages():
         "Linear → MILP-kompatibel."
     ))
 
-    out.append(H2("6.4 Bedarfsdeckung Warmwasser"))
+    out.append(H2("6.6 Bedarfsdeckung Warmwasser"))
     out.append(P(
         "Der Brauchwasserbedarf wird ueber die Frischwasserstation aus dem "
         "Pufferspeicher gedeckt. Mit dem evtl. zusaetzlichen Nachheizfaktor "
@@ -859,7 +918,7 @@ def build_thermal_storages():
         "Mittel tun."
     ))
 
-    out.append(H2("6.5 Komfort-Mindestenergie"))
+    out.append(H2("6.7 Komfort-Mindestenergie"))
     out.append(P(
         "Optional kann der Nutzer Komfort-Perioden definieren (z. B. Duschen "
         "morgens 6–8 Uhr und abends 19–22 Uhr), in denen eine erhoehte "
@@ -871,7 +930,7 @@ def build_thermal_storages():
         r"\ \text{in Komfortperioden, sonst}\ E^{\text{WW}}(T^{\min})"
     ))
 
-    out.append(H2("6.6 SG-Ready dynamische Obergrenzen (Zustaende 3 und 4)"))
+    out.append(H2("6.8 SG-Ready dynamische Obergrenzen (Zustaende 3 und 4)"))
     out.append(P(
         "Bei SG-Ready-Zustand 3 (Einschaltempfehlung) wird die WW-Obergrenze "
         "angehoben; bei Zustand 4 (Zwangseinschaltung) zusaetzlich auch die "

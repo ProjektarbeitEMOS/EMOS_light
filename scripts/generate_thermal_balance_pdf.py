@@ -116,10 +116,12 @@ def build_styles() -> dict:
 def topology_table() -> Table:
     """ASCII-artige Topologie als Tabelle."""
     data = [
-        ["Erzeuger", "Speicher", "Senke / Bedarf"],
-        ["Waermepumpe", "Estrich (FBH)", "Raum (T_innen)"],
-        ["", "WW-Speicher", "Brauchwasser"],
-        ["", "", "Aussenluft (Verlust)"],
+        ["Erzeuger", "Speicher (Zustand)", "Senke / Kopplung"],
+        ["Waermepumpe (Q_WP)", "Estrich  T_B", "-> Raum  T_R"],
+        ["", "Raumluft  T_R", "-> Wand + Fenster/Lueftung"],
+        ["", "Aussenwand  T_W (NEU)", "-> Aussenluft (traege)"],
+        ["", "WW-Speicher", "-> Brauchwasser"],
+        ["solare + interne Gewinne", "-> Raum  T_R", ""],
     ]
     t = Table(data, colWidths=[5*cm, 5*cm, 5*cm])
     t.setStyle(TableStyle([
@@ -141,21 +143,25 @@ def symbol_table() -> Table:
     """Glossar wichtiger Symbole."""
     rows = [
         ["Symbol", "Einheit", "Bedeutung"],
-        ["T_innen(t)", "°C", "Raumlufttemperatur (MILP-Variable)"],
-        ["T_floor(t)", "°C", "Estrich-Oberflaechentemperatur"],
+        ["T_innen(t) = T_R", "°C", "Raumlufttemperatur (MILP-Variable)"],
+        ["T_wand(t) = T_W", "°C", "Aussenwandtemperatur (MILP-Variable, NEU)"],
+        ["T_floor(t) = T_B", "°C", "Estrich-Temperatur"],
         ["T_aus(t)", "°C", "Aussentemperatur (Eingangsdaten)"],
         ["E_floor(t)", "kWh", "Im Estrich gespeicherte Energie ueber T_min"],
         ["E_ww(t)", "kWh", "Im WW-Speicher gespeicherte Energie"],
         ["q_floor_in(t)", "kW", "Waermestrom WP -> Estrich"],
         ["q_floor_to_room(t)", "kW", "Waermestrom Estrich -> Raum"],
-        ["q_loss(t)", "kW", "Verlust Raum -> Aussenluft"],
+        ["q_loss(t)", "kW", "Gesamtverlust Raum -> Aussen (direkt + Wandpfad)"],
+        ["Q_g,R(t)", "W", "solare + interne Raumgewinne (NEU)"],
         ["q_ww_in / q_ww_out", "kW", "Zu-/Abfluss WW-Speicher"],
         ["P_WP_el(t)", "kW", "Elektrische WP-Leistung"],
         ["COP_floor / COP_ww", "-", "COP fuer Heiz- bzw. WW-Pfad"],
-        ["UA", "W/K", "Gesamt-Waermedurchgang Huelle + Lueftung"],
+        ["UA_direkt", "W/K", "direkter Verlust: Fenster + Dach + Lueftung"],
+        ["k_RW·A_W / k_WA·A_W", "W/K", "Uebergang Raum->Wand bzw. Wand->Aussen"],
         ["C_floor", "kWh/K", "Thermische Kapazitaet Estrich"],
-        ["C_room", "kWh/K", "Thermische Kapazitaet Raum (Wand + Luft)"],
-        ["h_floor · A", "W/K", "Waermeuebergang Estrich -> Raum"],
+        ["C_room", "kWh/K", "Thermische Kapazitaet nur der Raumluft (NEU)"],
+        ["C_wand", "kWh/K", "Thermische Kapazitaet der Wandmasse (NEU)"],
+        ["h_floor·A = k_BR·A_B", "W/K", "Waermeuebergang Estrich -> Raum"],
         ["dt", "h", "Zeitschritt (Default 0.25 h = 15 min)"],
     ]
     t = Table(rows, colWidths=[4.2*cm, 2.2*cm, 9*cm])
@@ -192,11 +198,15 @@ def parameter_table() -> Table:
         ["d_Estrich", "0.065 m", "Estrichdicke"],
         ["ρ_Estrich", "2000 kg/m³", "Zementestrich"],
         ["c_Estrich", "1000 J/(kg·K)", "spez. Waermekapazitaet"],
-        ["C_floor", "≈ 5.4 kWh/K", "Estrich-Masse · c"],
-        ["C_room", "≈ 7.9 kWh/K", "Wand (50 Wh/m²K · A) + Luft"],
-        ["h_floor", "10 W/(m²·K)", "Boden->Raum Waermeuebergang"],
-        ["T_VL,Heiz", "35 °C", "Vorlauf FBH"],
-        ["T_VL,WW", "55 °C", "Vorlauf WW"],
+        ["C_floor", "≈ 5.4 kWh/K", "Estrich-Masse · c (Speicher T_B)"],
+        ["C_room", "≈ 0.16 kWh/K", "nur Raumluft (Wand jetzt separat!)"],
+        ["C_wand", "≈ 7.5 kWh/K", "Wandmasse 50 Wh/(m²K)·A (Speicher T_W)"],
+        ["k_RW : k_WA", "2.5 : 25", "Verhaeltnis; Reihen-U an U_Wand verankert"],
+        ["Fenster-Split", "N10/S40/O25/W25 %", "window_orientation_split"],
+        ["g-Wert", "0.7", "Gesamtenergiedurchlass Fenster"],
+        ["q_int", "5 W/m²", "interne Gewinne (DIN V 4108)"],
+        ["h_floor = k_BR", "10 W/(m²·K)", "Boden->Raum Waermeuebergang"],
+        ["T_VL,Heiz / T_VL,WW", "35 / 55 °C", "Vorlauf FBH / WW"],
         ["[T_min, T_max]", "[20, 24] °C", "Komfortband (Slack-bestraft)"],
     ]
     t = Table(rows, colWidths=[4.5*cm, 4.0*cm, 7*cm])
@@ -240,14 +250,26 @@ def build_story(styles) -> list:
         styles["Title"],
     ))
     story.append(Paragraph(
-        "EMOS Light — MILP-Erweiterung Mai 2026",
+        "EMOS Light — 3-Speicher-Gebaeudemodell (ETH Zuerich), Stand Juni 2026",
         styles["Subtitle"],
     ))
     story.append(P(
         "Dieses Dokument beschreibt die thermischen Energiebilanzen, die der MILP-Optimierer "
-        "von EMOS Light zur Energiekostenoptimierung loest. Im Mittelpunkt stehen die drei "
-        "thermischen Speicher- bzw. Bilanzknoten Estrich, Raumluft und Warmwasser-Speicher "
-        "sowie die Kopplung an die Waermepumpe als einzigem Erzeuger.",
+        "von EMOS Light loest. Das Gebaeude folgt seit Juni 2026 dem 3-Speicher-Ansatz der "
+        "Schweizer Studie (ETH Zuerich) mit den drei thermischen Zustaenden <b>Estrich (T_B)</b>, "
+        "<b>Raumluft (T_R)</b> und — neu — <b>Aussenwand (T_W)</b>. Hinzu kommen die solaren und "
+        "internen Waermegewinne sowie der Warmwasserspeicher; einziger Waermeerzeuger ist die "
+        "Waermepumpe.",
+        styles,
+    ))
+    story.append(Spacer(1, 6))
+    story.append(P(
+        "Drei Korrekturen gegenueber der ETH-Originalformulierung machen das Modell MILP-tauglich "
+        "(alle umgesetzt): <b>K1</b> — die Bilinearitaet V_WP·T_RL des Heizwassers entfaellt, die "
+        "WP-Waermeleistung Q_WP ist direkte (lineare) Entscheidungsvariable; <b>K2</b> — das "
+        "Heizwasser wird quasistationaer eliminiert (Zeitkonstante &lt;&lt; 15 min), es fliesst "
+        "direkt in den Estrich (Q_floor,in = Q_WP); <b>K3</b> — Fenster- und Lueftungsverluste "
+        "wirken direkt (ohne Traegheit), nur die opake Wand laeuft ueber die traege Masse T_W.",
         styles,
     ))
     story.append(Spacer(1, 8))
@@ -293,99 +315,101 @@ def build_story(styles) -> list:
         styles,
     ))
 
-    story.append(H2("2.2 Energiebilanz Estrich", styles))
+    story.append(H2("2.2 Energiebilanz Estrich (K1/K2: Q_WP direkt)", styles))
     story.append(P(
-        "Die zeitliche Aenderung der Estrich-Energie folgt aus Waermezufuhr durch die "
-        "Fussbodenheizung minus Waermestrom an den Raum. Diskretisiert nach explizitem "
-        "Euler (alle Fluesse aus Zustaenden bei t-1):",
+        "Die WP-Waermeleistung Q_WP fliesst nach den Korrekturen K1/K2 DIREKT in den Estrich "
+        "(q_floor,in = Q_WP; das Heizwasser ist quasistationaer eliminiert, keine Bilinearitaet). "
+        "Davon abgezogen wird der Waermestrom an den Raum; ein solarer Estrich-Gewinn Q_g,B ist 0. "
+        "Estrich und Wand sind traege Knoten (explizites Euler, Zustand bei t-1):",
         styles,
     ))
     story.extend(equation_block(
         "Zustandsuebergang Estrich:",
-        r"E_{\mathrm{floor}}(t) \;=\; E_{\mathrm{floor}}(t{-}1) + "
-        r"q_{\mathrm{floor,in}}(t)\,\Delta t \;-\; q_{\mathrm{floor\to room}}(t)\,\Delta t",
+        r"E_{\mathrm{floor}}(t) = E_{\mathrm{floor}}(t{-}1) + \left(Q_{WP}(t) "
+        r"- q_{\mathrm{floor\to room}}(t) + Q_{g,B}\right)\Delta t,\quad Q_{g,B}=0",
         styles,
     ))
     story.extend(equation_block(
-        "Newton-Waermeuebergang Boden -> Raum:",
-        r"q_{\mathrm{floor\to room}}(t) \;=\; \frac{h_{\mathrm{floor}}\, A_{\mathrm{floor}}}{1000}\,"
-        r"\left(T_{\mathrm{floor}}(t{-}1) - T_{\mathrm{innen}}(t{-}1)\right) \quad [\mathrm{kW}]",
+        "Newton-Waermeuebergang Boden -> Raum (k_BR = h_floor):",
+        r"q_{\mathrm{floor\to room}}(t) \;=\; \frac{k_{BR}\, A_{B}}{1000}\,"
+        r"\left(T_{\mathrm{floor}}(t{-}1) - T_{R}(t)\right) \quad [\mathrm{kW}]",
         styles,
     ))
     story.append(P(
-        "Wichtig: q_floor_to_room ist eine eigene MILP-Variable mit dieser linearen Kopplung "
-        "an Estrich- und Raumtemperatur. Damit erscheint derselbe Waermestrom physikalisch "
-        "konsistent in beiden Energiebilanzen.",
+        "q_floor_to_room ist eine eigene MILP-Variable und erscheint identisch in Estrich- und "
+        "Raumbilanz (energiekonsistent). Der Raum geht mit T_R(t) ein (impliziter Euler fuer den "
+        "schnellen Luftknoten, siehe 3.1); der Estrich bleibt explizit bei t-1.",
         styles,
     ))
 
     story.append(PageBreak())
 
-    # 3. Raum
-    story.append(H1("3 Raumluftbilanz (MILP-Erweiterung Mai 2026)", styles))
+    # 3. Raum / Wand / Gewinne (3-Speicher-Modell)
+    story.append(H1("3 Raumluft-, Wand- und Gewinnbilanz (3-Speicher-Modell)", styles))
     story.append(P(
-        "Vor Mai 2026 war die Innentemperatur keine Optimierungsvariable; der Heizbedarf wurde "
-        "ausserhalb des Solvers ueber eine Heizkennlinie vorgegeben. Damit \"sah\" der Solver "
-        "weder den eigentlichen Komfortzustand noch die Verluste an die Aussenluft. Mit der "
-        "Mai-2026-Erweiterung uebernimmt der MILP die Raumbilanz explizit.",
+        "Der Raum ist der zentrale Komfortknoten. Im 3-Speicher-Modell verliert er Waerme auf "
+        "zwei Wegen: ueber die TRAEGE Aussenwand (eigener Speicher T_W) und DIREKT — ohne "
+        "Traegheit — ueber Fenster, Dach und Lueftung (Korrektur K3). Dazu kommen solare und "
+        "interne Gewinne Q_g,R. Die Estrich->Raum-Waerme ist die einzige aktive Zufuhr.",
         styles,
     ))
-    story.append(H2("3.1 Energiebilanz Raum", styles))
+    story.append(H2("3.1 Energiebilanz Raum (impliziter Euler)", styles))
     story.extend(equation_block(
-        "Zustandsuebergang Raum (Lumped-Capacitance, explizites Euler):",
-        r"C_{\mathrm{room}}\,\left(T_{\mathrm{innen}}(t) - T_{\mathrm{innen}}(t{-}1)\right) \;=\;"
-        r"\left(q_{\mathrm{floor\to room}}(t) - q_{\mathrm{loss}}(t)\right)\,\Delta t",
-        styles,
-    ))
-    story.extend(equation_block(
-        "Waermeverlust an die Aussenluft (Transmission + Lueftung):",
-        r"q_{\mathrm{loss}}(t) \;=\; \frac{UA}{1000}\,\left(T_{\mathrm{innen}}(t{-}1) "
-        r"- T_{\mathrm{aussen}}(t)\right) \quad [\mathrm{kW}]",
+        "Zustandsuebergang Raumluft:",
+        r"C_{\mathrm{room}}\,\frac{T_{R}(t) - T_{R}(t{-}1)}{\Delta t} \;=\;"
+        r"q_{\mathrm{floor\to room}}(t) - q_{\mathrm{RW}}(t) - q_{\mathrm{direkt}}(t) + Q_{g,R}(t)",
         styles,
     ))
     story.extend(equation_block(
-        "Aufgeloest nach T_innen(t):",
-        r"T_{\mathrm{innen}}(t) \;=\; T_{\mathrm{innen}}(t{-}1) + "
-        r"\frac{\Delta t}{C_{\mathrm{room}}}\,\left(q_{\mathrm{floor\to room}}(t) "
-        r"- q_{\mathrm{loss}}(t)\right)",
+        "Verlust ueber die traege Aussenwand (Raum -> Wand):",
+        r"q_{\mathrm{RW}}(t) \;=\; \frac{k_{RW}\,A_{W}}{1000}\,\left(T_{R}(t) - T_{W}(t{-}1)\right)",
+        styles,
+    ))
+    story.extend(equation_block(
+        "Direkter Verlust (Fenster + Dach + Lueftung, ohne Traegheit):",
+        r"q_{\mathrm{direkt}}(t) \;=\; \frac{UA_{\mathrm{direkt}}}{1000}\,\left(T_{R}(t) - T_{A}(t)\right)",
+        styles,
+    ))
+    story.append(P(
+        "Die Verlust- und Estrich->Raum-Terme greifen auf T_R(t) zu (impliziter Euler). Grund: "
+        "C_room ist hier NUR die Raumluft (Wandmasse sitzt im T_W-Knoten), die Zeitkonstante "
+        "liegt im Minutenbereich &lt;&lt; 15 min. Explizites Euler wuerde oszillieren; das "
+        "implizite Verfahren ist unbedingt stabil und bleibt linear (LP-kompatibel). Die "
+        "traegen Knoten Estrich und Wand bleiben explizit (Zustand bei t-1).",
         styles,
     ))
 
-    story.append(H2("3.2 UA-Wert der Gebaeudehuelle", styles))
+    story.append(H2("3.2 UA-Wert: Aufteilung Wandpfad / direkter Pfad", styles))
     story.append(P(
-        "UA setzt sich aus Transmission und Lueftung zusammen. Die Transmission wird ueber "
-        "die einzelnen Bauteilflaechen aufsummiert (Aussenwand, Fenster, Dach + Bodenplatte). "
-        "Die Lueftung wird ueber das beheizte Volumen ausgedrueckt.",
+        "Der gesamte Huellverlust wird auf zwei Pfade aufgeteilt: der TRAEGE Wandpfad laeuft "
+        "ueber den Speicher T_W (Abschnitt 3.5), der DIREKTE Pfad UA_direkt buendelt Fenster, "
+        "Dach/Bodenplatte und Lueftung (sofort wirksam).",
         styles,
     ))
     story.extend(equation_block(
-        "Transmission:",
-        r"UA_{\mathrm{trans}} \;=\; U_{\mathrm{Wand}}\, A_{\mathrm{Wand}} + "
-        r"U_{\mathrm{Fenster}}\, A_{\mathrm{Fenster}} + U_{\mathrm{Dach}}\, A_{\mathrm{Grund}}",
+        "Direkter Verlustleitwert (ohne opake Wand):",
+        r"UA_{\mathrm{direkt}} \;=\; U_{\mathrm{Fenster}}A_{\mathrm{Fenster}} + "
+        r"U_{\mathrm{Dach}}A_{\mathrm{Grund}} + n_{\mathrm{lueft}}V_{\mathrm{Gebaeude}}",
         styles,
     ))
     story.extend(equation_block(
-        "Lueftung:",
-        r"UA_{\mathrm{lueft}} \;=\; n_{\mathrm{lueft}}\, V_{\mathrm{Gebaeude}}",
-        styles,
-    ))
-    story.extend(equation_block(
-        "Gesamt:",
-        r"UA \;=\; UA_{\mathrm{trans}} + UA_{\mathrm{lueft}}",
+        "Gesamtverlust = direkter Pfad + Wandpfad (stationaer == U_Wand·A_Wand):",
+        r"UA_{\mathrm{ges}} \;=\; UA_{\mathrm{direkt}} + U_{\mathrm{Wand}}A_{\mathrm{Wand}}",
         styles,
     ))
 
-    story.append(H2("3.3 Raumkapazitaet C_room", styles))
+    story.append(H2("3.3 Raumkapazitaet C_room (nur Luft)", styles))
     story.append(P(
-        "C_room beschreibt, wieviel Waerme der Raum (Wand + Luft) je Kelvin "
-        "Temperaturaenderung aufnimmt. Die Estrich-Kapazitaet ist hier NICHT enthalten — "
-        "der Estrich ist ein separater Speicher mit eigener Bilanz.",
+        "Im 3-Speicher-Modell enthaelt C_room NUR noch die Raumluft — die Wandmasse ist in "
+        "den eigenen Zustand T_W gewandert (Abschnitt 3.5) und darf nicht doppelt gezaehlt "
+        "werden; der Estrich (T_B) ist ohnehin ein separater Speicher. C_room ist damit klein, "
+        "weshalb der Raum implizit gefuehrt wird (3.1).",
         styles,
     ))
     story.extend(equation_block(
-        "Lumped-Capacitance des Raumes (Wand-Anteil + Luft-Anteil):",
-        r"C_{\mathrm{room}} \;=\; c_{\mathrm{Wand}}\, A_{\mathrm{Wohn}} "
-        r"\;+\; \frac{V_{\mathrm{Gebaeude}}\, \rho_{\mathrm{Luft}}\, c_{\mathrm{p,Luft}}}{3.6\cdot 10^{6}}",
+        "Lumped-Capacitance der Raumluft:",
+        r"C_{\mathrm{room}} \;=\; \frac{V_{\mathrm{Luft}}\, \rho_{\mathrm{Luft}}\, "
+        r"c_{\mathrm{p,Luft}}}{3.6\cdot 10^{6}} \quad [\mathrm{kWh/K}]",
         styles,
     ))
 
@@ -411,6 +435,65 @@ def build_story(styles) -> list:
     story.extend(equation_block(
         "Penalty-Beitrag in der Zielfunktion:",
         r"\sum_{t}\left(s_{\mathrm{low}}(t) + s_{\mathrm{high}}(t)\right)\cdot c_{\mathrm{pen}}\cdot \Delta t",
+        styles,
+    ))
+    story.append(P(
+        "Anmerkung: Im Sommer/bei Hitze kann der Raum ohne aktive Kuehlung ueber den "
+        "Komfortpunkt steigen; der Solver darf dann ueberschuessige Waerme ueber einen freien "
+        "Lueftungs-Term (Fenster oeffnen) abfuehren, statt infeasibel zu werden.",
+        styles,
+    ))
+
+    story.append(H2("3.5 Wandbilanz (Speicher T_W, NEU)", styles))
+    story.append(P(
+        "Die Aussenwand ist der neue traege Speicher zwischen Raum und Aussenluft. Sie nimmt "
+        "Waerme vom Raum auf und gibt sie verzoegert nach aussen ab — explizites Euler "
+        "(langsamer Knoten). Der Raum->Wand-Fluss ist identisch zu q_RW in der Raumbilanz "
+        "(energetisch konsistent).",
+        styles,
+    ))
+    story.extend(equation_block(
+        "Zustandsuebergang Wand:",
+        r"C_{\mathrm{wand}}\,\frac{T_{W}(t) - T_{W}(t{-}1)}{\Delta t} \;=\; "
+        r"\frac{k_{RW}A_{W}}{1000}\!\left(T_{R}(t) - T_{W}(t{-}1)\right) - "
+        r"\frac{k_{WA}A_{W}}{1000}\!\left(T_{W}(t{-}1) - T_{A}(t)\right)",
+        styles,
+    ))
+    story.append(P(
+        "Verankerung der k-Werte: k_RW (raumseitig) und k_WA (aussenseitig) der Gebaeudegruppe "
+        "sind Oberflaechen-Filmkoeffizienten; ihre Reihenschaltung ergaebe roh "
+        "U_eff &#8776; 2,27 W/(m²K) (~10x zu leck). Daher wird die Reihen-U an den physikalischen "
+        "Wand-U-Wert gekoppelt; das Verhaeltnis k_RW:k_WA = 1:10 bleibt als Aufteilung erhalten. "
+        "Der stationaere Gesamtverlust bleibt damit unveraendert (Konsistenz mit UA_ges).",
+        styles,
+    ))
+
+    story.append(H2("3.6 Solare + interne Gewinne Q_g,R (finale Formel)", styles))
+    story.append(P(
+        "Die solaren Fenstergewinne werden ueber die vier Fassaden summiert; jede Fassade "
+        "erhaelt den direkten Strahl (DNI) ueber ihren Einfallswinkel plus den halben "
+        "Diffusanteil (DHI, Sichtfaktor 0,5 zum Himmel). Dazu kommen konstante interne Gewinne "
+        "nach DIN V 4108. Der Estrich-Solargewinn Q_g,B ist 0 (mit Prof. Brueckl bestaetigt).",
+        styles,
+    ))
+    story.extend(equation_block(
+        "Gesamter solarer + interner Raumgewinn:",
+        r"Q_{g,R}(t) = \sum_{i \in \{N,O,S,W\}} g\,A_{F,i}\left(I(t)\cos\theta_i(t) "
+        r"+ 0.5\,D(t)\right) + q_{\mathrm{int}}\,A_{\mathrm{Wohn}}",
+        styles,
+    ))
+    story.extend(equation_block(
+        "Einfallswinkel je Fassade (vertikales Fenster):",
+        r"\cos\theta_i(t) = \max\!\left(0,\; \cos\gamma_S(t)\,\cos\!\left(\alpha_S(t) "
+        r"- \alpha_{E,i}\right)\right)",
+        styles,
+    ))
+    story.append(P(
+        "g = 0,7 (Gesamtenergiedurchlass), q_int = 5 W/m²; I = Direktstrahlung (DNI), "
+        "D = Diffusstrahlung (DHI) aus den Wetterdaten, sonst aus der DISC-Zerlegung der GHI; "
+        "gamma_S = Sonnenhoehe, alpha_S = Sonnenazimut, alpha_E,i = Fassadenazimut. Die "
+        "Fensterflaeche wird ueber window_orientation_split (Default N10/S40/O25/W25 %) auf "
+        "die Fassaden verteilt.",
         styles,
     ))
 
@@ -442,10 +525,25 @@ def build_story(styles) -> list:
         r"q_{\mathrm{ww,in}}(t)  = \mathrm{COP}_{\mathrm{ww}}(t)\cdot P_{\mathrm{el,ww}}(t)",
         styles,
     ))
+    story.extend(equation_block(
+        "Kennfeld-Begrenzung je Modus (Code-Review-Fix):",
+        r"q_{\mathrm{floor,in}}(t) \leq P_{\mathrm{th,max}}^{W35}(T_{\mathrm{aus}}),\quad "
+        r"q_{\mathrm{ww,in}}(t) \leq P_{\mathrm{th,max}}^{W55}(T_{\mathrm{aus}})",
+        styles,
+    ))
     story.append(P(
-        "Modulation und Schaltverhalten der WP werden mit binaeren Variablen (hp_on, sg1, sg3) "
-        "und Mindestlauf-/Pausenzeit-Constraints abgebildet. Der SG-Ready-Zustand 3 erhoeht "
-        "die zulaessige WW-Speichertemperatur fuer EVU-induzierte Verstaerkungssignale.",
+        "Die elektrische Obergrenze wird MODUS-SPEZIFISCH aus dem Kennfeld gesetzt (W35 fuer FBH, "
+        "W55 fuer WW). Sonst koennte die hohe FBH-COP mit dem groesseren WW-Leistungs-Cap mehr "
+        "FBH-Waerme liefern als das Kennfeld bei W35 physikalisch hergibt. Pro Zeitschritt "
+        "bedient die WP genau eine Senke (Entweder-Oder ueber eine Binaervariable — ein "
+        "Heizkreis + 3-Wege-Ventil).",
+        styles,
+    ))
+    story.append(P(
+        "Steuerung: SG-Ready ist der einzige Schaltkanal (Zustaende sg1..sg4, hp_on = 1 - sg1), "
+        "dazu Mindestlauf-/Pausenzeiten. sg3/sg4 sind fuer eine Sollwert-Anhebung der Speicher "
+        "vorgesehen (Estrich-Puffer bei sg4 aktiv; die analoge WW-Anhebung ist ein dokumentierter "
+        "offener Punkt).",
         styles,
     ))
 
@@ -500,7 +598,8 @@ def build_story(styles) -> list:
         ["HeatPump", "ww", "COP_ww · P_el,ww", "—"],
         ["UnderfloorHeating", "floor", "—", "q_floor_in"],
         ["UnderfloorHeating", "room", "q_floor_to_room", "—"],
-        ["Building", "room", "—", "C_room·ΔT/Δt + UA·ΔT/1000"],
+        ["Building", "room", "Q_g,R(t)", "C_room·ΔT/Δt + q_RW + q_direkt"],
+        ["Building", "(Wand T_W)", "interne Wandbilanz (kein Senkenknoten)", "—"],
         ["ThermalStorage (WW)", "ww", "—", "q_ww_in + Verluste + Last"],
     ]
     t = Table(rows, colWidths=[3.8*cm, 2.0*cm, 4.5*cm, 5.0*cm])

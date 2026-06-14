@@ -838,15 +838,14 @@ def section_ev():
 
 
 def section_building():
-    out = [H1("10. Gebäude (MILPComponent seit Mai 2026)")]
+    out = [H1("10. Gebäude (3-Speicher-Modell ETH, MILPComponent)")]
     out.append(P(
-        "Bis April 2026 war Gebäude eine rein passive Parameterquelle "
-        "(Heizlast und additional_capacity_kwh_per_k). Seit Mai 2026 ist "
-        "die <b>Raumlufttemperatur T_innen</b> eine eigene MILP-Zustands"
-        "variable mit eigener Energiebilanz und Komfortband-Slacks. "
-        "Damit wird der Wärmestrom Estrich → Raum → Außen explizit modelliert "
-        "und nicht mehr durch eine Verlustrate auf dem Estrich "
-        "verschleiert (siehe §5 Fallback-Modus)."
+        "Seit Mai 2026 ist die <b>Raumlufttemperatur T_innen (T_R)</b> eine eigene "
+        "MILP-Zustandsvariable. Mit dem 3-Speicher-Modell (ETH Zürich, Juni 2026) kommt die "
+        "<b>Außenwand T_W</b> als zweite Gebäude-Zustandsvariable hinzu: der Raum verliert "
+        "Wärme über die TRÄGE Wand UND DIREKT über Fenster/Lüftung. Solare + interne Gewinne "
+        "Q_g,R werden vor der Optimierung berechnet (keine Solver-Variable) und als Zeitreihe "
+        "in die Raumbilanz eingespeist; Q_g,B (Estrich) = 0."
     ))
 
     out.append(H2("Inputs"))
@@ -864,33 +863,50 @@ def section_building():
          "Anfangs-Raumtemperatur T_innen[0]"),
         ("comfort_temp_min_c / comfort_temp_max_c", "21 / 24",
          "Komfortband (Soft-Constraint mit Slack-Penalty)"),
+        ("wall_k_rw / wall_k_wa", "2.5 / 25",
+         "Wand-Übergangszahlen (Reihen-U an u_value_wall verankert)"),
+        ("window_orientation_split", "N10/S40/O25/W25 %",
+         "Fensterfläche je Fassade (Solargewinn Q_g,R)"),
+        ("window_g_value / internal_gains_w_per_m2", "0.7 / 5",
+         "g-Wert / interne Gewinne DIN V 4108 (für Q_g,R)"),
         ("screed_*", "...",
          "Estrichparameter für C_Estrich (kombiniert mit FBH)"),
     ]))
 
     out.append(H2("Entscheidungs-Variablen (pro Zeitschritt t)"))
     out.append(vars_table([
-        ("t_innen[t]", "T^innen_t", "kontinuierlich",
-         "[T_min−10, T_max+10] °C",
+        ("t_innen[t]", "T^R_t", "kontinuierlich",
+         "[T_min−10, T_max+35] °C",
          "Raumlufttemperatur (Zustandsvariable)"),
-        ("t_innen_slack_low[t]", "s^low_t", "kontinuierlich",
+        ("t_wand[t]", "T^W_t", "kontinuierlich",
+         "[T_design−10, T_max+35] °C",
+         "Außenwandtemperatur (Zustandsvariable, NEU — 3-Speicher)"),
+        ("t_innen_slack_low_comfort[t]", "s^low,k_t", "kontinuierlich",
+         "[0, 0.5] K",
+         "Unterschreitung in der Komfortzone (milder Penalty)"),
+        ("t_innen_slack_low_critical[t]", "s^low,c_t", "kontinuierlich",
          "[0, ∞)",
-         "Unterschreitung des Komfortbands"),
+         "Unterschreitung darüber hinaus (scharfer Penalty)"),
         ("t_innen_slack_high[t]", "s^high_t", "kontinuierlich",
          "[0, ∞)",
          "Überschreitung des Komfortbands"),
+        ("room_heat_dump[t]", "q^dump_t", "kontinuierlich",
+         "[0, ∞)",
+         "Freie Lüftung gegen Überhitzung (unbestraft)"),
     ]))
 
     out.append(H2("Beigesteuerte Constraints"))
     out.append(constr_table([
         ("room_balance_{t}",
-         "C_room · (T_innen[t] − T_innen[t-1]) = (Q^Floor→Raum_t − Q^Verlust_t) · Δt"),
-        ("q_loss_link_{t}",
-         "Q^Verlust_t = UA/1000 · (T_innen[t-1] − T_aussen[t])  (explizites Euler)"),
-        ("comfort_lower_{t}",
-         "T_innen[t] + s^low_t ≥ T^min_komfort"),
-        ("comfort_upper_{t}",
-         "T_innen[t] − s^high_t ≤ T^max_komfort"),
+         "C_room·(T_R[t]−T_R[t-1])/Δt = q^Floor→Raum_t − q^RW_t − q^direkt_t + Q_g,R[t] − q^dump_t  (Raum implizit)"),
+        ("t_wand_balance_{t}",
+         "C_wand·(T_W[t]−T_W[t-1])/Δt = k_RW·A_W/1000·(T_R[t]−T_W[t-1]) − k_WA·A_W/1000·(T_W[t-1]−T_aussen[t])"),
+        ("(q^RW / q^direkt)",
+         "q^RW = k_RW·A_W/1000·(T_R[t]−T_W[t-1]); q^direkt = UA_direkt/1000·(T_R[t]−T_aussen[t])"),
+        ("t_innen_comfort_min_{t}",
+         "T_R[t] + s^low,k_t + s^low,c_t ≥ T^min_komfort"),
+        ("t_innen_comfort_max_{t}",
+         "T_R[t] − s^high_t ≤ T^max_komfort"),
     ]))
     out.append(P(
         "Die Slack-Variablen werden in der Zielfunktion mit "
