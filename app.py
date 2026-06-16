@@ -851,6 +851,59 @@ with tab_config:
                 help="Default: 15 % der Bruttowandflaeche (typisch fuer EFH).",
             )
 
+            # Fenster-Ausrichtung: Aufteilung der Gesamtflaeche auf die vier
+            # Fassaden N/O/S/W. Geht in die solaren Gewinne ein
+            # (Building.compute_room_gain_w). Eingabe in %, wird normiert.
+            cur_split = config["building"].get(
+                "window_orientation_split",
+                {"north": 0.10, "south": 0.40, "east": 0.25, "west": 0.25},
+            )
+            st.caption(
+                "**Fenster-Ausrichtung** — Aufteilung der Gesamtflaeche auf "
+                "die vier Fassaden (%). Bestimmt die solaren Waermegewinne."
+            )
+            or_col1, or_col2, or_col3, or_col4 = st.columns(4)
+            n_pct = or_col1.number_input(
+                "Nord %", 0, 100,
+                int(round(float(cur_split.get("north", 0.10)) * 100)), 5,
+            )
+            o_pct = or_col2.number_input(
+                "Ost %", 0, 100,
+                int(round(float(cur_split.get("east", 0.25)) * 100)), 5,
+            )
+            s_pct = or_col3.number_input(
+                "Sued %", 0, 100,
+                int(round(float(cur_split.get("south", 0.40)) * 100)), 5,
+            )
+            w_pct = or_col4.number_input(
+                "West %", 0, 100,
+                int(round(float(cur_split.get("west", 0.25)) * 100)), 5,
+            )
+            total_pct = n_pct + o_pct + s_pct + w_pct
+            if total_pct > 0:
+                config["building"]["window_orientation_split"] = {
+                    "north": n_pct / total_pct,
+                    "east": o_pct / total_pct,
+                    "south": s_pct / total_pct,
+                    "west": w_pct / total_pct,
+                }
+            else:
+                # Alles 0 -> gleichverteilt, damit das Modell nicht degeneriert
+                config["building"]["window_orientation_split"] = {
+                    "north": 0.25, "east": 0.25, "south": 0.25, "west": 0.25,
+                }
+            _split = config["building"]["window_orientation_split"]
+            _a_win = float(config["building"]["window_area_m2"])
+            _norm_note = "" if total_pct == 100 else (
+                f"  —  Summe {total_pct}% wird auf 100% normiert"
+            )
+            st.caption(
+                f"Flaeche je Fassade: Nord **{_split['north'] * _a_win:.1f}** | "
+                f"Ost **{_split['east'] * _a_win:.1f}** | "
+                f"Sued **{_split['south'] * _a_win:.1f}** | "
+                f"West **{_split['west'] * _a_win:.1f}** m²{_norm_note}"
+            )
+
             # U-Werte (Gebaeudegruppe-Defaults)
             uw_col1, uw_col2, uw_col3 = st.columns(3)
             config["building"]["u_value_wall_w_m2_k"] = uw_col1.number_input(
