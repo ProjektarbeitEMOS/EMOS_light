@@ -1,7 +1,7 @@
 """Waermepumpe mit SG-Ready Schnittstelle (BWP v1.1) fuer EMOS Light.
 
 COP-Modell basiert auf realen Kennlinien der Vaillant aroTHERM plus
-VWL 105/8.1 A (EN 14511). 2D-Interpolation ueber Aussentemperatur
+VWL 105/6 (EN 14511). 2D-Interpolation ueber Aussentemperatur
 und Vorlauftemperatur.
 
 Zwei thermische Ausgaenge mit unterschiedlichem COP:
@@ -32,7 +32,7 @@ from emos_light.utils.interpolation import interp_2d
 
 
 # ============================================================
-# Kennlinien: Vaillant aroTHERM plus VWL 105/8.1 A (EN 14511)
+# Kennlinien: Vaillant aroTHERM plus VWL 105/6 (EN 14511)
 # ============================================================
 
 # Stuetzstellen
@@ -57,7 +57,7 @@ _COP_TABLE = np.array([
 # mehr Enthalpiedurchsatz pro Verdichterumdrehung -> mehr Waerme
 # extrahierbar. Daher steigt P_th_max von A-7 (11.25) ueber A2 (12.48)
 # bis A7 (14.40 kW) — verifiziert anhand des Vaillant-Datenblatts der
-# aroTHERM plus VWL 105/8.1 A.
+# aroTHERM plus VWL 105/6.
 #
 # Spalten W45/W55/W65 sind ueber die A-7-Ratios skaliert (≈ +1 % je 10 K
 # VL-Anhebung — Kondensationsdruck-Effekt), da nur die W35-Maxima
@@ -69,7 +69,7 @@ _CAPACITY_TABLE = np.array([
     [14.40, 14.54, 14.92, 15.05],  # A7
 ])
 
-# Minimale thermische Modulation (aus Datenblatt aroTHERM plus VWL 105/8.1 A):
+# Minimale thermische Modulation (aus Datenblatt aroTHERM plus VWL 105/6):
 #   A2/W35: 4.76 kW min,  A7/W35: 4.61 kW min,  A-7/W35: ~4 kW min
 # Wird ueber ``min_electrical_power_kw`` (Default 1.0 kW) im Modell
 # durchgesetzt — bei COP ~4 entspricht das knapp 4 kW thermisch.
