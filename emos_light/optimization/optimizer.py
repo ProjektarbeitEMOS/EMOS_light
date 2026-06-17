@@ -61,6 +61,16 @@ P_CRITICAL = 300.0
 # Hoch genug, dass der Solver teure Stunden nur in echten Engpaessen
 # anrechnet — sonst greift natuerlich der Cost-Minimizer.
 PENALTY_EV_EXPENSIVE = 500.0
+# Mini-Strafe in ct/kWh auf die freie Raum-Lueftung (``room_heat_dump``).
+# Ohne sie ist die Raum-Energiebilanz zwar eine Gleichung, der kostenlose
+# Dump (>= 0) gibt dem Solver aber pro Schritt einen freien Freiheitsgrad:
+# T_innen laesst sich gratis nach unten schieben -> degenerierte LP ->
+# T_innen springt zwischen gleich teuren Loesungen ("zappelnder" Verlauf).
+# Die Strafe bricht die Degeneration (Dump wird minimal, also 0 ausser bei
+# echtem Ueberschuss), ist aber winzig gegen den Strompreis (~30 ct/kWh)
+# und liegt weit unter UNMET_HEAT_PENALTY_CT, sodass Lueften gegen
+# Ueberhitzen weiterhin der billigere Weg bleibt.
+PENALTY_ROOM_DUMP = 1.0
 
 
 class EMOSLightOptimizer:
@@ -397,6 +407,15 @@ class EMOSLightOptimizer:
                     + variables["t_innen_slack_low_critical"][t] * cost_critical_ct_per_k
                     + variables["t_innen_slack_high"][t] * UNMET_HEAT_PENALTY_CT
                 ) * dt_h
+                for t in range(num_steps)
+            )
+
+        # Mini-Strafe auf die freie Raum-Lueftung: bricht die LP-Degeneration,
+        # die T_innen sonst "zappeln" laesst (siehe PENALTY_ROOM_DUMP). dump[t]
+        # in kW, * dt_h -> kWh, * Strafe in ct/kWh -> ct.
+        if "room_heat_dump" in variables:
+            cost += pulp.lpSum(
+                variables["room_heat_dump"][t] * dt_h * PENALTY_ROOM_DUMP
                 for t in range(num_steps)
             )
 
