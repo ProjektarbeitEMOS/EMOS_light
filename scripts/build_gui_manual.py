@@ -550,7 +550,7 @@ def sec_pv_battery():
 def sec_heatpump():
     out = [H1("2.5 Wärmepumpe & SG-Ready")]
     out.append(P(
-        "Modelliert ist eine Vaillant aroTHERM plus VWL 105/8.1 A "
+        "Modelliert ist eine Vaillant aroTHERM plus VWL 105/6 "
         "(Luft-Wasser-WP) mit realem 2D-COP-Kennfeld nach EN 14511."
     ))
     out.append(field_table([

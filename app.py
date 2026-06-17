@@ -640,7 +640,7 @@ with tab_config:
     # Waermepumpe & SG-Ready
     _hp_container = st.container(key=_wkey("hp_section"))
     with _hp_container, st.expander("Waermepumpe & SG-Ready", expanded=False):
-        st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/8.1 A')}")
+        st.caption(f"Modell: {config['heat_pump'].get('model', 'Vaillant aroTHERM plus VWL 105/6')}")
         config["heat_pump"]["enabled"] = st.checkbox("WP aktiviert", value=config["heat_pump"].get("enabled", True), key=_wkey("hp_en"))
         if config["heat_pump"]["enabled"]:
             hp_col1, hp_col2 = st.columns(2)

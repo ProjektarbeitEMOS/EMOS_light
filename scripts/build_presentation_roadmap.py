@@ -814,7 +814,7 @@ def sec_8_qa():
          "und meldet es als KPI im Ergebnis."),
 
         ("Wie real sind die Komponenten-Modelle?",
-         "WP: 2D-Kennfeld der Vaillant aroTHERM plus VWL 105/8.1 A "
+         "WP: 2D-Kennfeld der Vaillant aroTHERM plus VWL 105/6 "
          "nach EN 14511, direkt vom Hersteller. SG-Ready: BWP-"
          "Spezifikation v1.1. Pufferspeicher: Zwei-Zonen-Modell nach "
          "oemof-thermal, geometriebasierte Verlustberechnung. Batterie: "
