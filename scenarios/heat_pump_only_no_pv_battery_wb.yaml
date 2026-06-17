@@ -17,8 +17,6 @@ config_overrides:
   general:
     optimization_horizon_hours: 24
     max_grid_power_kw: 20.0
-  heat_pump:
-    max_starts_per_day: 8
   wallboxes: []
   electric_vehicles: []
 input_overrides:
@@ -59,8 +57,3 @@ checks:
     metric: hp_total_kwh
     op: ">"
     value: 3
-  - type: metric
-    name: hp_starts_limit
-    metric: hp_starts_count
-    op: "<="
-    value: 8

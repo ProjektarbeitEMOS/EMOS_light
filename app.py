@@ -658,18 +658,38 @@ with tab_config:
                 help="Vorlauftemperatur WW-Bereitung — bestimmt COP WW",
             )
 
-            config["heat_pump"]["max_starts_per_day"] = int(st.number_input(
-                "Max. Einschaltvorgaenge pro Tag",
-                min_value=0, max_value=48,
-                value=int(config["heat_pump"].get("max_starts_per_day", 8)),
-                step=1, key=_wkey("hp_max_starts"),
+            config["heat_pump"]["min_run_time_minutes"] = int(st.number_input(
+                "Mindestlaufzeit je Einschaltvorgang (min)",
+                min_value=0, max_value=240,
+                value=int(config["heat_pump"].get("min_run_time_minutes", 60)),
+                step=15, key=_wkey("hp_min_run"),
                 help=(
-                    "Verdichter-Schonung: jedes OFF->ON belastet den "
-                    "Verdichter. Umschalten zwischen Heizkreis und WW "
-                    "zaehlt nicht, solange die WP an bleibt. "
-                    "0 = keine Begrenzung."
+                    "Verdichter-Schonung: nach jedem Einschalten laeuft die "
+                    "WP mind. so lange am Stueck. Umschalten zwischen "
+                    "Heizkreis und WW ist in dieser Zeit erlaubt. "
+                    "0 = keine Mindestlaufzeit."
                 ),
             ))
+
+            hp_col5, hp_col6 = st.columns(2)
+            config["heat_pump"]["backup_heater_enabled"] = hp_col5.checkbox(
+                "Heizstab (Backup)",
+                value=bool(config["heat_pump"].get("backup_heater_enabled", True)),
+                key=_wkey("hp_rod_en"),
+                help=(
+                    "Eingebauter elektrischer Heizstab (COP 1) im Heizkreis. "
+                    "Springt nur an, wenn die WP an ihrer Kennfeld-Kapazitaet "
+                    "haengt (sehr kalter Tag) und sonst das Komfortband "
+                    "verletzt wuerde — im Normalbetrieb aus."
+                ),
+            )
+            config["heat_pump"]["backup_heater_max_power_kw"] = hp_col6.number_input(
+                "Heizstab max. el. Leistung (kW)",
+                min_value=0.0, max_value=20.0,
+                value=float(config["heat_pump"].get("backup_heater_max_power_kw", 8.5)),
+                step=0.5, key=_wkey("hp_rod_max"),
+                disabled=not config["heat_pump"]["backup_heater_enabled"],
+            )
 
             config["heat_pump"]["sg_ready"] = st.checkbox(
                 "SG-Ready aktiviert (BWP v1.1)",
@@ -1444,30 +1464,28 @@ with tab_optimize:
                 kpi_row3[3].metric("Gesch. Lebensdauer", "-")
 
         # WP-Einschaltvorgaenge (Verdichter-Schonung — siehe heat_pump.py).
-        # Anzeige pro Kalendertag; eine Tagessumme ueber den Horizont waere
-        # irrefuehrend, weil das Limit per Tag, nicht pro Horizont gilt.
+        # Anzeige pro Kalendertag als Diagnose: die Verdichter-Schonung laeuft
+        # ueber die Mindestlaufzeit (min_run_time_minutes), nicht mehr ueber
+        # ein Tageslimit. Umschalten Heizkreis <-> WW zaehlt nicht als Start.
         if (
             config.get("heat_pump", {}).get("enabled")
             and getattr(result, "hp_starts_per_day", None)
         ):
-            max_starts = int(
-                config.get("heat_pump", {}).get("max_starts_per_day", 8)
+            min_run = int(
+                config.get("heat_pump", {}).get("min_run_time_minutes", 60)
             )
             days = sorted(result.hp_starts_per_day.keys())
             per_day = [result.hp_starts_per_day[d] for d in days]
             with st.container():
                 st.markdown(
                     "**WP-Einschaltvorgaenge** "
-                    "(Schonung des Verdichters — Umschalten Heizkreis ↔ WW "
-                    "zaehlt nicht):"
+                    "(Schonung des Verdichters via Mindestlaufzeit "
+                    f"{min_run} min — Umschalten Heizkreis ↔ WW zaehlt nicht):"
                 )
                 cols = st.columns(max(2, len(days)))
                 for i, (d, c) in enumerate(zip(days, per_day)):
-                    delta_str = (
-                        f"max {max_starts}" if max_starts > 0 else "ohne Limit"
-                    )
                     cols[i].metric(
-                        d.strftime("%d.%m."), f"{c}", delta=delta_str,
+                        d.strftime("%d.%m."), f"{c}", delta="Starts",
                         delta_color="off",
                     )
 
@@ -1660,6 +1678,16 @@ with tab_optimize:
                         name="WP max (T-abh.)",
                         line=dict(color="orange", dash="dash", width=1),
                         opacity=0.6,
+                    ),
+                    row=1, col=1,
+                )
+            # Heizstab (Backup-Heater) — nur zeigen, wenn er auch lief.
+            rod = getattr(result, "hp_rod_power_kw", None)
+            if rod is not None and len(rod) > 0 and float(np.max(rod)) > 1e-3:
+                fig_el.add_trace(
+                    go.Scatter(
+                        x=ts, y=rod, name="Heizstab",
+                        line=dict(color="red", dash="dot"),
                     ),
                     row=1, col=1,
                 )

@@ -67,8 +67,3 @@ checks:
   - type: no_simultaneous_battery
     name: no_charge_discharge_overlap
     tolerance: 0.0001
-  - type: metric
-    name: hp_starts_limit
-    metric: hp_starts_count
-    op: "<="
-    value: 8

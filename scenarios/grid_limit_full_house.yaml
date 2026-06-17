@@ -86,8 +86,3 @@ checks:
     op: ">="
     value: 0.65
     tolerance: 0.2
-  - type: metric
-    name: hp_starts_limit
-    metric: hp_starts_count
-    op: "<="
-    value: 8

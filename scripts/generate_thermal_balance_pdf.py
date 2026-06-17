@@ -149,8 +149,9 @@ def symbol_table() -> Table:
         ["T_aus(t)", "°C", "Aussentemperatur (Eingangsdaten)"],
         ["E_floor(t)", "kWh", "Im Estrich gespeicherte Energie ueber T_min"],
         ["E_ww(t)", "kWh", "Im WW-Speicher gespeicherte Energie"],
-        ["q_floor_in(t)", "kW", "Waermestrom WP -> Estrich"],
+        ["q_floor_in(t)", "kW", "Waermestrom WP (+ Heizstab) -> Estrich"],
         ["q_floor_to_room(t)", "kW", "Waermestrom Estrich -> Raum"],
+        ["P_Stab(t)", "kW", "Heizstab-Leistung (Backup, COP 1; sonst 0)"],
         ["q_loss(t)", "kW", "Gesamtverlust Raum -> Aussen (direkt + Wandpfad)"],
         ["Q_g,R(t)", "W", "solare + interne Raumgewinne (NEU)"],
         ["q_ww_in / q_ww_out", "kW", "Zu-/Abfluss WW-Speicher"],
@@ -546,6 +547,26 @@ def build_story(styles) -> list:
         "offener Punkt).",
         styles,
     ))
+    story.append(P(
+        "Eingebauter Heizstab (Backup-Heater): Bei sehr tiefen Aussentemperaturen sinkt die "
+        "Kennfeld-Kapazitaet der WP, und der kalt gestartete Estrich kann nicht schnell genug "
+        "auf Komforttemperatur gebracht werden. Ein modulierbarer elektrischer Heizstab speist "
+        "dann als resistive Zusatzwaerme (COP 1) in den FBH-Kreis. Er addiert sich in der "
+        "Floor-Bilanz zur WP-Waerme:",
+        styles,
+    ))
+    story.extend(equation_block(
+        "Estrich-Eingang inkl. Heizstab:",
+        r"q_{\mathrm{floor,in}}(t) = \mathrm{COP}_{\mathrm{floor}}(t)\cdot P_{\mathrm{el,floor}}(t) "
+        r"+ P_{\mathrm{Stab}}(t),\qquad 0 \leq P_{\mathrm{Stab}}(t) \leq 8{,}5\ \mathrm{kW}",
+        styles,
+    ))
+    story.append(P(
+        "Der Heizstab braucht keine eigene Schaltlogik: WP-Waerme ist pro kWh immer guenstiger "
+        "(COP > 1), also nutzt der Solver den Stab nur, wenn die WP an ihrer Kapazitaetsgrenze "
+        "haengt und sonst das Komfortband verletzt wuerde. Im Normalbetrieb bleibt er aus.",
+        styles,
+    ))
 
     # 5. WW-Speicher
     story.append(H1("5 Warmwasserspeicher", styles))
@@ -594,7 +615,7 @@ def build_story(styles) -> list:
     ))
     rows = [
         ["Komponente", "Senke", "supply", "demand"],
-        ["HeatPump", "floor", "COP_floor · P_el,floor", "—"],
+        ["HeatPump", "floor", "COP_floor · P_el,floor + P_Stab", "—"],
         ["HeatPump", "ww", "COP_ww · P_el,ww", "—"],
         ["UnderfloorHeating", "floor", "—", "q_floor_in"],
         ["UnderfloorHeating", "room", "q_floor_to_room", "—"],

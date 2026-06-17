@@ -1,8 +1,7 @@
 name: winter_no_pv_heat_pump
 description: >
   Kalter Wintertag ohne PV-Erzeugung. Das Szenario prueft, ob die
-  Waermepumpe Heizbedarf und Komfort bedienen kann und das Startlimit
-  eingehalten wird.
+  Waermepumpe Heizbedarf und Komfort bedienen kann.
 date: 2026-01-20
 mode: milp
 components:
@@ -16,8 +15,6 @@ components:
 config_overrides:
   general:
     optimization_horizon_hours: 24
-  heat_pump:
-    max_starts_per_day: 8
   wallboxes: []
   electric_vehicles: []
 input_overrides:
@@ -52,11 +49,6 @@ checks:
   - type: success
     name: optimization_success
     expected: true
-  - type: metric
-    name: hp_starts_limit
-    metric: hp_starts_count
-    op: "<="
-    value: 8
   - type: series_min
     name: indoor_temp_comfort
     field: indoor_temp_c

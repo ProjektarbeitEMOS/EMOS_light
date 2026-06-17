@@ -260,7 +260,7 @@ def build_overview():
         ["Komponente", "Variablentypen", "Charakter"],
         ["Netz", "kontinuierlich + binaer", "Bezug/Einspeisung getrennt"],
         ["Batterie", "kontinuierlich + 2 binaer", "Lade-/Entladeentkopplung"],
-        ["Waermepumpe", "kontinuierlich + 6 binaer", "SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, max 8 Starts/Tag"],
+        ["Waermepumpe", "kontinuierlich + 6 binaer", "SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, Mindestlaufzeit 60 min, Heizstab (Backup)"],
         ["Estrich (FBH)", "kontinuierlich", "Energie + Q_in + Q Estrich->Raum"],
         ["Gebäude (Raum)", "kontinuierlich", "T_innen-Zustandsvar. + Komfortband-Slacks (seit Mai 2026)"],
         ["Pufferspeicher (WW)", "kontinuierlich + 1 binaer", "Zwei-Zonen-Verlustmodell + Legionellen-Tag"],
@@ -524,7 +524,7 @@ def build_heatpump():
         "Zustand 3 = Einschaltempfehlung (WW-Sollwert um sg3-Offset angehoben), "
         "Zustand 4 = Zwangseinschaltung (WW + Estrich-Pufferspeicher angehoben). "
         "Die Einschalt-Variable y<sup>HP,start</sup> markiert OFF&#8594;ON-Vorgaenge "
-        "und wird vom Tageslimit (siehe 5.5) beschraenkt."
+        "(reine Diagnose, exakt an y<sup>HP</sup> gekoppelt; siehe 5.5)."
     ))
 
     out.append(H2("5.2 Modulationsbereich"))
@@ -650,22 +650,46 @@ def build_heatpump():
     ))
 
     out.append(P(
-        "<b>Tageslimit der Einschaltvorgaenge</b> (Mai 2026, "
-        "<font face='Courier'>max_starts_per_day</font>, Default 8): "
-        "Jedes OFF→ON belastet den Verdichter. Umschalten zwischen "
-        "Heizkreis und WW <i>zaehlt nicht</i>, weil y<sup>HP</sup> dabei "
-        "an bleibt. Linking-Constraint + Tagessumme:"
+        "<b>Verdichter-Schonung ueber die Mindestlaufzeit</b> "
+        "(<font face='Courier'>min_run_time_minutes</font>, Default 60): "
+        "Jeder Einschaltvorgang zieht eine Mindestlaufzeit von 1 h nach sich "
+        "(Constraint oben). Damit entfaellt das fruehere Tageslimit der "
+        "Einschaltvorgaenge — haeufiges Takten ist schon durch die "
+        "Mindestlaufzeit ausgeschlossen. Umschalten zwischen Heizkreis und WW "
+        "<i>zaehlt nicht</i> als Neustart, weil y<sup>HP</sup> dabei an bleibt."
+    ))
+    out.append(P(
+        "Der Einschalt-Indikator y<sup>HP,start</sup> wird weiterhin "
+        "mitgefuehrt (Diagnose: Schaltzahl-Vergleich gegen Baseline/MPC im "
+        "Dashboard), jetzt aber exakt an y<sup>HP</sup> gekoppelt statt nach "
+        "oben begrenzt:"
     ))
     out.append(eq_image(
         r"y^{\text{HP,start}}_t \geq y^{\text{HP}}_t - y^{\text{HP}}_{t-1}, \quad"
-        r"\sum_{t \in d} y^{\text{HP,start}}_t \leq N^{\text{max,start}}"
+        r"y^{\text{HP,start}}_t \leq y^{\text{HP}}_t, \quad"
+        r"y^{\text{HP,start}}_t \leq 1 - y^{\text{HP}}_{t-1}"
     ))
     out.append(P(
-        "Tagesgruppierung kommt aus den Zeitstempeln; bei t=0 wird "
-        "y<sup>HP</sup><sub>−1</sub> = 0 angenommen (im MPC-Folgewindow "
-        "ueberzaehlt das maximal um +1 pro Window-Wechsel). "
-        "<font face='Courier'>max_starts_per_day = 0</font> deaktiviert die "
-        "Restriktion."
+        "Bei t=0 wird y<sup>HP</sup><sub>−1</sub> = 0 angenommen (im "
+        "MPC-Folgewindow zaehlt eine durchlaufende WP einmalig als Start). "
+        "Da y<sup>HP,start</sup> sonst nirgends vorkommt — weder in der "
+        "Zielfunktion noch in einer anderen Restriktion —, aendern diese "
+        "Gleichungen das Optimum nicht."
+    ))
+
+    out.append(P(
+        "<b>Eingebauter Heizstab (Backup-Heater, Juni 2026).</b> Bei sehr "
+        "tiefen Aussentemperaturen haengt die WP an ihrer Kennfeld-Kapazitaet "
+        "(P<sup>HP</sup><sub>max</sub>(T) sinkt) und kann den kalt gestarteten "
+        "Estrich nicht schnell genug auf Komforttemperatur bringen. Ein "
+        "modulierbarer elektrischer Heizstab P<sup>HP,Stab</sup> ∈ "
+        "[0, 8,5 kW] speist als resistive Zusatzwaerme (COP 1) in den "
+        "FBH-Kreis: in der Floor-Waermebilanz zaehlt er additiv zur "
+        "WP-Waerme, in der elektrischen Bilanz additiv zur WP-Last. Er "
+        "braucht keine eigene Logik-Restriktion — weil WP-Waerme pro kWh "
+        "immer guenstiger ist (COP &gt; 1), nutzt der Solver den Stab "
+        "<i>nur</i>, wenn die WP voll ausgelastet ist und sonst die "
+        "(teurere) Komfort-Slack-Strafe anfiele. Im Normalbetrieb bleibt er 0."
     ))
 
     out.append(H2("5.6 SG-Ready (BWP v1.1) als einziger Steuerkanal"))
@@ -1289,7 +1313,12 @@ def build_pdf(out_path: str):
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "MILP_Optimierer_Bericht.pdf"
+    _docs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs"
+    )
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        _docs, "MILP_Optimierer_Bericht.pdf"
+    )
     out_abs = os.path.abspath(out)
     build_pdf(out_abs)
     print(f"PDF geschrieben: {out_abs}")

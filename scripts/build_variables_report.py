@@ -273,7 +273,7 @@ def build_intro():
     overview_rows = [
         [cell("PV-Anlage"),       cell("Quelle"),    cell("Erzeugungsprognose (passiv, keine Variablen)")],
         [cell("Batterie"),        cell("Speicher"),  cell("Lade/Entlade/SOC + Logik-Binär")],
-        [cell("Wärmepumpe"), cell("Wandler"),   cell("Leistung, SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, Tageslimit Einschaltvorgaenge")],
+        [cell("Wärmepumpe"), cell("Wandler"),   cell("Leistung, SG-Ready 1/2/3/4 (einziger Steuerkanal), hp_on, hp_start, Mindestlaufzeit 60 min, Heizstab (Backup)")],
         [cell("Estrich (FBH)"),   cell("Speicher"),  cell("Energie + Wärmezufuhr + Q Estrich→Raum")],
         [cell("Pufferspeicher"),  cell("Speicher"),  cell("Energie + Q_in/Q_demand + Legionellen-Binary")],
         [cell("Frischwasserst."), cell("Wandler"),   cell("Bedarfsmodifikator (passiv)")],
@@ -472,8 +472,8 @@ def section_heatpump():
         "ist SG-Ready (BWP v1.1) der <b>einzige</b> Steuerkanal: vier "
         "Zustaende (1=Zwangsabschaltung, 2=Normal, 3=Einschaltempfehlung, "
         "4=Zwangseinschaltung), genau einer pro Schritt aktiv. y^HP wird "
-        "daraus direkt abgeleitet. Zusaetzlich Tageslimit fuer "
-        "Einschaltvorgaenge zur Verdichter-Schonung."
+        "daraus direkt abgeleitet. Die Verdichter-Schonung laeuft ueber die "
+        "Mindestlaufzeit (1 h je Einschaltvorgang)."
     ))
 
     out.append(H2("Inputs"))
@@ -484,10 +484,12 @@ def section_heatpump():
         ("flow_temp_dhw_c", "55.0", "Vorlauftemp. Warmwasser"),
         ("operating_min_temp_c / max_temp_c", "-25 / 43",
          "Aussentemperatur-Betriebsfenster"),
-        ("min_run_time_minutes", "15", "Mindestlaufzeit nach Start"),
+        ("min_run_time_minutes", "60",
+         "Mindestlaufzeit je Einschaltvorgang (Verdichter-Schonung)"),
         ("min_pause_time_minutes", "15", "Mindestpause nach Stopp"),
-        ("max_starts_per_day", "8",
-         "Max. OFF->ON pro Kalendertag (Verdichter-Schonung; 0 = kein Limit)"),
+        ("backup_heater_enabled", "true", "Eingebauter Heizstab modelliert"),
+        ("backup_heater_max_power_kw", "8.5",
+         "Max. el. Leistung Heizstab (COP 1); nur aktiv bei WP-Kapazitaetsgrenze"),
         ("sg_ready", "true", "SG-Ready-Schnittstelle vorhanden"),
         ("sg_ready_temp_raise_state3_c", "5.0",
          "WW-Soll-Erhoehung in SG3 (Einschaltempfehlung)"),
@@ -502,9 +504,12 @@ def section_heatpump():
         ("hp_on[t]",    "y^HP_t",  "binaer",
          "{0, 1}", "1 = WP an (aus SG-Ready abgeleitet)"),
         ("hp_start[t]", "y^HP,start_t", "binaer",
-         "{0, 1}", "OFF->ON-Indikator, geht in Tagessumme"),
+         "{0, 1}", "OFF->ON-Indikator (Diagnose, exakt an hp_on gekoppelt)"),
         ("hp_power[t]", "P^HP_t",  "kontinuierlich",
          "[0, max_electrical_power_kw]", "Elektrische Gesamtleistung"),
+        ("hp_rod_power[t]", "P^HP,Stab_t", "kontinuierlich",
+         "[0, backup_heater_max_power_kw]",
+         "Heizstab (COP 1) auf FBH-Kreis; im Normalbetrieb 0"),
         ("hp_power_floor[t]", "P^HP,Floor_t", "kontinuierlich",
          "[0, max_electrical_power_kw]",
          "Anteil fuer FBH-Pfad (nur wenn beide Senken aktiv)"),
@@ -530,8 +535,10 @@ def section_heatpump():
          "Mindestpausenzeit: y^HP_{t-1} - y^HP_t ≤ 1 - y^HP_{t+k}"),
         ("hp_start_link_{t}",
          "y^HP,start_t ≥ y^HP_t - y^HP_{t-1}  (Einschalt-Indikator)"),
-        ("hp_max_starts_{day}",
-         "Σ_{t in day} y^HP,start_t ≤ N^max,start  (Default 8/Tag)"),
+        ("hp_start_ub_on_{t}",
+         "y^HP,start_t ≤ y^HP_t  (0 wenn WP aus)"),
+        ("hp_start_ub_prev_{t}",
+         "y^HP,start_t ≤ 1 - y^HP_{t-1}  (exakte Diagnose, kein Tageslimit mehr)"),
         ("hp_power_split_{t}",
          "P^HP_t = P^HP,Floor_t + P^HP,WW_t   (wenn beide Senken aktiv)"),
         ("heat_to_floor_{t}",
@@ -549,10 +556,12 @@ def section_heatpump():
     out.append(H2("Output"))
     out.append(output_table([
         ("hp_power_kw",  "kW",  "Elektrische WP-Leistung pro Zeitschritt"),
+        ("hp_rod_power_kw", "kW",
+         "Heizstab-Leistung (Backup, COP 1); >0 nur bei WP-Kapazitaetsgrenze"),
         ("sg_ready_state", "1/2/3/4",
          "Resultierender SG-Zustand (1 Aus, 2 Normal, 3 Empfehlung, 4 Zwangsein)"),
         ("hp_starts_per_day", "dict[date,int]",
-         "Anzahl OFF->ON-Vorgaenge pro Kalendertag (max max_starts_per_day)"),
+         "Anzahl OFF->ON-Vorgaenge pro Kalendertag (Diagnose)"),
         ("hp_starts_count", "int", "Gesamtsumme der Einschaltvorgaenge"),
         ("q_floor_kw",   "kW",  "Thermische Leistung in den Estrich"),
         ("q_ww_kw",      "kW",  "Thermische Leistung in den WW-Speicher"),
@@ -959,7 +968,12 @@ def build_pdf(out_path: str):
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "MILP_Variablen_Bericht.pdf"
+    _docs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs"
+    )
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        _docs, "MILP_Variablen_Bericht.pdf"
+    )
     out_abs = os.path.abspath(out)
     build_pdf(out_abs)
     print(f"PDF geschrieben: {out_abs}")

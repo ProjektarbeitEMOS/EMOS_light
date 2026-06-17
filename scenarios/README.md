@@ -22,7 +22,7 @@ python scripts/run_test_scenario.py scenarios/battery_pv_surplus.yaml --json
 | `ev_negative_prices.yaml` | E-Auto mit negativen Nachtpreisen: Wallbox soll guenstig laden. |
 | `ev_impossible_departure.yaml` | Bewusst unmoegliches E-Auto-Ziel: System soll Nicht-Loesbarkeit erkennen. |
 | `winter_no_pv_heat_pump.yaml` | Kalter Wintertag ohne PV: Waermepumpe, Gebaeude und Warmwasser pruefen. |
-| `heat_pump_extreme_cold.yaml` | Extrem kalter Tag: WP-Leistung, Komfort und Startlimit pruefen. |
+| `heat_pump_extreme_cold.yaml` | Extrem kalter Tag: WP-Leistung und Komfort pruefen. |
 | `warm_water_morning_evening.yaml` | Warmwasserbedarf morgens/abends: Speicherkomfort pruefen. |
 | `grid_limit_full_house.yaml` | Vollhaus mit begrenztem Netzanschluss: Netzlimit und flexible Lasten pruefen. |
 | `load_spike_no_battery.yaml` | Abendliche Lastspitze ohne Batterie: Netzbezug plausibilisieren. |

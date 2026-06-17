@@ -17,7 +17,6 @@ SG-Ready Zustaende nach BWP v1.1:
 from typing import Any
 
 import numpy as np
-import pulp
 
 from emos_light.components.base import MILPComponent
 from emos_light.components._milp_helpers import (
@@ -142,9 +141,17 @@ class HeatPump(MILPComponent):
         # umgeschaltet werden (siehe hp_mode_ww-Constraint).
         self.min_run_minutes = config.get("min_run_time_minutes", 60)
         self.min_pause_minutes = config.get("min_pause_time_minutes", 15)
-        # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
-        # Setz auf 0 oder negative Werte, um die Restriktion zu deaktivieren.
-        self.max_starts_per_day = int(config.get("max_starts_per_day", 8))
+        # Eingebauter elektrischer Heizstab (Backup-/Zusatzheizer) im
+        # Heizwasserkreis. Elektrisch modulierbar 0..max, COP 1 (resistiv).
+        # Er ist im Normalbetrieb aus: WP-Waerme ist pro kWh immer guenstiger
+        # (COP > 1), der Solver nutzt den Stab daher nur, wenn die WP an ihrer
+        # Kennfeld-Kapazitaet haengt und sonst das Komfortband verletzt wuerde.
+        self.backup_heater_enabled = bool(
+            config.get("backup_heater_enabled", True)
+        )
+        self.backup_heater_max_power_kw = float(
+            config.get("backup_heater_max_power_kw", 8.5)
+        )
         self.sg_ready = config.get("sg_ready", True)
         # SG-Ready-Konfiguration (BWP v1.1, siehe heat_pump.add_constraints).
         # Bei Zustand 3 (Einschaltempfehlung) wird der WW-Sollwert um diese
@@ -287,8 +294,8 @@ class HeatPump(MILPComponent):
         self._max_electrical_power_kw_t = np.maximum(
             self._p_el_floor_t, self._p_el_ww_t,
         )
-        # Zeitstempel puffern — werden in add_constraints fuer die
-        # Tagesgruppierung der max_starts_per_day-Restriktion gebraucht.
+        # Zeitstempel puffern — werden in extract_result fuer die
+        # Tagesgruppierung der Einschalt-Zaehlung (Diagnose) gebraucht.
         self._timestamps = list(inp.timestamps)
 
     def set_active_heat_sinks(self, sinks: set) -> None:
@@ -306,11 +313,18 @@ class HeatPump(MILPComponent):
         Variablen:
             hp_on[t]: Binaer — WP an/aus
             hp_power[t]: Elektrische Leistung gesamt [kW]
-            hp_start[t]: Binaer — Einschaltvorgang OFF -> ON bei t
-                (gekoppelt an hp_on, wird mit max_starts_per_day begrenzt).
-                Umschalten zwischen FBH und WW zaehlt **nicht** als Start,
-                solange die WP an bleibt — nur das OFF->ON-Anschalten
-                belastet den Verdichter.
+            hp_start[t]: Binaer — Einschaltvorgang OFF -> ON bei t. Reine
+                Diagnose-/Reporting-Variable (exakt an hp_on gekoppelt, s.u.),
+                kein hartes Tageslimit mehr. Die Verdichter-Schonung kommt
+                jetzt allein ueber die Mindestlaufzeit (min_run_time_minutes,
+                Default 60 min). Umschalten zwischen FBH und WW zaehlt **nicht**
+                als Start, solange die WP an bleibt.
+            hp_rod_power[t]: Elektrische Leistung des eingebauten Heizstabs
+                [kW], modulierbar 0..backup_heater_max_power_kw. Speist als
+                Zusatzwaerme (COP 1) in den Floor-Heizkreis. Nur erzeugt, wenn
+                der Heizstab aktiviert und die Floor-Senke aktiv ist. Bleibt im
+                Normalbetrieb 0 (WP-Waerme ist pro kWh guenstiger) — der Solver
+                zieht ihn nur, wenn die WP an ihrer Kennfeld-Kapazitaet haengt.
             hp_sg1[t]: Binaer — SG-Ready Zustand 1 (Zwangsabschaltung, WP aus)
             hp_sg2[t]: Binaer — SG-Ready Zustand 2 (Normalbetrieb, WP an, kein Boost)
             hp_sg3[t]: Binaer — SG-Ready Zustand 3 (Einschaltempfehlung, WP an + WW-Boost)
@@ -334,6 +348,14 @@ class HeatPump(MILPComponent):
             ),
             "hp_start": make_binary_array("hp_start", num_steps),
         }
+        # Eingebauter Heizstab (Backup-Heater): modulierbare el. Leistung
+        # 0..max, speist als Zusatzwaerme (COP 1) in den Heizkreis (Floor).
+        # Nur sinnvoll, wenn die Raumheizung (Floor-Senke) aktiv ist.
+        if self.backup_heater_enabled and "floor" in self._active_sinks:
+            result["hp_rod_power"] = make_var_array(
+                "hp_rod_power", num_steps,
+                low=0.0, high=self.backup_heater_max_power_kw,
+            )
         if self.sg_ready:
             result["hp_sg1"] = make_binary_array("hp_sg1", num_steps)
             result["hp_sg2"] = make_binary_array("hp_sg2", num_steps)
@@ -416,13 +438,19 @@ class HeatPump(MILPComponent):
         add_min_run_time(model, hp_on, min_run_steps=min_run_steps, name="hp")
         add_min_pause_time(model, hp_on, min_pause_steps=min_pause_steps, name="hp")
 
-        # Einschalt-Zaehler-Indikator: hp_start[t] muss 1 sein, wenn
-        # zwischen t-1 und t von OFF auf ON gewechselt wird. Da hp_start in
-        # die Tagessumme eingeht und diese eine Obergrenze hat, wird der
-        # Solver hp_start nur dann anheben, wenn er muss — die untere
-        # Schranke (start >= on[t]-on[t-1]) erzwingt das. Bei t=0 nehmen
-        # wir an, dass die WP vorher AUS war (konservativ; fuer MPC-
-        # Folgewindows liefert dies u.U. einen unnoetigen Zaehl-Start).
+        # Einschalt-Indikator (reine Diagnose, kein Tageslimit mehr). Die
+        # Verdichter-Schonung laeuft jetzt allein ueber die Mindestlaufzeit
+        # (add_min_run_time oben). hp_start wird trotzdem mitgefuehrt, damit
+        # das Dashboard/die Baseline die Schaltzahl vergleichen koennen —
+        # exakt an hp_on gekoppelt (sonst haette der Solver ohne Limit keinen
+        # Anreiz, hp_start klein zu halten, und die Zaehlung waere falsch):
+        #   hp_start[t] >= hp_on[t] - hp_on[t-1]   (1 beim Einschalten)
+        #   hp_start[t] <= hp_on[t]                (0 wenn WP aus)
+        #   hp_start[t] <= 1 - hp_on[t-1]          (0 wenn vorher schon an)
+        # Bei t=0 nehmen wir an, die WP war vorher AUS (konservativ; im MPC-
+        # Folgewindow zaehlt eine durchlaufende WP einmalig als Start). Diese
+        # Constraints aendern das Optimum nicht — hp_start kommt sonst nirgends
+        # vor (weder Zielfunktion noch andere Restriktion).
         hp_start = variables["hp_start"]
         for t in range(num_steps):
             prev = 0 if t == 0 else hp_on[t - 1]
@@ -430,20 +458,14 @@ class HeatPump(MILPComponent):
                 hp_start[t] >= hp_on[t] - prev,
                 f"hp_start_link_{t}",
             )
-
-        # Tageslimit fuer Einschaltvorgaenge. Gruppiert nach Kalenderdatum
-        # aus den vom Optimizer (via prepare) durchgereichten Timestamps.
-        # max_starts_per_day <= 0 schaltet die Restriktion aus.
-        if self.max_starts_per_day > 0 and self._timestamps is not None:
-            by_day: dict = {}
-            for t, ts in enumerate(self._timestamps[:num_steps]):
-                by_day.setdefault(ts.date(), []).append(t)
-            for day, idxs in by_day.items():
-                model += (
-                    pulp.lpSum(hp_start[t] for t in idxs)
-                    <= self.max_starts_per_day,
-                    f"hp_max_starts_{day.isoformat()}",
-                )
+            model += (
+                hp_start[t] <= hp_on[t],
+                f"hp_start_ub_on_{t}",
+            )
+            model += (
+                hp_start[t] <= 1 - prev,
+                f"hp_start_ub_prev_{t}",
+            )
 
         # SG-Ready Constraints (BWP v1.1) — SG-Ready ist der EINZIGE
         # Steuerkanal des Solvers fuer die WP:
@@ -552,8 +574,12 @@ class HeatPump(MILPComponent):
     # ------------------------------------------------------------------
 
     def electrical_demand(self, variables: dict, t: int) -> Any:
-        """Gesamte WP-Wirkleistung als Last am AC-Knoten."""
-        return variables["hp_power"][t]
+        """Gesamte WP-Wirkleistung als Last am AC-Knoten (inkl. Heizstab)."""
+        demand = variables["hp_power"][t]
+        rod = variables.get("hp_rod_power")
+        if rod is not None:
+            demand = demand + rod[t]
+        return demand
 
     @property
     def is_heat_supplier(self) -> bool:
@@ -570,6 +596,15 @@ class HeatPump(MILPComponent):
         result.hp_power_kw = np.array(
             [v.varValue or 0.0 for v in variables["hp_power"]]
         )
+        # Eingebauter Heizstab (Backup-Heater) — 0, wenn deaktiviert/keine
+        # Floor-Senke. Dient dem Dashboard als Fahrplan und macht sichtbar,
+        # wann die WP-Kennfeld-Kapazitaet nicht reichte.
+        if "hp_rod_power" in variables:
+            result.hp_rod_power_kw = np.array(
+                [v.varValue or 0.0 for v in variables["hp_rod_power"]]
+            )
+        else:
+            result.hp_rod_power_kw = np.zeros(num_steps)
         # Dynamische Max-Leistung pro Zeitschritt (T-abhaengig), damit
         # das Dashboard die Modulations-Obergrenze als Hilfslinie zeichnen
         # kann. Wenn prepare() nicht gelaufen ist, fall back zur statischen
@@ -608,7 +643,7 @@ class HeatPump(MILPComponent):
             state = np.where(sg1_vals > 0.5, 1, state)
             result.sg_ready_state = state
         # Einschaltvorgaenge zaehlen (aus hp_start). Pro Kalendertag und
-        # in Summe — gleiches Schema wie das max_starts_per_day-Constraint.
+        # in Summe — Diagnose fuer das Dashboard (Verdichter-Schaltzahl).
         if "hp_start" in variables and self._timestamps is not None:
             start_vals = np.array(
                 [v.varValue or 0.0 for v in variables["hp_start"]]
@@ -630,6 +665,7 @@ class HeatPump(MILPComponent):
         - Bei aktivem Split (mehrere Senken): hp_power_<sink> * COP_<sink>
         - Bei nur einer Senke: hp_power * COP_<sink>
         - Bei nicht-bedienter Senke: 0
+        - Zzgl. eingebautem Heizstab (COP 1) auf dem Floor-Heizkreis.
         """
         if sink not in self._active_sinks:
             return 0.0
@@ -641,6 +677,14 @@ class HeatPump(MILPComponent):
 
         split_key = f"hp_power_{sink}"
         if split_key in variables:
-            return variables[split_key][t] * cop_t
-        # Single-sink-Fall: hp_power speist direkt diese Senke
-        return variables["hp_power"][t] * cop_t
+            heat = variables[split_key][t] * cop_t
+        else:
+            # Single-sink-Fall: hp_power speist direkt diese Senke
+            heat = variables["hp_power"][t] * cop_t
+
+        # Eingebauter Heizstab speist als resistive Zusatzwaerme (COP 1) den
+        # Heizkreis (Floor). Liefert die Reserve, wenn die WP bei tiefen
+        # Aussentemperaturen an ihrer Kennfeld-Kapazitaet haengt.
+        if sink == "floor" and "hp_rod_power" in variables:
+            heat = heat + variables["hp_rod_power"][t]
+        return heat
