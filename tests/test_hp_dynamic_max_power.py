@@ -40,16 +40,20 @@ def _run(cfg, t_out: float | None = None):
 # Methodentest: calculate_max_electrical_power
 # ---------------------------------------------------------------------------
 
-def test_max_electrical_power_decreases_with_warmer_temps():
-    """Bei waermerer Aussentemperatur sinkt die WP-Max-Leistung
-    (weil die thermische Leistung sinkt, auch wenn der COP steigt)."""
+def test_max_electrical_power_roughly_constant_across_temps():
+    """Bei Volllast (Modulationsmaximum) ist die el. Leistungsaufnahme laut
+    Datenblatt (VWL 105/6, Spalte El-Leistungsaufnahme Max) nahezu konstant
+    ueber die Aussentemperatur: der Verdichter laeuft auf maximaler Frequenz,
+    seine Aufnahme haengt kaum von T_aussen ab — anders als die thermische
+    Leistung. (Die fruehere synthetische Tabelle war hier monoton fallend;
+    das war ein Artefakt der alten Werte.) Wir pruefen, dass P_el_max in
+    einem engen, realistischen Band bleibt."""
     hp = HeatPump("hp", DEFAULT_CONFIG["heat_pump"])
-    temps = np.array([-7.0, 2.0, 7.0])
+    temps = np.array([-15.0, -7.0, 2.0, 7.0, 20.0])
     p_max = hp.calculate_max_electrical_power(temps)
-    # Monoton fallend von kalt zu warm
-    assert p_max[0] > p_max[1] > p_max[2], (
-        f"P_el_max nicht monoton fallend: {p_max}"
-    )
+    # Huellkurve = max(W35, W55); W55 dominiert mit ~4.4-4.6 kW.
+    assert p_max.max() - p_max.min() < 1.0, f"P_el_max-Band zu breit: {p_max}"
+    assert (p_max > 3.0).all() and (p_max < 6.0).all()
 
 
 def test_max_electrical_power_clipped_at_static_max():
@@ -114,8 +118,9 @@ def test_q_extracted_from_air_grows_with_outside_temp():
     assert q_air[0] < q_air[1] < q_air[2], (
         f"Q_Luft nicht monoton steigend: {q_air}"
     )
-    # Konkret: A-7 ~7.5 kW, A7 ~11.7 kW (Modulationsmax-Tabelle)
-    assert q_air[0] > 7.0 and q_air[0] < 8.0
+    # Konkret (Datenblatt VWL 105/6, Max-Spalte W35): A-7 ~6.5 kW,
+    # A7 ~11.3 kW.
+    assert q_air[0] > 6.0 and q_air[0] < 7.0
     assert q_air[2] > 11.0 and q_air[2] < 12.0
 
 
