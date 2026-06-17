@@ -35,12 +35,14 @@ EXPECTED = {
         "throughput": 9.10,   # ch + dis in kWh
     },
     "hp_ww": {
-        # Aktualisiert 2026-05-27: min_run_time_minutes 15 -> 60 (Prof-Hinweis,
-        # WP muss mind. 60 min am Stueck laufen). Plus _CAPACITY_TABLE auf
-        # Modulationsmaximum -> hoehere thermische Output je Lauf-Slot,
-        # daher weniger Gesamtlaufzeit noetig, niedrigere Kosten.
-        "cost_eur":   4.2459,
-        "hp_kwh":     1.77,
+        # Aktualisiert 2026-06-17: COP-/Kennfeld-Tabellen auf das echte
+        # Vaillant-Datenblatt VWL 105/6 umgestellt (15 Aussentemp-Stuetz-
+        # stellen, Maximalleistung-Spalten). Der reale W55-COP (~2.5-2.8)
+        # liegt deutlich unter den alten, zu optimistischen Werten (~3.2),
+        # daher braucht die WW-Bereitung mehr Strom -> hoehere Kosten und
+        # hp_kwh. Die gelieferte WW-Energie (ww_end) bleibt gleich.
+        "cost_eur":   4.5870,
+        "hp_kwh":     2.76,
         "ww_end_kwh": 4.95,
     },
     "hp_ufh": {
