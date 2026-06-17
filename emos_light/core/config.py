@@ -109,11 +109,13 @@ DEFAULT_CONFIG = {
         # auf den Modus.
         "min_run_time_minutes": 60,
         "min_pause_time_minutes": 15,
-        # Maximale Anzahl Einschaltvorgaenge (OFF -> ON) pro Kalendertag.
-        # Schont den Verdichter — laeuft die WP einmal, darf sie beliebig
-        # lang laufen und auch zwischen Heizen/WW umschalten, nur das
-        # OFF -> ON-Anschalten zaehlt. Default 8/Tag.
-        "max_starts_per_day": 8,
+        # Eingebauter elektrischer Heizstab (Backup-Heater) im Heizwasser-
+        # kreis: modulierbar, COP 1. Springt nur an, wenn die WP an ihrer
+        # Kennfeld-Kapazitaet haengt (z.B. sehr kalter Tag) und sonst das
+        # Raum-Komfortband verletzt wuerde — im Normalbetrieb aus, weil
+        # WP-Waerme pro kWh immer guenstiger ist.
+        "backup_heater_enabled": True,
+        "backup_heater_max_power_kw": 8.5,
         "sg_ready": True,
         # Sollwert-Ueberhoehung im SG-Ready-Zustand 3 (Einschaltempfehlung).
         # Laut BWP v1.1: einmalige Speicherladung WW + Sollwert-Ueberhoehung.

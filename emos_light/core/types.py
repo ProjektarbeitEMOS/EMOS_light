@@ -47,6 +47,11 @@ class OptimizationResult:
     batt_discharge_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     batt_soc_kwh: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Elektrische Leistung des eingebauten Heizstabs (Backup-Heater, COP 1)
+    # in kW. Modulierbar 0..backup_heater_max_power_kw; springt nur an, wenn
+    # die WP an ihrer Kennfeld-Kapazitaet haengt und sonst das Komfortband
+    # verletzt wuerde (Heizstab teurer als WP-Waerme -> sonst aus).
+    hp_rod_power_kw: np.ndarray = field(default_factory=lambda: np.array([]))
     hp_on: np.ndarray = field(default_factory=lambda: np.array([]))
     # Maximale el. WP-Leistung pro Zeitschritt — dynamisch aus T_aussen
     # und Vorlauftemperatur ueber das Kennfeld berechnet. Wird als

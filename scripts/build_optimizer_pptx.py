@@ -615,7 +615,7 @@ def slide_components_overview(prs, page):
         ("Komponente", "Variablen", "Hauptbeitrag", "Rolle"),
         ("Netz", "P^buy, P^sell + Binär", "Disjunktion Bezug ↔ Einspeisung", "Quelle/Senke"),
         ("Batterie", "P_ch, P_dis, E + 2 Binär", "SOC-Bilanz, Lade/Entlade-Disjunktion", "Speicher"),
-        ("Wärmepumpe", "P^HP, y^HP, y^start + SG1/2/3/4", "SG-Ready einziger Steuerkanal, max 8 Starts/Tag", "Wandler"),
+        ("Wärmepumpe", "P^HP, y^HP, y^start, P^Stab + SG1/2/3/4", "SG-Ready einziger Steuerkanal, Mindestlaufzeit 60 min, Heizstab (Backup)", "Wandler"),
         ("Estrich (FBH)", "E^Floor, Q^Floor_in, Q^Floor→Raum", "Bilanz mit explizitem Wärmestrom an Raum", "Speicher"),
         ("Gebäude (Raum)", "T_innen, s_low, s_high", "Raumluftbilanz + Komfortband (Mai 2026)", "Speicher"),
         ("Pufferspeicher (WW)", "E^WW, Q^WW_in + Legionellen-Bin.", "Zwei-Zonen-Verluste, SG3/SG4-Boost", "Speicher"),
@@ -758,11 +758,16 @@ def slide_heatpump_constraints(prs, page):
          "bold_lead": True},
         {"text": "Mindestlaufzeit / Mindestpausenzeit (Hardware-Schutz)",
          "bold_lead": True},
-        {"text": "Tageslimit Einschaltvorgänge (Mai 2026): "
-                 "y^start_t ≥ y^HP_t − y^HP_{t-1};  Σ_{t∈Tag} y^start_t ≤ 8",
+        {"text": "Verdichter-Schonung via Mindestlaufzeit (60 min, Juni 2026): "
+                 "jeder Einschaltvorgang läuft mind. 1 h; y^start_t exakt an "
+                 "y^HP gekoppelt (Diagnose, kein Tageslimit mehr)",
          "bold_lead": True},
         {"text": "Thermische Kopplung: Q^Floor_in_t = COP^heiz_t · P^HP,Floor_t "
                  "und Q^WW_in_t = COP^ww_t · P^HP,WW_t  (COP vorberechnet → linear)",
+         "bold_lead": True},
+        {"text": "Eingebauter Heizstab (Backup, COP 1): P^Stab_t ∈ [0, 8,5 kW] "
+                 "speist additiv in den FBH-Kreis; nur aktiv bei "
+                 "WP-Kapazitätsgrenze (sonst teurer als WP → aus)",
          "bold_lead": True},
         {"text": "SG-Ready (BWP v1.1) als einziger Steuerkanal: "
                  "Σ_i y^SGi_t = 1   und   y^HP_t + y^SG1_t = 1",
@@ -1290,7 +1295,12 @@ def build_pptx(out_path: str):
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "EMOS_Light_Optimierer.pptx"
+    _docs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs"
+    )
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        _docs, "EMOS_Light_Optimierer.pptx"
+    )
     out_abs = os.path.abspath(out)
     build_pptx(out_abs)
     print(f"PowerPoint geschrieben: {out_abs}")

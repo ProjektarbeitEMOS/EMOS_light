@@ -575,13 +575,21 @@ def sec_heatpump():
          "Vorlauftemperatur für die Warmwasserbereitung. Höher = "
          "schlechterer COP, aber nötig für Komfort und Hygiene "
          "(Legionellenschutz typisch ≥ 60 °C einmal/Tag)."),
-        ("Max. Einschaltvorgänge pro Tag",
-         "0–48, Default 8",
-         "Verdichter-Schonung: jedes OFF→ON belastet die WP "
-         "mechanisch. Umschalten zwischen Heizkreis und WW zählt "
-         "<b>nicht</b>, solange die WP an bleibt — nur das echte "
-         "OFF→ON. 0 = kein Limit. Im Dashboard zeigt eine eigene "
-         "Kennzahl pro Tag, wie viele Starts verbraucht wurden."),
+        ("Mindestlaufzeit je Einschaltvorgang (min)",
+         "0–240, Default 60",
+         "Verdichter-Schonung: nach jedem Einschalten läuft die WP "
+         "mind. so lange am Stück (löst das frühere Tageslimit ab). "
+         "Umschalten zwischen Heizkreis und WW ist in dieser Zeit "
+         "<b>erlaubt</b> und zählt nicht als Neustart. 0 = keine "
+         "Mindestlaufzeit. Im Dashboard zeigt eine eigene Kennzahl pro "
+         "Tag, wie viele Starts angefallen sind."),
+        ("Heizstab (Backup) + max. el. Leistung (kW)",
+         "an/aus, Default 8,5 kW",
+         "Eingebauter elektrischer Heizstab (COP 1) im Heizkreis. Springt "
+         "nur an, wenn die WP an ihrer Kennfeld-Kapazität hängt (sehr "
+         "kalter Tag) und sonst das Komfortband verletzt würde — im "
+         "Normalbetrieb aus, weil WP-Wärme pro kWh günstiger ist. Im "
+         "Stromlast-Plot erscheint er als eigene (rote) Spur."),
     ]))
     out.append(H2("SG-Ready (BWP v1.1) — vier Zustände, einziger Steuerkanal"))
     out.append(P(
@@ -1062,7 +1070,12 @@ def build_pdf(out_path: str):
 
 
 if __name__ == "__main__":
-    out = sys.argv[1] if len(sys.argv) > 1 else "EMOS_Light_GUI_Anleitung.pdf"
+    _docs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs"
+    )
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+        _docs, "EMOS_Light_GUI_Anleitung.pdf"
+    )
     out_abs = os.path.abspath(out)
     build_pdf(out_abs)
     print(f"PDF geschrieben: {out_abs}")
