@@ -366,6 +366,26 @@ class EMOSLightOptimizer:
                     )
 
         # ============================================================
+        # Heizbetrieb-Sperre bei Aussentemp > Raum-Komfortobergrenze
+        # ============================================================
+        # Ist es draussen waermer als die maximale Raum-Komforttemperatur,
+        # wuerde Heizen den Raum nur ueber den Komfortpunkt treiben. In
+        # diesen Schritten wird der Estrich-Eingang hart auf 0 gezwungen —
+        # die WP kann dann nur noch Warmwasser machen (oder ausbleiben).
+        if (
+            self.building is not None
+            and "ufh_q_floor_in" in variables
+        ):
+            t_comfort_max = float(self.building.comfort_temp_max_c)
+            q_floor_in = variables["ufh_q_floor_in"]
+            for t in range(num_steps):
+                if float(inp.outside_temp_c[t]) > t_comfort_max:
+                    model += (
+                        q_floor_in[t] == 0,
+                        f"no_heating_when_warm_{t}",
+                    )
+
+        # ============================================================
         # Zielfunktion
         # ============================================================
         cost = pulp.lpSum(
