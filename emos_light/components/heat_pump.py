@@ -35,44 +35,75 @@ from emos_light.utils.interpolation import interp_2d
 # Kennlinien: Vaillant aroTHERM plus VWL 105/6 (EN 14511)
 # ============================================================
 
-# Stuetzstellen
-_OUTDOOR_TEMPS = np.array([-7.0, 2.0, 7.0])
+# Stuetzstellen aus den Leistungstabellen des Vaillant-Datenblatts
+# "aroTHERM plus (Luft/Wasser) - Leistungstabellen", Seite VWL 105/6
+# (Stand 17.06.2024). Feinere Aussentemperatur-Achse (15 Stuetzstellen
+# statt frueher nur -7/2/7) und vier Vorlauftemperaturen:
+_OUTDOOR_TEMPS = np.array([
+    -20.0, -15.0, -10.0, -8.0, -6.0, -4.0, -2.0,
+    0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 15.0, 20.0,
+])
 _FLOW_TEMPS = np.array([35.0, 45.0, 55.0, 65.0])
 
-# COP-Matrix [outdoor x flow]
+# COP-Matrix [outdoor x flow], Spalte = Vorlauftemperatur.
+# Werte = COP der **Maximalleistung** (Modulationsmaximum) aus den
+# Leistungstabellen — gleicher Betriebspunkt wie _CAPACITY_TABLE, daher
+# P_el_max = P_th_max / COP konsistent. Das Datenblatt fuehrt zusaetzlich
+# die Minimalleistung mit hoeherem Teillast-COP; fuer das Ein-Wert-Modell
+# wird bewusst der (konservative) Volllast-COP genommen.
+# Hinweis: 65 C Vorlauf wird unter -10 C Aussen nicht erreicht ("--" im
+# Datenblatt); die Zellen A-20/A-15 @ W65 sind vorsichtig extrapoliert
+# (knapp unter der W55-Spalte) und im Modell faktisch nie Betriebspunkt
+# (WW-Vorlauf default 55 C).
 _COP_TABLE = np.array([
     # W35   W45   W55   W65
-    [3.01, 2.28, 2.03, 1.74],   # A-7
-    [4.40, 3.37, 2.76, 2.26],   # A2  (W65 interpoliert)
-    [5.29, 4.03, 3.19, 2.51],   # A7
+    [2.3,  1.9,  1.4,  1.3],   # A-20  (W65 extrapoliert)
+    [2.5,  2.0,  1.6,  1.4],   # A-15  (W65 extrapoliert)
+    [2.8,  2.3,  1.8,  1.5],   # A-10
+    [2.9,  2.4,  1.9,  1.5],   # A-8
+    [3.1,  2.5,  2.0,  1.6],   # A-6
+    [3.3,  2.7,  2.1,  1.7],   # A-4
+    [3.4,  2.8,  2.2,  1.8],   # A-2
+    [3.6,  3.0,  2.3,  1.9],   # A0
+    [3.8,  3.2,  2.5,  1.9],   # A2
+    [4.0,  3.3,  2.6,  2.0],   # A4
+    [4.2,  3.5,  2.7,  2.2],   # A6
+    [4.3,  3.6,  2.8,  2.3],   # A8
+    [4.4,  3.6,  2.9,  2.4],   # A10
+    [4.5,  3.7,  3.0,  2.6],   # A15
+    [4.9,  3.8,  3.1,  2.7],   # A20
 ])
 
 # Maximale thermische Heizleistung [kW] im **Modulationsmaximum**
-# (nicht der EN-14511-Betriebspunkt). Diese Werte sind die obere Schranke
-# fuer die thermische Leistung der WP, der Solver entscheidet anhand der
-# Heizlast/Kosten wieviel davon tatsaechlich genutzt wird.
-#
-# Physikalischer Hintergrund: bei waermerer Aussenluft kann der Verdampfer
-# bei hoeherem Druck arbeiten -> hoehere Kaeltemittel-Massendichte ->
-# mehr Enthalpiedurchsatz pro Verdichterumdrehung -> mehr Waerme
-# extrahierbar. Daher steigt P_th_max von A-7 (11.25) ueber A2 (12.48)
-# bis A7 (14.40 kW) — verifiziert anhand des Vaillant-Datenblatts der
-# aroTHERM plus VWL 105/6.
-#
-# Spalten W45/W55/W65 sind ueber die A-7-Ratios skaliert (≈ +1 % je 10 K
-# VL-Anhebung — Kondensationsdruck-Effekt), da nur die W35-Maxima
-# explizit publiziert sind.
+# (Spalte "Maximalleistung / Heizleistung kW" der Leistungstabellen).
+# Obere Schranke fuer die thermische WP-Leistung; der Solver entscheidet
+# anhand Heizlast/Kosten, wieviel genutzt wird. Anders als die fruehere
+# (fehlerhafte) Tabelle sinkt die Leistung jetzt korrekt mit steigender
+# Vorlauftemperatur. A-20/A-15 @ W65 extrapoliert (s.o.).
 _CAPACITY_TABLE = np.array([
     # W35    W45    W55    W65
-    [11.25, 11.37, 11.66, 11.76],  # A-7
-    [12.48, 12.61, 12.93, 13.04],  # A2
-    [14.40, 14.54, 14.92, 15.05],  # A7
+    [7.3,   6.8,   6.4,   6.2],   # A-20  (W65 extrapoliert)
+    [8.0,   7.4,   7.1,   7.0],   # A-15  (W65 extrapoliert)
+    [9.1,   8.8,   8.2,   7.8],   # A-10
+    [9.5,   9.4,   8.6,   8.2],   # A-8
+    [10.1,  9.9,   9.1,   8.5],   # A-6
+    [10.9, 10.5,   9.5,   9.3],   # A-4
+    [11.7, 11.2,  10.0,   9.8],   # A-2
+    [12.5, 12.0,  10.7,  10.0],   # A0
+    [13.3, 12.8,  11.4,  10.2],   # A2
+    [14.0, 13.5,  11.8,  11.0],   # A4
+    [14.6, 14.1,  12.2,  11.8],   # A6
+    [15.0, 14.5,  12.7,  12.3],   # A8
+    [15.2, 14.7,  13.2,  12.5],   # A10
+    [15.4, 14.9,  13.9,  12.8],   # A15
+    [14.9, 14.2,  13.5,  12.6],   # A20
 ])
 
-# Minimale thermische Modulation (aus Datenblatt aroTHERM plus VWL 105/6):
-#   A2/W35: 4.76 kW min,  A7/W35: 4.61 kW min,  A-7/W35: ~4 kW min
-# Wird ueber ``min_electrical_power_kw`` (Default 1.0 kW) im Modell
-# durchgesetzt — bei COP ~4 entspricht das knapp 4 kW thermisch.
+# Minimale thermische Modulation: laut Leistungstabellen liegt die
+# Minimalleistung (Heizleistung kW) ueber den Aussentemperaturen bei
+# ~3-6 kW thermisch (z.B. A2/W35: 4.9 kW). Im Modell wird die Untergrenze
+# ueber ``min_electrical_power_kw`` (Default 1.0 kW) durchgesetzt — bei
+# COP ~4 entspricht das ~4 kW thermisch.
 
 # COP-Grenzen fuer Extrapolation
 _COP_MIN = 1.2
