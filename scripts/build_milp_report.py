@@ -500,7 +500,7 @@ def build_heatpump():
     out.append(H1("5. Waermepumpe"))
     out.append(P(
         "Die Waermepumpe wandelt elektrische in thermische Leistung um. "
-        "Modelliert ist eine Vaillant aroTHERM plus VWL 105/8.1 A mit "
+        "Modelliert ist eine Vaillant aroTHERM plus VWL 105/6 mit "
         "real vermessenem 2D-Kennfeld nach EN 14511."
     ))
 

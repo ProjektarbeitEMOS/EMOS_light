@@ -92,7 +92,7 @@ DEFAULT_CONFIG = {
     },
     "heat_pump": {
         "enabled": True,
-        "model": "Vaillant aroTHERM plus VWL 105/8.1 A",
+        "model": "Vaillant aroTHERM plus VWL 105/6",
         "max_electrical_power_kw": 8.0,
         "min_electrical_power_kw": 1.0,
         "flow_temp_heating_c": 35.0,

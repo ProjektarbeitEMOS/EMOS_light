@@ -504,7 +504,7 @@ def build_story(styles) -> list:
     story.append(P(
         "Die Waermepumpe ist die einzige Waermequelle. Sie wandelt elektrische Leistung in "
         "thermische Leistung um — der Wirkungsgrad ist temperaturabhaengig und wird ueber "
-        "ein 2D-Kennfeld (Vaillant aroTHERM plus VWL 105/8.1 A) je nach Aussen- und "
+        "ein 2D-Kennfeld (Vaillant aroTHERM plus VWL 105/6) je nach Aussen- und "
         "Vorlauftemperatur interpoliert.",
         styles,
     ))
