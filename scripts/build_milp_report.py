@@ -555,13 +555,21 @@ def build_heatpump():
         "lineares) Problem — viel teurer zu loesen."
     ))
     out.append(P(
-        "Stuetzstellen des Kennfeldes (Vaillant aroTHERM plus, EN 14511):"
+        "Stuetzstellen des Kennfeldes (Vaillant aroTHERM plus VWL 105/6, "
+        "Leistungstabellen / Maximalleistung). Das Modell nutzt die volle "
+        "Aussentemperatur-Achse mit 15 Stuetzstellen (−20 … +20&nbsp;°C); "
+        "die folgende Tabelle zeigt einen Auszug:"
     ))
     cop_data = [
         ["T_aussen \\ T_VL", "W35", "W45", "W55", "W65"],
-        ["A−7 °C", "3.01", "2.28", "2.03", "1.74"],
-        ["A2 °C",  "4.40", "3.37", "2.76", "2.26"],
-        ["A7 °C",  "5.29", "4.03", "3.19", "2.51"],
+        ["A−15 °C", "2.5", "2.0", "1.6", "1.4"],
+        ["A−10 °C", "2.8", "2.3", "1.8", "1.5"],
+        ["A−6 °C",  "3.1", "2.5", "2.0", "1.6"],
+        ["A−2 °C",  "3.4", "2.8", "2.2", "1.8"],
+        ["A2 °C",   "3.8", "3.2", "2.5", "1.9"],
+        ["A6 °C",   "4.2", "3.5", "2.7", "2.2"],
+        ["A10 °C",  "4.4", "3.6", "2.9", "2.4"],
+        ["A20 °C",  "4.9", "3.8", "3.1", "2.7"],
     ]
     t = Table(cop_data, colWidths=[3.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm])
     t.setStyle(TableStyle([
@@ -576,9 +584,10 @@ def build_heatpump():
     ]))
     out.append(t)
     out.append(caption(
-        "Tabelle 2: COP-Kennfeld der modellierten Waermepumpe. Werte werden "
-        "in der Optimierung mit Aussentemperatur-Zeitreihe bilinear interpoliert "
-        "und als Konstanten in den Constraints verwendet."
+        "Tabelle 2: COP-Kennfeld der modellierten Waermepumpe (Auszug; COP der "
+        "Maximalleistung aus dem Datenblatt VWL 105/6). Werte werden in der "
+        "Optimierung mit Aussentemperatur-Zeitreihe bilinear interpoliert und "
+        "als Konstanten in den Constraints verwendet."
     ))
 
     out.append(H2("5.4 Thermische Leistungsaufteilung WP → FBH und WW"))
