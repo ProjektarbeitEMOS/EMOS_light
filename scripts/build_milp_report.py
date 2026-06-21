@@ -3,6 +3,7 @@
 Layout: ReportLab. Formeln: Matplotlib mathtext -> PNG -> Image-Flowable.
 """
 
+import datetime
 import io
 import os
 import sys
@@ -214,10 +215,17 @@ def build_cover():
                            textColor=colors.HexColor("#444")),
         ),
         Paragraph(
-            "Implementierungsstand: Mai 2026 (Raumluft als Zustandsvariable)",
+            "Aktuelle konsolidierte Version (main-Branch)",
             ParagraphStyle("CovMeta2", parent=styles["BodyText"],
-                           fontSize=10, alignment=1,
-                           textColor=colors.HexColor("#777")),
+                           fontSize=12, alignment=1,
+                           fontName="Helvetica-Bold",
+                           textColor=colors.HexColor("#0b3d91")),
+        ),
+        Paragraph(
+            f"Stand: {datetime.date.today().strftime('%d.%m.%Y')}",
+            ParagraphStyle("CovMeta3", parent=styles["BodyText"],
+                           fontSize=11, alignment=1,
+                           textColor=colors.HexColor("#444")),
         ),
         PageBreak(),
     ]
