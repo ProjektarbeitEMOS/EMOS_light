@@ -796,6 +796,17 @@ def build_thermal_storages():
         r"(T^{\text{Floor}}_{t-1} - T^{\text{innen}}_t)"
     ))
     out.append(P(
+        "<b>Heizbetrieb-Sperre bei warmem Wetter (NEU, Juni 2026):</b> Liegt die "
+        "Außentemperatur über der Raum-Komfortobergrenze, würde Heizen den Raum nur über "
+        "den Komfortpunkt treiben. In diesen Zeitschritten wird der Estrich-Eingang hart "
+        "auf null gezwungen — die WP kann dann nur noch Warmwasser bereiten (oder "
+        "ausbleiben):"
+    ))
+    out.append(eq_image(
+        r"\dot{Q}^{\text{Floor,in}}_t = 0 \quad \text{falls}\quad "
+        r"T^{\text{aussen}}_t > T^{\max}_{\text{komf}}"
+    ))
+    out.append(P(
         "Estrich-Temperatur am Vorzeitschritt (träger Knoten, explizit), Raumtemperatur am "
         "aktuellen Schritt (impliziter Euler, §6.2) — beides affin und MILP-konform. "
         "<b>Fallback ohne Gebäude:</b> ist die Building-Komponente nicht aktiv, fällt das Modell "
@@ -833,9 +844,12 @@ def build_thermal_storages():
         "Die Verlust- und Estrich→Raum-Terme greifen auf T<sub>innen,t</sub> zu (impliziter "
         "Euler): C<sup>room</sup> enthält NUR die Luft (Wandmasse sitzt im T<sub>wand</sub>-"
         "Knoten), die Zeitkonstante liegt im Minutenbereich — explizit würde oszillieren, "
-        "implizit ist unbedingt stabil und bleibt linear. Q<sup>dump</sup> ist eine freie "
-        "(unbestrafte) Lüftung gegen sommerliche Überhitzung. Die trägen Knoten Estrich und "
-        "Wand bleiben explizit (Zustand bei t-1)."
+        "implizit ist unbedingt stabil und bleibt linear. Q<sup>dump</sup> ist eine Lüftung "
+        "gegen sommerliche Überhitzung; sie trägt eine Mini-Strafe von 1 ct/kWh "
+        "(<b>Korrektur Juni 2026: zuvor als unbestraft beschrieben</b>) — die bricht die "
+        "LP-Degeneration, die T<sub>innen</sub> sonst zwischen gleich teuren Lösungen "
+        "'zappeln' lässt, ist aber verschwindend klein gegen den Strompreis. Die trägen "
+        "Knoten Estrich und Wand bleiben explizit (Zustand bei t-1)."
     ))
     out.append(P("<b>Komfortband als Soft-Constraint</b> (Unterschreitung zweistufig):"))
     out.append(eq_image(

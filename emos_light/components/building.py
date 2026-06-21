@@ -721,14 +721,17 @@ class Building(MILPComponent):
             "t_innen_slack_high": make_var_array(
                 "t_innen_slack_high", num_steps, low=0.0,
             ),
-            # Freie Lueftung / Fensteroeffnen [kW]: laesst den Raum ueber-
-            # schuessige Waerme kostenfrei abgeben. Noetig, wenn ein starker
-            # Solargewinn (Q_g,R kann an grossen Suedfenstern zweistellige
-            # kW erreichen) die Verluste deutlich uebersteigt — sonst wuerde
-            # T_innen ueber jede Schranke steigen und das Modell infeasible.
-            # Physikalisch: Bewohner oeffnet die Fenster, wenn es zu warm
-            # wird. Unbestraft (Lueften kostet nichts); der Solver lueftet
-            # daher nur den Ueberschuss oberhalb des Komfortbands weg.
+            # Lueftung / Fensteroeffnen [kW]: laesst den Raum ueberschuessige
+            # Waerme abgeben. Noetig, wenn ein starker Solargewinn (Q_g,R kann
+            # an grossen Suedfenstern zweistellige kW erreichen) die Verluste
+            # deutlich uebersteigt — sonst wuerde T_innen ueber jede Schranke
+            # steigen und das Modell infeasible.
+            # Physikalisch: Bewohner oeffnet die Fenster, wenn es zu warm wird.
+            # KORREKTUR Juni 2026: NICHT mehr unbestraft — traegt eine Mini-
+            # Strafe (PENALTY_ROOM_DUMP = 1 ct/kWh, siehe optimizer.py). Die
+            # bricht die LP-Degeneration (sonst "zappelt" T_innen zwischen
+            # gleich teuren Loesungen), ist aber winzig gegen den Strompreis;
+            # der Solver lueftet daher nur den noetigen Ueberschuss weg.
             "room_heat_dump": make_var_array(
                 "room_heat_dump", num_steps, low=0.0,
             ),
