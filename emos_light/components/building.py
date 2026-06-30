@@ -679,8 +679,11 @@ class Building(MILPComponent):
                 (bis 0.5 K), milderer Penalty (P_COMFORT).
             t_innen_slack_low_critical[t]: Unterschreitung darueber hinaus,
                 schaerferer Penalty (P_CRITICAL). Unbeschraenkt.
-            t_innen_slack_high[t]: Ueberschreitung des Komfortbands in K,
-                wird im Optimizer mit UNMET_HEAT_PENALTY_CT bestraft.
+            t_innen_slack_high[t]: Ueberschreitung des Komfortbands in K.
+                NICHT mehr bestraft (Juni 2026): Ueberhitzung durch solare
+                Gewinne ist ohne aktive Kuehlung unvermeidbar und wird daher
+                zugelassen/angezeigt statt weggeregelt. Die Variable dient nur
+                noch als Mass fuer die Ueberhitzung ueber comfort_max.
 
         Hintergrund (Projektgruppe Penalty Slacks): die Unterschreitung
         wird in zwei Zonen unterteilt, weil eine kleine Komfortabweichung
