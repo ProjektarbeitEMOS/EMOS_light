@@ -121,10 +121,20 @@ def add_min_run_time(
 
     Logik (siehe Doku): wenn on[t] - on[t-1] = 1 (Einschalten),
     muss on[t+k] = 1 fuer k = 1..min_run_steps-1.
+
+    Randfall t=0 (Fix Juni 2026): die Anlage gilt vor dem Horizont als AUS
+    (konsistent mit der hp_start-Konvention). Ein Einschalten direkt im
+    ersten Schritt ist damit ebenfalls ein Einschaltvorgang und muss die
+    Mindestlaufzeit halten — sonst entsteht am Horizontanfang ein einzelner
+    15-min-Lauf, der die Mindestlaufzeit unterlaeuft.
     """
     if min_run_steps <= 1:
         return
     n = len(on)
+    # Einschalten bei t=0 (Vorzustand AUS angenommen): on[0] erzwingt on[k]=1.
+    for k in range(1, min_run_steps):
+        if k < n:
+            model += (on[0] <= on[k], f"{name}_minrun_0_{k}")
     for t in range(1, n):
         for k in range(1, min_run_steps):
             if t + k < n:
