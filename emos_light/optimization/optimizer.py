@@ -421,11 +421,18 @@ class EMOSLightOptimizer:
             c_th_kwh_per_k = wall_cap_wh * heated_area / 1000.0
             cost_comfort_ct_per_k = P_COMFORT * c_th_kwh_per_k
             cost_critical_ct_per_k = P_CRITICAL * c_th_kwh_per_k
+            # Nur die UNTERschreitung des Komfortbands wird bestraft (Heizen).
+            # Die OBERschreitung (t_innen_slack_high) bleibt UNbestraft:
+            # Ueberhitzung entsteht durch solare Gewinne und ist ohne aktive
+            # Kuehlung nicht vermeidbar — sie wird daher zugelassen und im
+            # Verlauf angezeigt (T_innen steigt sichtbar ueber comfort_max),
+            # statt sie kuenstlich wegzuregeln. room_heat_dump bleibt als
+            # Lueftungs-/Loesbarkeits-Ventil (Mini-Strafe) erhalten und greift
+            # nur, wenn die Waerme sonst gar nicht abfuehrbar waere.
             cost += pulp.lpSum(
                 (
                     variables["t_innen_slack_low_comfort"][t] * cost_comfort_ct_per_k
                     + variables["t_innen_slack_low_critical"][t] * cost_critical_ct_per_k
-                    + variables["t_innen_slack_high"][t] * UNMET_HEAT_PENALTY_CT
                 ) * dt_h
                 for t in range(num_steps)
             )
