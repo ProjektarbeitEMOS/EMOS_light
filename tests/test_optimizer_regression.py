@@ -36,13 +36,14 @@ EXPECTED = {
     },
     "hp_ww": {
         # Aktualisiert 2026-06-17: COP-/Kennfeld-Tabellen auf das echte
-        # Vaillant-Datenblatt VWL 105/6 umgestellt (15 Aussentemp-Stuetz-
-        # stellen, Maximalleistung-Spalten). Der reale W55-COP (~2.5-2.8)
-        # liegt deutlich unter den alten, zu optimistischen Werten (~3.2),
-        # daher braucht die WW-Bereitung mehr Strom -> hoehere Kosten und
-        # hp_kwh. Die gelieferte WW-Energie (ww_end) bleibt gleich.
-        "cost_eur":   4.5870,
-        "hp_kwh":     2.76,
+        # Vaillant-Datenblatt VWL 105/6 (15 Aussentemp-Stuetzstellen).
+        # Aktualisiert 2026-06-30: Fix der WP-Mindestlaufzeit am Horizont-
+        # anfang (add_min_run_time t=0). Vorher nutzte die WW-Fahrweise einen
+        # 30-min-Startlauf (Mindestlaufzeit-Verletzung) -> ON-Bloecke
+        # [30,60,60] min, cost 4.58 (suboptimaler MIP-Inkumbent). Jetzt saubere
+        # [60,60]-min-Bloecke, weniger Gesamtlaufzeit, cost/hp_kwh niedriger.
+        "cost_eur":   4.4192,
+        "hp_kwh":     2.30,
         "ww_end_kwh": 4.95,
     },
     "hp_ufh": {
