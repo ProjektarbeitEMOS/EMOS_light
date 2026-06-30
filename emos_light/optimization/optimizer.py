@@ -71,6 +71,10 @@ PENALTY_EV_EXPENSIVE = 500.0
 # und liegt weit unter UNMET_HEAT_PENALTY_CT, sodass Lueften gegen
 # Ueberhitzen weiterhin der billigere Weg bleibt.
 PENALTY_ROOM_DUMP = 1.0
+# Hartes Solver-Zeitlimit pro Optimierungslauf [s]. Beim Voll-Haus-Problem
+# ueber 48 h (viele Binaervariablen) laeuft der Solver bis hierhin und gibt
+# die beste gefundene Loesung zurueck (MIP-Gap bis dahin meist << 0.5 %).
+SOLVER_TIME_LIMIT_S = 60
 
 
 class EMOSLightOptimizer:
@@ -489,13 +493,13 @@ class EMOSLightOptimizer:
         # Bei einer Optimierung um 1 EUR/Tag entspricht das 0.5 ct Toleranz
         # — fuer Energieoptimierung absolut ausreichend, spart aber bei
         # vielen binaeren Variablen (HP-Modulation, SG-Ready, Wallbox)
-        # erheblich Solver-Zeit. timeLimit=30 s als harte Obergrenze.
+        # erheblich Solver-Zeit. timeLimit=SOLVER_TIME_LIMIT_S (60 s) als harte Obergrenze.
         # ============================================================
         solver = None
         for solver_factory in (
-            lambda: pulp.HiGHS(msg=0, timeLimit=30, gapRel=0.005),
-            lambda: pulp.HiGHS_CMD(msg=0, timeLimit=30, gapRel=0.005),
-            lambda: pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005),
+            lambda: pulp.HiGHS(msg=0, timeLimit=SOLVER_TIME_LIMIT_S, gapRel=0.005),
+            lambda: pulp.HiGHS_CMD(msg=0, timeLimit=SOLVER_TIME_LIMIT_S, gapRel=0.005),
+            lambda: pulp.PULP_CBC_CMD(msg=0, timeLimit=SOLVER_TIME_LIMIT_S, gapRel=0.005),
         ):
             try:
                 candidate = solver_factory()
@@ -505,7 +509,7 @@ class EMOSLightOptimizer:
             except Exception:
                 continue
         if solver is None:
-            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=30, gapRel=0.005)
+            solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=SOLVER_TIME_LIMIT_S, gapRel=0.005)
 
         model.solve(solver)
         solve_time = time.time() - t_start
